@@ -38,6 +38,9 @@ def _weather_daily_path(city: str) -> Path:
 def _weather_hourly_path(city: str) -> Path:
     return Path(WEATHER_DIR) / f"{_slug(city)}_hourly.csv"
 
+def _ensemble_path(city: str) -> Path:
+    return Path(WEATHER_DIR) / f"{_slug(city)}_ensemble.csv"
+
 def _slug(city: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", city.lower()).strip("_")
 
@@ -128,6 +131,34 @@ def save_weather_forecast(forecast: dict) -> None:
         forecast.get("hourly", []),
         dedup_cols=["city", "datetime_local", "fetched_at_utc"],
     )
+
+
+# ── Ensemble persistence ──────────────────────────────────────────────────────
+
+def save_ensemble_forecast(forecast: dict) -> None:
+    """Persist ensemble daily statistics for one city."""
+    city = forecast.get("city", "unknown")
+    _append_csv(
+        _ensemble_path(city),
+        forecast.get("daily", []),
+        dedup_cols=["city", "date_local", "fetched_at_utc"],
+    )
+
+
+def load_ensemble(city: str) -> "pd.DataFrame":
+    """Load ensemble CSV. Returns empty DataFrame if not available."""
+    import pandas as pd
+    path = _ensemble_path(city)
+    if not path.exists():
+        return pd.DataFrame()
+    df = pd.read_csv(path)
+    df["fetched_at_utc"] = pd.to_datetime(df["fetched_at_utc"], utc=True, errors="coerce")
+    df["date_local"]     = pd.to_datetime(df["date_local"]).dt.normalize()
+    for col in ["ens_mean", "ens_std", "ens_p10", "ens_p25",
+                "ens_median", "ens_p75", "ens_p90", "ens_spread"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
 
 
 # ── Implied temperature ───────────────────────────────────────────────────────

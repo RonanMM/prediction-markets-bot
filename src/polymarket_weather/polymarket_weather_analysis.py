@@ -1,725 +1,1658 @@
 """
-Polymarket Weather Inefficiency Analyzer — v2
-==============================================
-Key insight from v1 failure:
-  Polymarket weather markets form a CATEGORICAL DISTRIBUTION across temp bins
-  for a given (city, date). The market-implied σ is ~0.4-0.6°C (overconfident),
-  while NWP verification statistics say true forecast uncertainty is σ≈1.5-2.5°C.
+polymarket_weather_v3.py
+========================
+Polymarket Weather Inefficiency Analyzer — production-grade.
 
-  The edge comes from:
-    - Market underprices "nearby" bins relative to the modal forecast
-    - Market overprices the exact modal bin
-    - Forecast shifts (24h update) not yet reflected in market
-
-Approach:
-  1. Reconstruct market PMF per (city, target_date, snapshot_time) from ALL bins
-  2. Build forecast PMF using NWP-calibrated Gaussian over daily temp_max_c
-  3. Compute KL divergence + per-bin edge
-  4. Rank opportunities by: edge × liquidity / kelly_risk
+Alpha signals implemented (all usable with your existing data):
+  α1  Forecast momentum       — EMA of Δforecast over recent snapshots
+  α2  Min/max spread proxy    — diurnal range as convective uncertainty signal
+  α3  Student-t tail model    — heavier tails than Gaussian (nu calibrated per horizon)
+  α4  Constrained PMF         — full probability-mass-conserving reconstruction
+                                 using exact + gte + lte bins jointly
+  α5  Internal consistency    — detect markets whose bins don't sum to ~1.0;
+                                 trade the missing-mass bins
+  α6  Volume recency          — 24h/total volume ratio flags informed-trader activity
+  α7  Forecast convergence    — cross-snapshot variance; high variance → market stale
+  α8  Market update lag       — time since last significant market reprice
+  α9  Correlated bet grouping — per-(city,date) exposure cap; Kelly across group
 
 Usage:
-  python polymarket_weather_v2.py --data_dir ./data [--cities london chicago ...]
+  python polymarket_weather_v3.py --data_dir ./data [options]
+  python polymarket_weather_v3.py --data_dir ./data --min_edge 0.06 --bankroll 2000
 """
 
-import os
-import re
-import json
-import warnings
-import argparse
-from pathlib import Path
+from __future__ import annotations
+import argparse, json, re, warnings
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from math import erf, sqrt, log, pi
+from pathlib import Path
 from typing import Optional
-from math import erf, sqrt, log
 
 import numpy as np
 import pandas as pd
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+from scipy.stats import t as student_t
+from scipy.optimize import minimize, minimize_scalar
 
 warnings.filterwarnings("ignore")
 
-# ─── CONFIG ────────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# CONFIGURATION
+# ══════════════════════════════════════════════════════════════════════════════
 
-# NWP verification-based sigma by days-ahead horizon
-# Source: ECMWF/GFS skill scores for 2m temp max
-NWP_SIGMA_BY_DAY = {
-    0: 0.8,   # same-day  (obs almost certain)
-    1: 1.2,   # 1-day
-    2: 1.6,   # 2-day
-    3: 2.0,   # 3-day
-    4: 2.4,   # 4-day
-    5: 2.8,   # 5-day
+# NWP-calibrated sigma (°C) and Student-t degrees-of-freedom by days-ahead
+# Based on ECMWF verification statistics for 2m Tmax
+NWP_PARAMS: dict[int, tuple[float, float]] = {
+    # days: (sigma_base, t_nu)
+    0: (0.7,  12.0),   # near-observation: almost Gaussian
+    1: (1.2,  8.0),
+    2: (1.6,  6.5),
+    3: (2.0,  5.5),
+    4: (2.4,  5.0),
+    5: (2.8,  4.5),
 }
-NWP_SIGMA_DEFAULT = 3.2  # beyond 5 days
+NWP_BEYOND = (3.2, 4.0)          # sigma, nu for >5 days ahead
 
-MIN_EDGE_FRACTION = 0.07   # 7pp in normalized PMF
-MIN_LIQUIDITY     = 400    # USDC
-MIN_BINS_FOR_DAY  = 3      # need ≥3 bins to reconstruct distribution
-KELLY_FRACTION    = 0.25
-MAX_KELLY_BET     = 0.15   # never bet >15% of bankroll on one market
+# Momentum signal: EMA span (in number of forecast snapshots)
+MOMENTUM_EMA_SPAN     = 3
+# Minimum momentum magnitude to boost/penalise edge (°C/snapshot)
+MOMENTUM_THRESHOLD    = 0.15
+# Diurnal spread sigma multiplier  (spread/baseline - 1) * this
+SPREAD_SIGMA_WEIGHT   = 0.25
 
-CITY_ALIASES = {
+# Edge / sizing parameters
+MIN_EDGE              = 0.06      # 6 pp raw probability
+MIN_LIQUIDITY         = 400       # USDC
+MIN_BINS_FOR_PMF      = 3         # need ≥3 exact bins to reconstruct distribution
+KELLY_FRACTION        = 0.25      # fractional Kelly multiplier
+MAX_KELLY_PER_BET     = 0.12      # absolute cap per single market
+MAX_KELLY_PER_GROUP   = 0.20      # cap across correlated (city, date) group
+MAX_TOTAL_KELLY       = 0.40      # hard cap on total portfolio exposure per run
+
+# Polymarket fee: ~2% of the trade amount (taker fee on winning side)
+FEE_RATE              = 0.02
+
+# Minimum raw market price on either side of the bet.
+# Prices below this are near-settled/expired markets — skip them.
+MIN_MARKET_PRICE      = 0.02   # 2% — below this the market has effectively resolved
+
+# Volume-recency threshold: ratio vol_24h/vol_total
+INFORMED_RECENCY      = 0.65
+
+# Market staleness: if market hasn't moved >1pp in last N hours → flag stale
+STALE_HOURS           = 6
+STALE_MOVE_THRESHOLD  = 0.01
+
+# Consistency: if sum(exact bins) deviates from ~1.0 by more than this → flag
+PMF_SUM_DEVIATION_MAX = 0.30
+
+CITY_NAMES = {
     "new_york_city": "NYC",
     "new_york":      "NYC",
     "london":        "London",
     "chicago":       "Chicago",
-    "hong_kong":     "HK",
+    "hong_kong":     "HongKong",
     "seoul":         "Seoul",
 }
 
-# ─── DATA LOADING ──────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# DATA LOADING
+# ══════════════════════════════════════════════════════════════════════════════
 
-def discover_cities(data_dir: Path) -> list:
-    data_dir = data_dir / Path("polymarket") 
-    return [f.stem.replace("_snapshots", "")
-            for f in sorted(data_dir.glob("*_snapshots.csv"))]
+def discover_cities(data_dir: Path) -> list[str]:
+    data_dir = data_dir / "polymarket"
+    return sorted(f.stem.replace("_snapshots", "")
+                  for f in data_dir.glob("*_snapshots.csv"))
+
+
+def _parse_yes(val) -> float:
+    try:
+        d = json.loads(str(val).replace("'", '"'))
+        return float(d.get("Yes", d.get("yes", np.nan)))
+    except Exception:
+        return np.nan
 
 
 def load_snapshots(data_dir: Path, city: str) -> pd.DataFrame:
-    path = data_dir / "polymarket" / f"{city}_snapshots.csv"
-    df = pd.read_csv(path)
+    df = pd.read_csv(data_dir / "polymarket" / f"{city}_snapshots.csv")
     df["fetched_at_utc"] = pd.to_datetime(df["fetched_at_utc"], utc=True)
     df["end_date_iso"]   = pd.to_datetime(df["end_date_iso"],   utc=True, errors="coerce")
-    df["city"] = city
-
-    def _yes(val):
-        try:
-            d = json.loads(str(val).replace("'", '"'))
-            return float(d.get("Yes", d.get("yes", np.nan)))
-        except:
-            return np.nan
-
-    df["yes_prob"] = df["outcome_probs_json"].apply(_yes)
+    df["yes_prob"]       = df["outcome_probs_json"].apply(_parse_yes)
+    df["city"]           = city
+    # deduplicate: keep freshest row per (condition_id, fetched_bucket)
+    df["fetch_bucket"]   = df["fetched_at_utc"].dt.floor("10min")
+    df = (df.sort_values("fetched_at_utc")
+            .groupby(["condition_id", "fetch_bucket"], as_index=False)
+            .last())
     return df
 
 
 def load_daily(data_dir: Path, city: str) -> pd.DataFrame:
-    path = data_dir / "weather" / f"{city}_daily.csv"
-    df = pd.read_csv(path)
+    df = pd.read_csv(data_dir / "weather" / f"{city}_daily.csv")
     df["fetched_at_utc"] = pd.to_datetime(df["fetched_at_utc"], utc=True)
     df["date_local"]     = pd.to_datetime(df["date_local"]).dt.normalize()
     return df
 
 
-# ─── QUESTION PARSER ───────────────────────────────────────────────────────────
+def load_hourly(data_dir: Path, city: str) -> Optional[pd.DataFrame]:
+    p = data_dir / "weather" / f"{city}_hourly.csv"
+    if not p.exists():
+        return None
+    df = pd.read_csv(p)
+    df["fetched_at_utc"] = pd.to_datetime(df["fetched_at_utc"], utc=True)
+    df["datetime_utc"]   = pd.to_datetime(df["datetime_utc"],   utc=True, errors="coerce")
+    return df
 
-RE_EXACT_C  = re.compile(r"be\s+(-?\d+(?:\.\d+)?)\s*°?\s*C\s+on\b", re.I)
-RE_GTE_C    = re.compile(r"be\s+(-?\d+(?:\.\d+)?)\s*°?\s*C\s+or\s+higher", re.I)
-RE_LTE_C    = re.compile(r"be\s+(-?\d+(?:\.\d+)?)\s*°?\s*C\s+or\s+(?:lower|below)", re.I)
-RE_EXACT_F  = re.compile(r"be\s+(-?\d+(?:\.\d+)?)\s*°?\s*F\s+on\b", re.I)
-RE_RANGE_F  = re.compile(r"between\s+(\d+)-(\d+)\s*°?\s*F", re.I)
-RE_GTE_F    = re.compile(r"be\s+(-?\d+(?:\.\d+)?)\s*°?\s*F\s+or\s+higher", re.I)
-RE_LTE_F    = re.compile(r"be\s+(-?\d+(?:\.\d+)?)\s*°?\s*F\s+or\s+(?:lower|below)", re.I)
+
+def load_ensemble(data_dir: Path, city: str) -> Optional[pd.DataFrame]:
+    """Load ensemble CSV if available. Returns None if not yet fetched."""
+    import re as _re
+    slug = _re.sub(r"[^a-z0-9]+", "_", city.lower()).strip("_")
+    p = data_dir / "weather" / f"{slug}_ensemble.csv"
+    if not p.exists():
+        return None
+    df = pd.read_csv(p)
+    df["fetched_at_utc"] = pd.to_datetime(df["fetched_at_utc"], utc=True)
+    df["date_local"]     = pd.to_datetime(df["date_local"]).dt.normalize()
+    for col in ["ens_mean", "ens_std", "ens_p10", "ens_p25",
+                "ens_median", "ens_p75", "ens_p90", "ens_spread"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
 
 
-def f2c(f): return (f - 32) * 5 / 9
+def _get_ensemble_params(ens_df: Optional[pd.DataFrame],
+                          target_date, fetch_time) -> Optional[dict]:
+    """
+    Look up the best ensemble snapshot for target_date.
+    Prefers the latest row fetched at or before fetch_time (to avoid look-ahead
+    in back-testing). If none exist (e.g. ensemble was fetched after the snapshot),
+    falls back to the latest available row for that date — correct for live use.
+    Returns dict with ens_mean, ens_std, ens_p10, ens_p90 — or None if unavailable.
+    """
+    if ens_df is None or ens_df.empty:
+        return None
+
+    td = pd.Timestamp(target_date).normalize()
+    if td.tzinfo is not None:
+        td = td.tz_localize(None)
+
+    date_rows = ens_df[ens_df["date_local"].dt.normalize() == td]
+    if date_rows.empty:
+        return None
+
+    # Prefer rows fetched at or before the snapshot's fetch_time (no look-ahead)
+    sub = date_rows[date_rows["fetched_at_utc"] <= fetch_time]
+    if sub.empty:
+        # Fall back to latest available (correct for live analysis)
+        sub = date_rows
+
+    row = sub.sort_values("fetched_at_utc").iloc[-1]
+    std = float(row.get("ens_std", np.nan))
+    if np.isnan(std) or std <= 0:
+        return None
+
+    return {
+        "ens_mean":   float(row.get("ens_mean",   np.nan)),
+        "ens_std":    std,
+        "ens_p10":    float(row.get("ens_p10",    np.nan)),
+        "ens_p90":    float(row.get("ens_p90",    np.nan)),
+        "ens_spread": float(row.get("ens_spread", np.nan)),
+        "n_members":  int(row.get("n_members", 0)),
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# QUESTION PARSER
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── Celsius patterns ────────────────────────────────────────────────────────
+_RE_GTE_C   = re.compile(
+    r"be\s+(-?\d+(?:\.\d+)?)\s*°?\s*C\s+or\s+(?:higher|above|more)",   re.I)
+_RE_LTE_C   = re.compile(
+    r"be\s+(-?\d+(?:\.\d+)?)\s*°?\s*C\s+or\s+(?:lower|below|less)",    re.I)
+_RE_EXACT_C = re.compile(
+    r"be\s+(-?\d+(?:\.\d+)?)\s*°?\s*C\s+on\b",                         re.I)
+# "at least X°C", "exceed X°C", "reach X°C", "X°C or above/higher"
+_RE_GTE_C_2 = re.compile(
+    r"(?:at\s+least|exceed[s]?|reach(?:es)?)\s+(-?\d+(?:\.\d+)?)\s*°?\s*C", re.I)
+_RE_GTE_C_3 = re.compile(
+    r"(-?\d+(?:\.\d+)?)\s*°?\s*C\s+or\s+(?:above|higher|more)",        re.I)
+_RE_LTE_C_2 = re.compile(
+    r"(?:at\s+most|no\s+more\s+than)\s+(-?\d+(?:\.\d+)?)\s*°?\s*C",   re.I)
+_RE_LTE_C_3 = re.compile(
+    r"(-?\d+(?:\.\d+)?)\s*°?\s*C\s+or\s+(?:below|lower|less)",         re.I)
+
+# ── Fahrenheit patterns ──────────────────────────────────────────────────────
+_RE_GTE_F   = re.compile(
+    r"be\s+(-?\d+(?:\.\d+)?)\s*°?\s*F\s+or\s+(?:higher|above|more)",   re.I)
+_RE_LTE_F   = re.compile(
+    r"be\s+(-?\d+(?:\.\d+)?)\s*°?\s*F\s+or\s+(?:lower|below|less)",    re.I)
+_RE_EXACT_F = re.compile(
+    r"be\s+(-?\d+(?:\.\d+)?)\s*°?\s*F\s+on\b",                         re.I)
+_RE_RANGE_F = re.compile(r"between\s+(\d+)-(\d+)\s*°?\s*F",            re.I)
+_RE_GTE_F_2 = re.compile(
+    r"(-?\d+(?:\.\d+)?)\s*°?\s*F\s+or\s+(?:above|higher|more)",        re.I)
+_RE_LTE_F_2 = re.compile(
+    r"(-?\d+(?:\.\d+)?)\s*°?\s*F\s+or\s+(?:below|lower|less)",         re.I)
+
+# 0.5°F converted to °C — used as bin half-width for Fahrenheit markets
+_HALF_WIDTH_F_IN_C = 0.5 * 5.0 / 9.0   # ≈ 0.2778°C
+_HALF_WIDTH_C      = 0.5                # standard Celsius bin
+
+
+def _f2c(f: float) -> float:
+    return (f - 32.0) * 5.0 / 9.0
 
 
 def parse_question(q: str) -> Optional[dict]:
-    """Returns dict with condition, temp_c (target), lo/hi for range, and bin_type."""
-    m = RE_GTE_C.search(q)
-    if m: return dict(condition="gte", temp_c=float(m.group(1)))
-
-    m = RE_LTE_C.search(q)
-    if m: return dict(condition="lte", temp_c=float(m.group(1)))
-
-    m = RE_EXACT_C.search(q)
-    if m: return dict(condition="exact", temp_c=float(m.group(1)))
-
-    m = RE_RANGE_F.search(q)
-    if m: return dict(condition="range",
-                      temp_c=(f2c(float(m.group(1))) + f2c(float(m.group(2)))) / 2,
-                      temp_lo=f2c(float(m.group(1))), temp_hi=f2c(float(m.group(2))))
-
-    m = RE_GTE_F.search(q)
-    if m: return dict(condition="gte", temp_c=f2c(float(m.group(1))))
-
-    m = RE_LTE_F.search(q)
-    if m: return dict(condition="lte", temp_c=f2c(float(m.group(1))))
-
-    m = RE_EXACT_F.search(q)
-    if m: return dict(condition="exact", temp_c=f2c(float(m.group(1))))
-
+    """
+    Returns: {
+        condition:  'exact'|'gte'|'lte'|'range',
+        temp_c:     float,          # target / midpoint in °C
+        half_width: float,          # bin half-width in °C (0.5 for °C, 0.278 for °F)
+        temp_lo:    float (range only),
+        temp_hi:    float (range only),
+    }
+    Tries progressively broader patterns so the most specific match wins.
+    """
+    # ── Celsius gte ───────────────────────────────────────────────────────────
+    for pat in (_RE_GTE_C, _RE_GTE_C_2, _RE_GTE_C_3):
+        m = pat.search(q)
+        if m:
+            return {"condition": "gte", "temp_c": float(m.group(1)),
+                    "half_width": _HALF_WIDTH_C}
+    # ── Celsius lte ───────────────────────────────────────────────────────────
+    for pat in (_RE_LTE_C, _RE_LTE_C_2, _RE_LTE_C_3):
+        m = pat.search(q)
+        if m:
+            return {"condition": "lte", "temp_c": float(m.group(1)),
+                    "half_width": _HALF_WIDTH_C}
+    # ── Celsius exact ─────────────────────────────────────────────────────────
+    m = _RE_EXACT_C.search(q)
+    if m:
+        return {"condition": "exact", "temp_c": float(m.group(1)),
+                "half_width": _HALF_WIDTH_C}
+    # ── Fahrenheit range ──────────────────────────────────────────────────────
+    m = _RE_RANGE_F.search(q)
+    if m:
+        lo, hi = _f2c(float(m.group(1))), _f2c(float(m.group(2)))
+        return {"condition": "range", "temp_c": (lo + hi) / 2,
+                "temp_lo": lo, "temp_hi": hi, "half_width": _HALF_WIDTH_F_IN_C}
+    # ── Fahrenheit gte ────────────────────────────────────────────────────────
+    for pat in (_RE_GTE_F, _RE_GTE_F_2):
+        m = pat.search(q)
+        if m:
+            return {"condition": "gte", "temp_c": _f2c(float(m.group(1))),
+                    "half_width": _HALF_WIDTH_F_IN_C}
+    # ── Fahrenheit lte ────────────────────────────────────────────────────────
+    for pat in (_RE_LTE_F, _RE_LTE_F_2):
+        m = pat.search(q)
+        if m:
+            return {"condition": "lte", "temp_c": _f2c(float(m.group(1))),
+                    "half_width": _HALF_WIDTH_F_IN_C}
+    # ── Fahrenheit exact ──────────────────────────────────────────────────────
+    m = _RE_EXACT_F.search(q)
+    if m:
+        return {"condition": "exact", "temp_c": _f2c(float(m.group(1))),
+                "half_width": _HALF_WIDTH_F_IN_C}
     return None
 
 
-# ─── PROBABILITY MATH ──────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# PROBABILITY ENGINE — Student-t with adaptive sigma
+# ══════════════════════════════════════════════════════════════════════════════
 
-def Φ(x, mu, sigma):
-    """Standard normal CDF."""
-    return 0.5 * (1 + erf((x - mu) / (sigma * sqrt(2))))
+def _get_nwp_params(days_ahead: float) -> tuple[float, float]:
+    """Return (sigma, nu) for given horizon."""
+    d = int(np.clip(days_ahead, 0, 5))
+    return NWP_PARAMS.get(d, NWP_BEYOND)
 
 
-def forecast_bin_prob(parsed: dict, mu: float, sigma: float) -> float:
-    """P(condition | mu, sigma) — raw, unnormalized."""
-    c = parsed["condition"]
-    t = parsed["temp_c"]
-    if c == "exact":
-        return Φ(t + 0.5, mu, sigma) - Φ(t - 0.5, mu, sigma)
-    elif c == "gte":
-        return 1 - Φ(t, mu, sigma)
-    elif c == "lte":
-        return Φ(t, mu, sigma)
-    elif c == "range":
-        return Φ(parsed["temp_hi"], mu, sigma) - Φ(parsed["temp_lo"], mu, sigma)
+def _cdf(x: float, mu: float, sigma: float, nu: float) -> float:
+    """Student-t CDF; falls back to Gaussian when nu>30."""
+    if nu > 30:
+        return 0.5 * (1 + erf((x - mu) / (sigma * sqrt(2))))
+    return float(student_t.cdf((x - mu) / sigma, df=nu))
+
+
+def _bin_prob(temp_c: float, mu: float, sigma: float, nu: float,
+              half_width: float = 0.5) -> float:
+    """P(temp_c - half_width < actual <= temp_c + half_width).
+    Use half_width=0.278 for Fahrenheit markets (0.5°F in °C)."""
+    return _cdf(temp_c + half_width, mu, sigma, nu) - _cdf(temp_c - half_width, mu, sigma, nu)
+
+
+def _condition_prob(parsed: dict, mu: float, sigma: float, nu: float) -> float:
+    c  = parsed["condition"]
+    t  = parsed["temp_c"]
+    hw = parsed.get("half_width", 0.5)
+    if c == "exact":  return _bin_prob(t, mu, sigma, nu, hw)
+    if c == "gte":    return 1.0 - _cdf(t - hw, mu, sigma, nu)
+    if c == "lte":    return _cdf(t + hw, mu, sigma, nu)
+    if c == "range":  return (_cdf(parsed["temp_hi"], mu, sigma, nu) -
+                              _cdf(parsed["temp_lo"], mu, sigma, nu))
     return np.nan
 
 
-def get_nwp_sigma(days_ahead: float) -> float:
-    day = int(min(max(days_ahead, 0), 5))
-    return NWP_SIGMA_BY_DAY.get(day, NWP_SIGMA_DEFAULT)
-
-
-def kl_divergence(p: dict, q: dict) -> float:
-    """KL(p || q) — p=true, q=approx. Keys must match."""
-    eps = 1e-8
-    return sum(p[k] * log(p[k] / max(q.get(k, eps), eps)) for k in p if p[k] > 0)
-
-
-# ─── CORE: RECONSTRUCT DISTRIBUTIONS ──────────────────────────────────────────
-
-def build_day_snapshot(snap_group: pd.DataFrame, daily_df: pd.DataFrame,
-                        city: str) -> list:
+def _fit_nu_from_ensemble(ens_params: dict) -> float:
     """
-    For a group of snapshot rows sharing (city, target_date, ~fetch_time),
-    reconstruct the market PMF and forecast PMF, then compute per-bin edges.
+    Estimate Student-t degrees-of-freedom (nu) from ensemble p10/p90.
+
+    For a Student-t(nu): (p90 - p10) / sigma = 2 * t.ppf(0.9, df=nu).
+    We solve for the nu whose theoretical ratio best matches the empirical one.
+    Falls back to 8.0 (moderately heavy tails) when data is insufficient.
     """
-    results = []
+    spread = ens_params.get("ens_spread", np.nan)   # p90 - p10
+    std    = ens_params.get("ens_std",    np.nan)
+    if np.isnan(spread) or np.isnan(std) or std < 1e-6:
+        return 8.0
 
-    target_date = snap_group["end_date_iso"].iloc[0]
-    fetch_time  = snap_group["fetched_at_utc"].iloc[0]
+    empirical_ratio = spread / std   # should be ~2.56 for Gaussian
+    # Search candidate nu values from heavy-tailed to Gaussian
+    for nu in (4.0, 4.5, 5.0, 5.5, 6.0, 7.0, 8.0, 10.0, 12.0, 15.0, 20.0, 30.0):
+        expected = 2.0 * float(student_t.ppf(0.9, df=nu))
+        if expected >= empirical_ratio:
+            return nu
+    return 30.0   # effectively Gaussian
 
-    # ── Parse all bins ──
-    bins = []
-    for _, row in snap_group.iterrows():
-        parsed = parse_question(str(row.get("question", "")))
-        if parsed is None:
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ALPHA 1 — FORECAST MOMENTUM
+# ══════════════════════════════════════════════════════════════════════════════
+
+def compute_momentum(daily_df: pd.DataFrame, target_date, fetch_time) -> dict:
+    """
+    Returns momentum metrics for forecast of target_date as seen up to fetch_time.
+    Keys: ema_momentum, total_drift, last_delta, n_snaps, forecast_variance
+    """
+    td = pd.Timestamp(target_date).normalize()
+    if td.tzinfo is not None:
+        td = td.tz_localize(None)
+
+    sub = daily_df[
+        (daily_df["date_local"].dt.normalize() == td) &
+        (daily_df["fetched_at_utc"] <= fetch_time)
+    ].sort_values("fetched_at_utc")
+
+    if len(sub) < 2:
+        return {"ema_momentum": 0.0, "total_drift": 0.0,
+                "last_delta": 0.0, "n_snaps": len(sub), "forecast_variance": 0.0}
+
+    temps = sub["temp_max_c"].values.astype(float)
+    deltas = np.diff(temps)
+    ema = pd.Series(deltas).ewm(span=MOMENTUM_EMA_SPAN, adjust=False).mean().iloc[-1]
+
+    return {
+        "ema_momentum":      float(ema),
+        "total_drift":       float(temps[-1] - temps[0]),
+        "last_delta":        float(deltas[-1]),
+        "n_snaps":           len(temps),
+        "forecast_variance": float(np.var(temps)),
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ALPHA 2 — DIURNAL SPREAD → SIGMA BOOST
+# ══════════════════════════════════════════════════════════════════════════════
+
+def spread_sigma_boost(daily_df: pd.DataFrame, target_date, fetch_time,
+                        baseline_spread: float = 8.0) -> float:
+    """
+    Returns additive sigma boost based on forecast diurnal spread (max-min).
+    Wider spread = more convective uncertainty = heavier tails needed.
+    """
+    td = pd.Timestamp(target_date).normalize()
+    if td.tzinfo is not None:
+        td = td.tz_localize(None)
+
+    sub = daily_df[
+        (daily_df["date_local"].dt.normalize() == td) &
+        (daily_df["fetched_at_utc"] <= fetch_time) &
+        daily_df["temp_min_c"].notna()
+    ].sort_values("fetched_at_utc")
+
+    if sub.empty:
+        return 0.0
+
+    last = sub.iloc[-1]
+    if pd.isna(last.get("temp_min_c", np.nan)):
+        return 0.0
+
+    spread = float(last["temp_max_c"]) - float(last["temp_min_c"])
+    boost  = SPREAD_SIGMA_WEIGHT * max(0.0, (spread / baseline_spread) - 1.0)
+    return round(boost, 3)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ALPHA 6 — VOLUME RECENCY
+# ══════════════════════════════════════════════════════════════════════════════
+
+def volume_recency_signal(row: pd.Series) -> float:
+    """0.0 – 1.0. >0.65 = informed traders active."""
+    vol_total = float(row.get("volume_usdc", 0) or 0)
+    vol_24h   = float(row.get("volume_24h_usdc", 0) or 0)
+    if vol_total < 1:
+        return 0.0
+    return min(vol_24h / vol_total, 1.0)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ALPHA 7 — FORECAST CONVERGENCE VARIANCE
+# ══════════════════════════════════════════════════════════════════════════════
+
+def forecast_convergence(daily_df: pd.DataFrame, target_date, fetch_time) -> float:
+    """
+    Variance of forecast snapshots for this target date.
+    High variance = model disagreement = market likely stale or about to reprice.
+    """
+    td = pd.Timestamp(target_date).normalize()
+    if td.tzinfo is not None:
+        td = td.tz_localize(None)
+
+    sub = daily_df[
+        (daily_df["date_local"].dt.normalize() == td) &
+        (daily_df["fetched_at_utc"] <= fetch_time)
+    ]["temp_max_c"].dropna()
+
+    return float(sub.var()) if len(sub) >= 2 else 0.0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ALPHA 8 — MARKET STALENESS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def market_staleness(snap_history: pd.DataFrame, condition_id: str,
+                     fetch_time, days_ahead: float = 3.0) -> dict:
+    """
+    Detect whether a market has been repriced recently.
+    Staleness threshold scales with horizon: close-to-expiry markets should
+    reprice more often, so we require shorter inactivity to flag as stale.
+
+    Threshold: max(2h, days_ahead * 1.5h) up to STALE_HOURS cap.
+    """
+    hist = snap_history[snap_history["condition_id"] == condition_id].copy()
+    hist = hist[hist["fetched_at_utc"] <= fetch_time].sort_values("fetched_at_utc")
+
+    if len(hist) < 2:
+        return {"hours_since_move": 0.0, "is_stale": False,
+                "last_move": 0.0, "market_momentum": 0.0}
+
+    probs     = hist["yes_prob"].values.astype(float)
+    # Keep timestamps as UTC-aware pd.Timestamp to avoid tz-naive subtraction
+    ts_series = hist["fetched_at_utc"].reset_index(drop=True)
+
+    # Find last significant move
+    moves  = np.abs(np.diff(probs))
+    sig_ix = np.where(moves >= STALE_MOVE_THRESHOLD)[0]
+    if len(sig_ix) == 0:
+        last_move_time = ts_series.iloc[0]
+        last_move_size = 0.0
+    else:
+        last_move_time = ts_series.iloc[sig_ix[-1] + 1]
+        last_move_size = float(np.diff(probs)[sig_ix[-1]])
+
+    ft = pd.Timestamp(fetch_time)
+    if ft.tzinfo is None:
+        ft = ft.tz_localize("UTC")
+    lmt = pd.Timestamp(last_move_time)
+    if lmt.tzinfo is None:
+        lmt = lmt.tz_localize("UTC")
+
+    dt_h = (ft - lmt).total_seconds() / 3600
+
+    # Horizon-relative staleness threshold
+    stale_threshold = min(STALE_HOURS, max(2.0, days_ahead * 1.5))
+    is_stale = dt_h > stale_threshold
+
+    # Market momentum: recent directional change
+    mkt_mom = float(probs[-1] - probs[max(-4, -len(probs))])
+
+    return {
+        "hours_since_move": round(dt_h, 2),
+        "is_stale":         is_stale,
+        "last_move":        round(last_move_size, 4),
+        "market_momentum":  round(mkt_mom, 4),
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ALPHA 4 + 5 — CONSTRAINED PMF RECONSTRUCTION
+# ══════════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class MarketBin:
+    condition_id: str
+    question: str
+    condition: str         # exact / gte / lte / range
+    temp_c: float
+    half_width: float      # bin half-width in °C (0.5 for °C, 0.278 for °F)
+    yes_prob: float        # raw Polymarket
+    liquidity: float
+    volume_24h: float
+    volume_total: float
+
+
+def reconstruct_pmf(bins: list[MarketBin],
+                    mu: float, sigma: float, nu: float,
+                    temps_range: tuple = (-5, 40)) -> tuple[dict, dict, float]:
+    """
+    Build market PMF and forecast PMF over a shared temperature support,
+    respecting gte/lte bins as constraints.
+
+    Returns:
+        market_pmf  : {temp_c -> normalised probability}
+        forecast_pmf: {temp_c -> normalised probability}
+        consistency : how well bins sum to 1.0 (1.0 = perfect)
+    """
+    exact = [b for b in bins if b.condition == "exact"]
+    gte   = [b for b in bins if b.condition == "gte"]
+    lte   = [b for b in bins if b.condition == "lte"]
+
+    # ── Step 1: exact bins → raw market PMF backbone ──────────────────────
+    if not exact:
+        return {}, {}, 0.0
+
+    raw_mkt  = {b.temp_c: b.yes_prob for b in exact}
+    raw_sum  = sum(raw_mkt.values())
+    if raw_sum < 0.05:
+        return {}, {}, 0.0
+
+    # ── Step 2: measure internal consistency ──────────────────────────────
+    # gte bin P(≥T) should ≈ sum of exact bins at temps ≥ T
+    consistency_err = 0.0
+    n_constraints   = 0
+    for b in gte:
+        implied = sum(v for k, v in raw_mkt.items() if k >= b.temp_c)
+        consistency_err += abs(implied - b.yes_prob)
+        n_constraints   += 1
+    for b in lte:
+        implied = sum(v for k, v in raw_mkt.items() if k <= b.temp_c)
+        consistency_err += abs(implied - b.yes_prob)
+        n_constraints   += 1
+
+    consistency = 1.0 - (consistency_err / max(n_constraints, 1))
+
+    # ── Step 3: estimate missing bin mass ─────────────────────────────────
+    # All observed exact temps
+    obs_temps = sorted(raw_mkt.keys())
+
+    # Expected total from boundary bins
+    max_gte_temp = max((b.temp_c for b in gte), default=None)
+    min_lte_temp = min((b.temp_c for b in lte), default=None)
+
+    # Upper residual: P(> max_exact_temp) from gte bin or forecast tail
+    if max_gte_temp is not None:
+        upper_residual = max(0.0, gte[0].yes_prob -
+                             sum(v for k, v in raw_mkt.items() if k >= max_gte_temp))
+    else:
+        # Estimate from forecast: probability beyond highest exact bin
+        upper_residual = max(0.0, 1.0 - _cdf(max(obs_temps) + 0.5, mu, sigma, nu))
+
+    # Lower residual: P(< min_exact_temp) from lte bin or forecast tail
+    if min_lte_temp is not None:
+        lower_residual = max(0.0, lte[0].yes_prob -
+                             sum(v for k, v in raw_mkt.items() if k <= min_lte_temp))
+    else:
+        lower_residual = max(0.0, _cdf(min(obs_temps) - 0.5, mu, sigma, nu))
+
+    # Total available probability for exact bins + estimated residuals
+    total_prob = raw_sum + upper_residual + lower_residual
+    total_prob = max(total_prob, raw_sum)  # can't be less than what we see
+
+    # ── Step 4: normalise market PMF ──────────────────────────────────────
+    market_pmf = {k: v / total_prob for k, v in raw_mkt.items()}
+
+    # ── Step 5: forecast PMF over same support ────────────────────────────
+    fc_raw = {t: _bin_prob(t, mu, sigma, nu) for t in obs_temps}
+    fc_sum = sum(fc_raw.values()) + upper_residual + lower_residual
+    fc_sum = max(fc_sum, sum(fc_raw.values()))
+    forecast_pmf = {t: v / fc_sum for t, v in fc_raw.items()}
+
+    return market_pmf, forecast_pmf, max(0.0, min(1.0, consistency))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# COMPOSITE EDGE + SIGNAL DATACLASS
+# ══════════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class Opportunity:
+    # Identity
+    city:           str
+    city_raw:       str
+    condition_id:   str
+    question:       str
+    target_date:    str
+    fetched_at:     pd.Timestamp
+    days_ahead:     float
+
+    # Forecast
+    forecast_mu:    float
+    forecast_sigma: float
+    forecast_nu:    float
+    sigma_boost:    float   # from diurnal spread (α2)
+    sigma_source:   str     # "ensemble" | "nwp_table"
+
+    # Probabilities
+    forecast_prob:  float   # our estimate
+    market_prob:    float   # normalised market PMF value
+    market_prob_raw:float   # raw Polymarket yes_prob
+
+    # Edge
+    edge:           float   # forecast - market (signed)
+    abs_edge:       float
+    bet_side:       str     # "Yes" | "No"
+    our_prob:       float   # prob of our side
+    their_prob:     float   # what market is offering
+
+    # Alpha signals
+    ema_momentum:   float   # α1
+    total_drift:    float   # α1
+    last_delta:     float   # α1
+    forecast_var:   float   # α7
+    volume_recency: float   # α6
+    market_mkt_mom: float   # α8
+    hours_since_move:float  # α8
+    is_stale:       bool    # α8
+    pmf_consistency:float   # α4/5
+    pmf_sum_dev:    float   # α5: abs(raw_sum - 1.0)
+
+    # Market meta
+    liquidity:      float
+    volume_24h:     float
+    n_exact_bins:   int
+    market_mode_c:  float
+    mode_shift_c:   float   # forecast_mu - market_mode
+    bin_temp_c:     float   # actual temperature the question asks about
+
+    # Composite score (computed post-init)
+    alpha_score:    float = 0.0
+    kelly:          float = 0.0
+    ev_per_dollar:  float = 0.0
+    group_key:      str   = ""
+
+
+def _score_opportunity(opp: Opportunity) -> float:
+    """
+    Composite alpha score combining all signals.
+    Higher = better opportunity.
+    """
+    # Base: edge magnitude
+    score = opp.abs_edge
+
+    # α1 Momentum boost: if forecast moved in direction of our bet
+    if opp.bet_side == "Yes" and opp.ema_momentum > MOMENTUM_THRESHOLD:
+        score *= 1.0 + min(opp.ema_momentum / 0.5, 0.4)
+    elif opp.bet_side == "No" and opp.ema_momentum < -MOMENTUM_THRESHOLD:
+        score *= 1.0 + min(abs(opp.ema_momentum) / 0.5, 0.4)
+
+    # α5 Consistency bonus: incoherent market = better edge
+    if opp.pmf_sum_dev > 0.15:
+        score *= 1.0 + min(opp.pmf_sum_dev * 0.5, 0.3)
+
+    # α6 Volume recency — high recent volume means informed traders may have
+    # already repriced toward fair value, so our edge may have closed.
+    if opp.volume_recency >= INFORMED_RECENCY:
+        score *= 0.90   # slight discount: edge may be partially arbitraged
+
+    # α7 High forecast variance → uncertain forecast → penalise slightly
+    score *= max(0.6, 1.0 - opp.forecast_var * 0.1)
+
+    # α8 Staleness penalty: stale markets might gap badly on fill
+    if opp.is_stale:
+        score *= 0.85
+
+    # Liquidity-weighted: larger market = easier fill
+    liq_factor = min(log(max(opp.liquidity, 10) / 100 + 1) / log(100), 1.0)
+    score *= (0.5 + 0.5 * liq_factor)
+
+    # Horizon decay: edges closer to expiry are more reliable
+    score /= (opp.days_ahead + 0.5)
+
+    return round(score, 6)
+
+
+def _kelly_size(opp: Opportunity, fee: float = FEE_RATE) -> float:
+    """
+    Fractional Kelly with fee adjustment.
+
+    On Polymarket you pay `their_prob` per share and receive $1 if correct.
+    With a fee on the net profit, effective payout per share = (1 - fee).
+    So net odds b = ((1 - their_prob) / their_prob) * (1 - fee).
+    """
+    p = opp.their_prob
+    if p <= 1e-4 or p >= (1.0 - 1e-4):
+        return 0.0
+    b = ((1.0 - p) / p) * (1.0 - fee)
+    if b <= 0:
+        return 0.0
+    q   = opp.our_prob
+    raw = KELLY_FRACTION * (b * q - (1.0 - q)) / b
+    return float(np.clip(raw, 0.0, MAX_KELLY_PER_BET))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ALPHA 9 — CORRELATED BET GROUPING
+# ══════════════════════════════════════════════════════════════════════════════
+
+def apply_group_kelly_cap(opps: list[Opportunity],
+                           bankroll: float) -> list[Opportunity]:
+    """
+    For each (city, target_date) group, scale down kelly fractions so total
+    group exposure ≤ MAX_KELLY_PER_GROUP * bankroll.
+    Also flags bets that are near-redundant (betting Yes on 14°C and 15°C and ≥14°C).
+    """
+    from collections import defaultdict
+
+    groups: dict[str, list[Opportunity]] = defaultdict(list)
+    for o in opps:
+        groups[o.group_key].append(o)
+
+    result = []
+    for gkey, group in groups.items():
+        # Sort by alpha_score descending
+        group.sort(key=lambda x: x.alpha_score, reverse=True)
+
+        # Remove near-duplicate bets: same side, adjacent temp bins within 1°C.
+        # Key on actual bin temperature (rounded to nearest degree), not probability.
+        seen_temps = set()
+        filtered   = []
+        for o in group:
+            key = (o.bet_side, round(o.bin_temp_c))
+            if key in seen_temps:
+                continue
+            seen_temps.add(key)
+            filtered.append(o)
+
+        # Scale kelly to group cap
+        total_raw_kelly = sum(o.kelly for o in filtered)
+        if total_raw_kelly > MAX_KELLY_PER_GROUP:
+            scale = MAX_KELLY_PER_GROUP / total_raw_kelly
+            for o in filtered:
+                o.kelly = round(o.kelly * scale, 4)
+
+        result.extend(filtered)
+
+    return result
+
+
+def apply_portfolio_cap(opps: list[Opportunity]) -> list[Opportunity]:
+    """
+    Hard cap on total portfolio Kelly across all groups.
+    After group caps are applied, total exposure can still far exceed bankroll
+    (e.g. 5 cities × 7 dates × 20% = 700%). This enforces MAX_TOTAL_KELLY.
+    """
+    total = sum(o.kelly for o in opps)
+    if total > MAX_TOTAL_KELLY:
+        scale = MAX_TOTAL_KELLY / total
+        for o in opps:
+            o.kelly = round(o.kelly * scale, 4)
+    return opps
+
+
+def fetch_live_prices(condition_ids: list[str]) -> dict[str, float]:
+    """
+    Fetch current Yes-side prices for a list of condition_ids from the Gamma API.
+    Returns {condition_id: current_yes_prob}.
+    Uses GET /markets/{condition_id} per market (Gamma API doesn't support bulk lookup).
+    """
+    import requests as _req
+    import time as _time
+
+    if not condition_ids:
+        return {}
+
+    prices: dict[str, float] = {}
+
+    for cid in condition_ids:
+        try:
+            resp = _req.get(
+                "https://gamma-api.polymarket.com/markets",
+                params={"condition_ids": cid},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if not data:
+                continue
+            mkt = data[0] if isinstance(data, list) else data
+            raw = mkt.get("outcomePrices")
+            if not raw:
+                continue
+            probs = json.loads(raw) if isinstance(raw, str) else raw
+            yes_p = float(probs[0])
+            prices[cid] = yes_p
+            _time.sleep(0.1)   # polite: ~10 req/s
+        except Exception as exc:
+            print(f"  [WARN] live price fetch failed for {cid[:16]}…: {exc}")
+
+    return prices
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MAIN ANALYSIS ENGINE
+# ══════════════════════════════════════════════════════════════════════════════
+
+def analyse_city(data_dir: Path, city: str,
+                 min_edge: float = MIN_EDGE,
+                 min_liq:  float = MIN_LIQUIDITY) -> list[Opportunity]:
+
+    try:
+        snap_df  = load_snapshots(data_dir, city)
+        daily_df = load_daily(data_dir, city)
+    except FileNotFoundError as e:
+        print(f"  [SKIP] {e}")
+        return []
+
+    # Load ensemble — used to replace the hardcoded sigma lookup table.
+    # Falls back gracefully if not yet fetched (run main.py to populate).
+    ens_df = load_ensemble(data_dir, city)
+    if ens_df is not None and not ens_df.empty:
+        print(f"  Ensemble loaded: {len(ens_df)} rows ({ens_df['fetched_at_utc'].max()})")
+    else:
+        print(f"  Ensemble not available — falling back to NWP_PARAMS table")
+
+    results: list[Opportunity] = []
+
+    # Group by (target_date, fetch_bucket) to process each snapshot window
+    snap_df["end_date_norm"] = snap_df["end_date_iso"].dt.normalize()
+    groups = snap_df.groupby(["end_date_norm", "fetch_bucket"], sort=False)
+    print(f"  {city}: {len(groups)} (date × snapshot) groups, "
+          f"{snap_df['condition_id'].nunique()} unique markets", flush=True)
+
+    for (target_date_ts, fetch_bucket_ts), group in groups:
+        # Representative fetch time
+        fetch_time = group["fetched_at_utc"].max()
+
+        # Days ahead
+        if pd.isna(target_date_ts):
             continue
-        yes_prob  = row["yes_prob"]
-        liquidity = float(row.get("liquidity_usdc", 0) or 0)
-        if np.isnan(yes_prob):
+        days_fwd = max(0.0,
+                       (target_date_ts.to_pydatetime() -
+                        fetch_time.to_pydatetime()).total_seconds() / 86400)
+
+        # ── Get best forecast for this target date ─────────────────────────
+        td_norm = target_date_ts.normalize()
+        if td_norm.tzinfo is not None:
+            td_norm = td_norm.tz_localize(None)
+
+        fc_candidates = daily_df[
+            (daily_df["date_local"].dt.normalize() == td_norm) &
+            (daily_df["fetched_at_utc"] <= fetch_time)
+        ]
+        if fc_candidates.empty:
             continue
-        bins.append({
-            "parsed":       parsed,
-            "yes_prob":     yes_prob,
-            "liquidity":    liquidity,
-            "question":     row.get("question", ""),
-            "condition_id": row.get("condition_id", ""),
-            "volume_24h":   float(row.get("volume_24h_usdc", 0) or 0),
-        })
+        fc_row  = fc_candidates.sort_values("fetched_at_utc").iloc[-1]
+        mu_det  = float(fc_row["temp_max_c"])   # deterministic forecast
 
-    if len(bins) < MIN_BINS_FOR_DAY:
-        return results
+        # ── Sigma: ensemble spread if available, else NWP lookup ──────────
+        # The ensemble std is a direct measure of model spread (actual
+        # disagreement among 40 members), far superior to a fixed lookup.
+        s_boost = spread_sigma_boost(daily_df, target_date_ts, fetch_time)
+        _, nu   = _get_nwp_params(days_fwd)
 
-    # ── Get best forecast for this target_date ──
-    td_norm = pd.Timestamp(target_date).normalize()
-    if td_norm.tzinfo is not None:
-        td_norm = td_norm.tz_localize(None)
+        ens_params = _get_ensemble_params(ens_df, target_date_ts, fetch_time)
+        if ens_params is not None:
+            mu           = ens_params["ens_mean"]
+            sigma        = max(0.5, ens_params["ens_std"]) + s_boost
+            nu           = _fit_nu_from_ensemble(ens_params)   # data-driven tail shape
+            sigma_source = "ensemble"
+        else:
+            sigma_base, _ = _get_nwp_params(days_fwd)
+            mu           = mu_det
+            sigma        = sigma_base + s_boost
+            sigma_source = "nwp_table"
 
-    daily_local = daily_df.copy()
-    daily_local["date_local"] = pd.to_datetime(daily_local["date_local"]).dt.normalize()
-    mask = (daily_local["fetched_at_utc"] <= fetch_time) & \
-           (daily_local["date_local"] == td_norm)
-    candidates = daily_local[mask]
-    if candidates.empty:
-        return results
+        # ── Alpha signals ──────────────────────────────────────────────────
+        mom    = compute_momentum(daily_df, target_date_ts, fetch_time)   # α1
+        fc_var = forecast_convergence(daily_df, target_date_ts, fetch_time)  # α7
 
-    forecast_row = candidates.sort_values("fetched_at_utc").iloc[-1]
-    mu_forecast  = float(forecast_row["temp_max_c"])
-    days_fwd     = (target_date - fetch_time).total_seconds() / 86400
-    sigma        = get_nwp_sigma(days_fwd)
+        # ── Parse all bins in this group ───────────────────────────────────
+        market_bins: list[MarketBin] = []
+        for _, row in group.iterrows():
+            parsed = parse_question(str(row.get("question", "")))
+            if parsed is None:
+                continue
+            yp = row["yes_prob"]
+            if np.isnan(yp):
+                continue
+            market_bins.append(MarketBin(
+                condition_id = str(row["condition_id"]),
+                question     = str(row.get("question", "")),
+                condition    = parsed["condition"],
+                temp_c       = parsed["temp_c"],
+                half_width   = parsed.get("half_width", 0.5),
+                yes_prob     = float(yp),
+                liquidity    = float(row.get("liquidity_usdc", 0) or 0),
+                volume_24h   = float(row.get("volume_24h_usdc", 0) or 0),
+                volume_total = float(row.get("volume_usdc", 0) or 0),
+            ))
 
-    # ── Build market PMF ──
-    # For exclusive bins (exact), market PMF is direct.
-    # For boundary bins (gte, lte), treat them as residuals.
-    # Normalize all exact bins, then assign boundary bins the remainder.
-    exact_bins    = [b for b in bins if b["parsed"]["condition"] == "exact"]
-    boundary_bins = [b for b in bins if b["parsed"]["condition"] != "exact"]
+        if not market_bins:
+            continue
 
-    # Heuristic: use exact bins for the normalized PMF backbone
-    if not exact_bins:
-        return results
+        # ── Reconstruct PMF (α4/5) ─────────────────────────────────────────
+        market_pmf, forecast_pmf, consistency = reconstruct_pmf(
+            market_bins, mu, sigma, nu)
 
-    # Raw market probabilities (already scaled 0-1 individually, not summing to 1)
-    market_raw  = {b["parsed"]["temp_c"]: b["yes_prob"] for b in exact_bins}
-    total_mkt   = sum(market_raw.values())
-    if total_mkt < 0.05:  # degenerate
-        return results
+        exact_bins = [b for b in market_bins if b.condition == "exact"]
+        raw_sum    = sum(b.yes_prob for b in exact_bins)
+        pmf_dev    = abs(raw_sum - 1.0)
 
-    market_pmf  = {k: v / total_mkt for k, v in market_raw.items()}
-    temps_exact = sorted(market_raw.keys())
+        # Mode of market
+        market_mode_c = (max(exact_bins, key=lambda b: b.yes_prob).temp_c
+                         if exact_bins else mu)
 
-    # ── Build forecast PMF over same bins ──
-    forecast_raw = {t: forecast_bin_prob({"condition":"exact","temp_c":t}, mu_forecast, sigma)
-                    for t in temps_exact}
-    total_fcst   = sum(forecast_raw.values())
-    if total_fcst < 1e-6:
-        return results
-    forecast_pmf = {k: v / total_fcst for k, v in forecast_raw.items()}
+        # ── Per-bin edge computation ───────────────────────────────────────
+        # Use RAW probabilities:
+        #   f_prob_raw = our model's P(temp = X)  from Student-t distribution
+        #   m_prob_raw = b.yes_prob               the actual Polymarket price
+        # Do NOT use normalized PMF values for edge/Kelly — those are for the
+        # consistency check (α5) only. The real tradeable edge is raw vs raw.
+        for b in exact_bins:
+            if b.liquidity < min_liq:
+                continue
 
-    # ── Per-bin edge ──
-    kl = kl_divergence(forecast_pmf, market_pmf)
+            f_prob_raw = _bin_prob(b.temp_c, mu, sigma, nu, b.half_width)
+            m_prob_raw = b.yes_prob   # actual market price you pay
 
-    for b in exact_bins:
-        t    = b["parsed"]["temp_c"]
-        m_p  = market_pmf.get(t, 0)
-        f_p  = forecast_pmf.get(t, 0)
-        edge = f_p - m_p
+            if f_prob_raw < 1e-6:
+                continue
 
-        results.append({
-            "city":          CITY_ALIASES.get(city, city),
-            "city_raw":      city,
-            "condition_id":  b["condition_id"],
-            "question":      b["question"][:80],
-            "target_date":   target_date.date() if hasattr(target_date, "date") else str(target_date)[:10],
-            "fetched_at":    fetch_time,
-            "days_ahead":    round(days_fwd, 2),
-            "bin_temp_c":    t,
-            "forecast_mu":   round(mu_forecast, 1),
-            "forecast_sigma":round(sigma, 2),
-            "forecast_prob": round(f_p, 4),
-            "market_prob":   round(m_p, 4),   # normalized
-            "market_prob_raw": round(b["yes_prob"], 4),  # raw Polymarket
-            "edge":          round(edge, 4),
-            "abs_edge":      round(abs(edge), 4),
-            "bet_side":      "Yes" if edge > 0 else "No",
-            "our_prob":      round(f_p if edge > 0 else 1 - f_p, 4),
-            "their_prob":    round(m_p if edge > 0 else 1 - m_p, 4),
-            "liquidity":     b["liquidity"],
-            "volume_24h":    b["volume_24h"],
-            "day_kl_div":    round(kl, 4),
-            "n_bins":        len(exact_bins),
-            "market_mode_c": max(market_raw, key=market_raw.get),
-            "forecast_mode_c": mu_forecast,
-            "mode_shift_c":  round(mu_forecast - max(market_raw, key=market_raw.get), 2),
-        })
+            # Skip near-settled markets (price approaching 0 or 1)
+            if m_prob_raw < MIN_MARKET_PRICE or m_prob_raw > (1.0 - MIN_MARKET_PRICE):
+                continue
 
-    # ── Also handle boundary bins (gte / lte) ──
-    for b in boundary_bins:
-        parsed   = b["parsed"]
-        f_raw_p  = forecast_bin_prob(parsed, mu_forecast, sigma)
-        m_raw_p  = b["yes_prob"]  # raw Polymarket probability
+            edge = f_prob_raw - m_prob_raw
+            if abs(edge) < min_edge:
+                continue
 
-        # For boundary bins, edge is simpler: compare forecast CDF to market
-        edge = f_raw_p - m_raw_p
-        if abs(edge) >= MIN_EDGE_FRACTION and b["liquidity"] >= MIN_LIQUIDITY:
-            results.append({
-                "city":           CITY_ALIASES.get(city, city),
-                "city_raw":       city,
-                "condition_id":   b["condition_id"],
-                "question":       b["question"][:80],
-                "target_date":    target_date.date() if hasattr(target_date,"date") else str(target_date)[:10],
-                "fetched_at":     fetch_time,
-                "days_ahead":     round(days_fwd, 2),
-                "bin_temp_c":     parsed["temp_c"],
-                "forecast_mu":    round(mu_forecast, 1),
-                "forecast_sigma": round(sigma, 2),
-                "forecast_prob":  round(f_raw_p, 4),
-                "market_prob":    round(m_raw_p, 4),
-                "market_prob_raw":round(m_raw_p, 4),
-                "edge":           round(edge, 4),
-                "abs_edge":       round(abs(edge), 4),
-                "bet_side":       "Yes" if edge > 0 else "No",
-                "our_prob":       round(f_raw_p if edge > 0 else 1-f_raw_p, 4),
-                "their_prob":     round(m_raw_p if edge > 0 else 1-m_raw_p, 4),
-                "liquidity":      b["liquidity"],
-                "volume_24h":     b["volume_24h"],
-                "day_kl_div":     round(kl, 4),
-                "n_bins":         len(exact_bins),
-                "market_mode_c":  max(market_raw, key=market_raw.get) if market_raw else np.nan,
-                "forecast_mode_c":mu_forecast,
-                "mode_shift_c":   round(mu_forecast - (max(market_raw, key=market_raw.get) if market_raw else mu_forecast), 2),
-            })
+            bet_side   = "Yes" if edge > 0 else "No"
+            our_prob   = f_prob_raw if edge > 0 else (1.0 - f_prob_raw)
+            their_prob = m_prob_raw if edge > 0 else (1.0 - m_prob_raw)
+
+            # PMF-normalized values kept for reporting/consistency signal
+            m_prob = market_pmf.get(b.temp_c, m_prob_raw)
+            f_prob = forecast_pmf.get(b.temp_c, f_prob_raw)
+
+            # α6, α8
+            vol_rec = volume_recency_signal(
+                group[group["condition_id"] == b.condition_id].iloc[0]
+                if len(group[group["condition_id"] == b.condition_id]) else pd.Series())
+            stale   = market_staleness(snap_df, b.condition_id, fetch_time, days_fwd)
+
+            opp = Opportunity(
+                city           = CITY_NAMES.get(city, city),
+                city_raw       = city,
+                condition_id   = b.condition_id,
+                question       = b.question[:80],
+                target_date    = str(target_date_ts.date()),
+                fetched_at     = fetch_time,
+                days_ahead     = round(days_fwd, 2),
+                forecast_mu    = round(mu, 2),
+                forecast_sigma = round(sigma, 3),
+                forecast_nu    = round(nu, 1),
+                sigma_boost    = round(s_boost, 3),
+                sigma_source   = sigma_source,
+                forecast_prob  = round(f_prob_raw, 4),
+                market_prob    = round(m_prob, 4),
+                market_prob_raw= round(b.yes_prob, 4),
+                edge           = round(edge, 4),
+                abs_edge       = round(abs(edge), 4),
+                bet_side       = bet_side,
+                our_prob       = round(our_prob, 4),
+                their_prob     = round(their_prob, 4),
+                ema_momentum   = round(mom["ema_momentum"], 4),
+                total_drift    = round(mom["total_drift"], 3),
+                last_delta     = round(mom["last_delta"], 3),
+                forecast_var   = round(fc_var, 4),
+                volume_recency = round(vol_rec, 3),
+                market_mkt_mom = stale["market_momentum"],
+                hours_since_move=stale["hours_since_move"],
+                is_stale       = stale["is_stale"],
+                pmf_consistency= round(consistency, 4),
+                pmf_sum_dev    = round(pmf_dev, 4),
+                liquidity      = b.liquidity,
+                volume_24h     = b.volume_24h,
+                n_exact_bins   = len(exact_bins),
+                market_mode_c  = market_mode_c,
+                mode_shift_c   = round(mu - market_mode_c, 2),
+                bin_temp_c     = b.temp_c,
+                group_key      = f"{city}|{target_date_ts.date()}",
+            )
+            opp.alpha_score = _score_opportunity(opp)
+            opp.kelly       = _kelly_size(opp)
+            opp.ev_per_dollar = round(our_prob / their_prob - 1.0, 4)
+            results.append(opp)
+
+        # ── Boundary bins (gte / lte) — direct CDF comparison ─────────────
+        for b in market_bins:
+            if b.condition not in ("gte", "lte"):
+                continue
+            if b.liquidity < min_liq:
+                continue
+
+            parsed  = {"condition": b.condition, "temp_c": b.temp_c, "half_width": b.half_width}
+            f_raw_p = _condition_prob(parsed, mu, sigma, nu)
+            m_raw_p = b.yes_prob
+
+            # Skip near-settled markets
+            if m_raw_p < MIN_MARKET_PRICE or m_raw_p > (1.0 - MIN_MARKET_PRICE):
+                continue
+
+            edge    = f_raw_p - m_raw_p
+
+            if abs(edge) < min_edge:
+                continue
+
+            bet_side   = "Yes" if edge > 0 else "No"
+            our_prob   = f_raw_p if edge > 0 else (1.0 - f_raw_p)
+            their_prob = m_raw_p if edge > 0 else (1.0 - m_raw_p)
+
+            vol_rec = volume_recency_signal(
+                group[group["condition_id"] == b.condition_id].iloc[0]
+                if len(group[group["condition_id"] == b.condition_id]) else pd.Series())
+            stale   = market_staleness(snap_df, b.condition_id, fetch_time, days_fwd)
+
+            opp = Opportunity(
+                city           = CITY_NAMES.get(city, city),
+                city_raw       = city,
+                condition_id   = b.condition_id,
+                question       = b.question[:80],
+                target_date    = str(target_date_ts.date()),
+                fetched_at     = fetch_time,
+                days_ahead     = round(days_fwd, 2),
+                forecast_mu    = round(mu, 2),
+                forecast_sigma = round(sigma, 3),
+                forecast_nu    = round(nu, 1),
+                sigma_boost    = round(s_boost, 3),
+                sigma_source   = sigma_source,
+                forecast_prob  = round(f_raw_p, 4),
+                market_prob    = round(m_raw_p, 4),
+                market_prob_raw= round(m_raw_p, 4),
+                edge           = round(edge, 4),
+                abs_edge       = round(abs(edge), 4),
+                bet_side       = bet_side,
+                our_prob       = round(our_prob, 4),
+                their_prob     = round(their_prob, 4),
+                ema_momentum   = round(mom["ema_momentum"], 4),
+                total_drift    = round(mom["total_drift"], 3),
+                last_delta     = round(mom["last_delta"], 3),
+                forecast_var   = round(fc_var, 4),
+                volume_recency = round(vol_rec, 3),
+                market_mkt_mom = stale["market_momentum"],
+                hours_since_move=stale["hours_since_move"],
+                is_stale       = stale["is_stale"],
+                pmf_consistency= round(consistency, 4),
+                pmf_sum_dev    = round(pmf_dev, 4),
+                liquidity      = b.liquidity,
+                volume_24h     = b.volume_24h,
+                n_exact_bins   = len(exact_bins),
+                market_mode_c  = market_mode_c,
+                mode_shift_c   = round(mu - market_mode_c, 2),
+                bin_temp_c     = b.temp_c,
+                group_key      = f"{city}|{target_date_ts.date()}",
+            )
+            opp.alpha_score = _score_opportunity(opp)
+            opp.kelly       = _kelly_size(opp)
+            opp.ev_per_dollar = round(our_prob / their_prob - 1.0, 4)
+            results.append(opp)
 
     return results
 
 
-def analyze_city(data_dir: Path, city: str) -> pd.DataFrame:
-    try:
-        snap  = load_snapshots(data_dir, city)
-        daily = load_daily(data_dir, city)
-    except FileNotFoundError as e:
-        print(f"  [SKIP] {e}")
-        return pd.DataFrame()
+# ══════════════════════════════════════════════════════════════════════════════
+# VISUALISATION
+# ══════════════════════════════════════════════════════════════════════════════
 
-    all_results = []
-
-    # Group by (target_date, fetched_at rounded to nearest 10min)
-    snap["fetch_bucket"] = snap["fetched_at_utc"].dt.floor("10min")
-    snap["end_date_norm"] = snap["end_date_iso"].dt.normalize()
-
-    groups = snap.groupby(["end_date_norm", "fetch_bucket"])
-    total_groups = len(groups)
-    print(f"  Processing {total_groups} (date × snapshot) groups…", end=" ", flush=True)
-
-    for (target_date, _), group in groups:
-        rows = build_day_snapshot(group, daily, city)
-        all_results.extend(rows)
-
-    print(f"→ {len(all_results)} bin records")
-    return pd.DataFrame(all_results)
+_DARK   = "#0d1117"
+_AX     = "#161b22"
+_BORDER = "#30363d"
+_MUTED  = "#8b949e"
+_GREEN  = "#3fb950"
+_RED    = "#f85149"
+_BLUE   = "#58a6ff"
+_YELLOW = "#e3b341"
+_TAB    = plt.cm.tab10.colors
 
 
-# ─── OPPORTUNITY FILTER ────────────────────────────────────────────────────────
-
-def filter_opportunities(df: pd.DataFrame,
-                          min_edge=MIN_EDGE_FRACTION,
-                          min_liq=MIN_LIQUIDITY) -> pd.DataFrame:
-    if df.empty:
-        return df
-    mask = (df["abs_edge"] >= min_edge) & (df["liquidity"] >= min_liq)
-    opps = df[mask].copy()
-
-    # Kelly sizing
-    def kelly(row):
-        b = (1.0 / row["their_prob"] - 1.0) if row["their_prob"] > 0 else 0
-        if b <= 0:
-            return 0.0
-        k = KELLY_FRACTION * (b * row["our_prob"] - (1 - row["our_prob"])) / b
-        return float(np.clip(k, 0, MAX_KELLY_BET))
-
-    opps["kelly"]     = opps.apply(kelly, axis=1)
-    opps["ev_per_$"]  = opps["our_prob"] / opps["their_prob"] - 1.0  # % return
-    opps["score"]     = opps["abs_edge"] * np.log1p(opps["liquidity"]) * (1 / (opps["days_ahead"] + 0.5))
-
-    return opps.sort_values("score", ascending=False)
-
-
-# ─── VISUALIZATIONS ────────────────────────────────────────────────────────────
-
-DARK_BG  = "#0d1117"
-DARK_AX  = "#161b22"
-DARK_BDR = "#30363d"
-CLR_MUTED = "#8b949e"
-CLR_YES  = "#3fb950"
-CLR_NO   = "#f85149"
-CLR_ACC  = "#58a6ff"
-CLR_WARN = "#e3b341"
+def _styled_ax(ax):
+    ax.set_facecolor(_AX)
+    for sp in ax.spines.values():
+        sp.set_edgecolor(_BORDER)
+    ax.tick_params(colors=_MUTED, labelsize=8)
+    ax.xaxis.label.set_color(_MUTED)
+    ax.yaxis.label.set_color(_MUTED)
+    return ax
 
 
 def _dark_fig(nrows=1, ncols=1, figsize=(14, 6)):
     fig, axes = plt.subplots(nrows, ncols, figsize=figsize)
-    fig.patch.set_facecolor(DARK_BG)
+    fig.patch.set_facecolor(_DARK)
     for ax in (np.array(axes).flat if hasattr(axes, "__iter__") else [axes]):
-        ax.set_facecolor(DARK_AX)
-        for sp in ax.spines.values():
-            sp.set_edgecolor(DARK_BDR)
-        ax.tick_params(colors=CLR_MUTED)
-        ax.xaxis.label.set_color(CLR_MUTED)
-        ax.yaxis.label.set_color(CLR_MUTED)
+        _styled_ax(ax)
     return fig, axes
 
 
-def plot_distribution_comparison(all_df: pd.DataFrame, output_dir: Path,
-                                  top_n_days=6):
-    """
-    For the top-N most dislocated (city, target_date, snapshot),
-    plot side-by-side forecast vs market PMF.
-    """
-    if all_df.empty:
+def plot_pmf_comparison(opps_df: pd.DataFrame, all_bins_df: pd.DataFrame,
+                         output_dir: Path, top_n=6):
+    """Side-by-side forecast vs market PMF for highest-dislocation days."""
+    if opps_df.empty:
         return
 
-    # Pick most dislocated distributions
-    day_kl = (all_df.groupby(["city_raw", "target_date", "fetched_at"])
-              ["day_kl_div"].first()
-              .nlargest(top_n_days))
+    # pick top days by max abs_edge
+    top_keys = (opps_df.groupby(["city", "target_date", "fetched_at"])
+                ["abs_edge"].max().nlargest(top_n).index)
 
-    fig, axes = plt.subplots(2, 3, figsize=(18, 9))
-    fig.patch.set_facecolor(DARK_BG)
+    ncols = min(3, len(top_keys))
+    nrows = (len(top_keys) + ncols - 1) // ncols
+    fig, axes = _dark_fig(nrows, ncols, figsize=(6*ncols, 4.5*nrows))
+    axes_flat  = np.array(axes).flat
 
-    for idx, ((city_raw, tdate, ftime), kl_val) in enumerate(day_kl.items()):
-        if idx >= 6:
-            break
-        ax = axes.flat[idx]
-        ax.set_facecolor(DARK_AX)
-        for sp in ax.spines.values():
-            sp.set_edgecolor(DARK_BDR)
-
-        sub = all_df[(all_df["city_raw"] == city_raw) &
-                     (all_df["target_date"] == tdate) &
-                     (all_df["fetched_at"] == ftime)].copy()
+    for idx, (city, tdate, ftime) in enumerate(top_keys):
+        ax  = next(axes_flat)
+        sub = all_bins_df[(all_bins_df["city"] == city) &
+                          (all_bins_df["target_date"] == tdate) &
+                          (all_bins_df["fetched_at"] == ftime)].sort_values("bin_temp_c")
         if sub.empty:
-            ax.set_visible(False)
-            continue
+            ax.set_visible(False); continue
 
-        sub = sub.sort_values("bin_temp_c")
-        temps     = sub["bin_temp_c"].values
-        mkt_probs = sub["market_prob"].values
-        fct_probs = sub["forecast_prob"].values
-
-        x = np.arange(len(temps))
-        w = 0.38
-        bars_m = ax.bar(x - w/2, mkt_probs, w, color=CLR_ACC, alpha=0.85, label="Market PMF")
-        bars_f = ax.bar(x + w/2, fct_probs, w, color=CLR_WARN, alpha=0.85, label="Forecast PMF")
-
+        x  = np.arange(len(sub))
+        w  = 0.38
+        ax.bar(x - w/2, sub["market_prob"],   w, color=_BLUE,   alpha=0.85, label="Market")
+        ax.bar(x + w/2, sub["forecast_prob"], w, color=_YELLOW, alpha=0.85, label="Forecast")
         ax.set_xticks(x)
-        ax.set_xticklabels([f"{t:.0f}°" for t in temps], color=CLR_MUTED, fontsize=8)
-        ax.tick_params(colors=CLR_MUTED)
-        city_disp = CITY_ALIASES.get(city_raw, city_raw)
-        mu        = sub["forecast_mu"].iloc[0]
-        days_fwd  = sub["days_ahead"].iloc[0]
-        ax.set_title(f"{city_disp} · {tdate}\nforecast={mu:.1f}°C  +{days_fwd:.1f}d  KL={kl_val:.3f}",
-                     color="white", fontsize=9, pad=4)
-        ax.set_ylabel("Normalized prob", color=CLR_MUTED, fontsize=8)
+        ax.set_xticklabels([f"{t:.0f}°" for t in sub["bin_temp_c"]], fontsize=7)
+        mu   = sub["forecast_mu"].iloc[0]
+        days = sub["days_ahead"].iloc[0]
+        mom  = sub["ema_momentum"].iloc[0] if "ema_momentum" in sub.columns else 0
+        ax.set_title(
+            f"{city} · {tdate}\nμ={mu:.1f}°C  +{days:.1f}d  mom={mom:+.2f}",
+            color="white", fontsize=8, pad=3)
         ax.legend(fontsize=7, labelcolor="white", facecolor="#21262d",
-                  edgecolor=DARK_BDR, loc="upper right")
+                  edgecolor=_BORDER, loc="upper right")
 
-    plt.suptitle("Forecast PMF vs Market PMF — Highest Dislocations",
-                 color="white", fontsize=13, fontweight="bold", y=1.01)
+    for ax in axes_flat:
+        ax.set_visible(False)
+
+    plt.suptitle("Forecast PMF vs Market PMF — Top Dislocations",
+                 color="white", fontsize=12, fontweight="bold", y=1.01)
     plt.tight_layout()
-    out = output_dir / "distribution_comparison.png"
-    plt.savefig(out, dpi=150, bbox_inches="tight", facecolor=DARK_BG)
+    out = output_dir / "pmf_comparison.png"
+    plt.savefig(out, dpi=150, bbox_inches="tight", facecolor=_DARK)
     plt.close()
     print(f"  Saved: {out}")
 
 
-def plot_edge_landscape(opps: pd.DataFrame, output_dir: Path):
-    if opps.empty:
+def plot_alpha_dashboard(opps_df: pd.DataFrame, output_dir: Path):
+    """3×3 grid of all alpha signal diagnostics."""
+    if opps_df.empty:
         return
 
-    fig, axes = _dark_fig(2, 3, figsize=(18, 10))
+    fig, axes = _dark_fig(3, 3, figsize=(18, 13))
+    c_yes = _GREEN; c_no = _RED
 
-    # 1. Edge distribution by city
+    def colors(col): return [c_yes if s=="Yes" else c_no for s in opps_df[col]]
+
+    # 1. Edge distribution
     ax = axes[0, 0]
-    city_colors = plt.cm.tab10.colors
-    for i, (city, grp) in enumerate(opps.groupby("city")):
-        ax.hist(grp["edge"], bins=20, alpha=0.7, color=city_colors[i % 10], label=city)
-    ax.axvline(0, color=CLR_MUTED, lw=1, linestyle="--")
-    ax.axvline(MIN_EDGE_FRACTION, color=CLR_WARN, lw=1.5, linestyle=":", label="threshold")
-    ax.axvline(-MIN_EDGE_FRACTION, color=CLR_WARN, lw=1.5, linestyle=":")
-    ax.set_title("Edge Distribution by City", color="white", fontsize=11, fontweight="bold")
-    ax.legend(fontsize=7, labelcolor="white", facecolor="#21262d", edgecolor=DARK_BDR)
+    for i, (city, g) in enumerate(opps_df.groupby("city")):
+        ax.hist(g["edge"], bins=20, alpha=0.65, color=_TAB[i % 10], label=city)
+    ax.axvline(0, color=_MUTED, lw=1, ls="--")
+    ax.axvline( MIN_EDGE, color=_YELLOW, lw=1.5, ls=":", label=f"±{MIN_EDGE:.0%}")
+    ax.axvline(-MIN_EDGE, color=_YELLOW, lw=1.5, ls=":")
+    ax.set_title("Edge Distribution", color="white", fontweight="bold")
+    ax.legend(fontsize=7, labelcolor="white", facecolor="#21262d", edgecolor=_BORDER)
 
-    # 2. Edge vs forecast horizon
+    # 2. α1 Momentum vs edge
     ax = axes[0, 1]
-    yes_m = opps[opps["bet_side"]=="Yes"]
-    no_m  = opps[opps["bet_side"]=="No"]
-    ax.scatter(yes_m["days_ahead"], yes_m["edge"], c=CLR_YES, alpha=0.6, s=40,
-               edgecolors="none", label="Bet Yes")
-    ax.scatter(no_m["days_ahead"],  no_m["edge"].abs(),  c=CLR_NO,  alpha=0.6, s=40,
-               edgecolors="none", label="Bet No (|edge|)")
-    ax.set_title("Edge vs Horizon (days ahead)", color="white", fontsize=11, fontweight="bold")
-    ax.set_xlabel("Days ahead")
-    ax.set_ylabel("Edge")
-    ax.legend(fontsize=8, labelcolor="white", facecolor="#21262d", edgecolor=DARK_BDR)
+    sc = ax.scatter(opps_df["ema_momentum"], opps_df["edge"],
+                    c=opps_df["abs_edge"], cmap="plasma", alpha=0.7,
+                    s=40, edgecolors="none")
+    ax.axvline(0, color=_MUTED, lw=1, ls="--")
+    ax.axhline(0, color=_MUTED, lw=1, ls="--")
+    plt.colorbar(sc, ax=ax, label="|edge|").ax.tick_params(colors=_MUTED)
+    ax.set_title("α1 Momentum vs Edge", color="white", fontweight="bold")
+    ax.set_xlabel("EMA momentum (°C/snap)")
+    ax.set_ylabel("edge")
 
-    # 3. Mode shift (forecast_mu - market_mode) vs edge
+    # 3. α2 Sigma boost distribution
     ax = axes[0, 2]
-    sc = ax.scatter(opps["mode_shift_c"], opps["edge"],
-                    c=opps["abs_edge"], cmap="plasma", alpha=0.7, s=40, edgecolors="none")
-    ax.axhline(0, color=CLR_MUTED, lw=1, linestyle="--")
-    ax.axvline(0, color=CLR_MUTED, lw=1, linestyle="--")
-    ax.set_title("Forecast–Market Mode Shift vs Edge", color="white", fontsize=11, fontweight="bold")
-    ax.set_xlabel("Forecast μ − Market mode (°C)")
-    ax.set_ylabel("Edge")
-    plt.colorbar(sc, ax=ax, label="abs_edge").ax.tick_params(colors=CLR_MUTED)
+    ax.hist(opps_df["sigma_boost"], bins=20, color=_BLUE, alpha=0.8)
+    ax.set_title("α2 Sigma Boost (diurnal spread)", color="white", fontweight="bold")
+    ax.set_xlabel("sigma boost (°C)")
 
-    # 4. EV distribution
+    # 4. α3 forecast_sigma used
     ax = axes[1, 0]
-    ax.hist(opps["ev_per_$"] * 100, bins=25, color=CLR_ACC, alpha=0.8)
-    ax.axvline(0, color=CLR_MUTED, lw=1, linestyle="--")
-    ax.set_title("Expected Value per $100 bet", color="white", fontsize=11, fontweight="bold")
-    ax.set_xlabel("EV ($)")
-
-    # 5. Kelly fraction distribution
-    ax = axes[1, 1]
-    ax.hist(opps["kelly"], bins=20, color=CLR_WARN, alpha=0.8)
-    ax.set_title("Kelly Fraction Distribution", color="white", fontsize=11, fontweight="bold")
-    ax.set_xlabel("Kelly (25% fractional, 15% capped)")
-
-    # 6. Liquidity vs edge scatter
-    ax = axes[1, 2]
-    ax.scatter(np.log10(opps["liquidity"] + 1), opps["abs_edge"],
-               c=[CLR_YES if s=="Yes" else CLR_NO for s in opps["bet_side"]],
+    ax.scatter(opps_df["days_ahead"], opps_df["forecast_sigma"],
+               c=[c_yes if s=="Yes" else c_no for s in opps_df["bet_side"]],
                alpha=0.6, s=40, edgecolors="none")
-    ax.set_title("Liquidity vs |Edge|", color="white", fontsize=11, fontweight="bold")
-    ax.set_xlabel("log10(Liquidity USDC)")
-    ax.set_ylabel("|Edge|")
+    ax.set_title("α3 Adaptive Sigma vs Horizon", color="white", fontweight="bold")
+    ax.set_xlabel("days ahead")
+    ax.set_ylabel("sigma (°C)")
 
-    for ax in axes.flat:
-        ax.tick_params(colors=CLR_MUTED)
-        ax.xaxis.label.set_color(CLR_MUTED)
-        ax.yaxis.label.set_color(CLR_MUTED)
-        for sp in ax.spines.values():
-            sp.set_edgecolor(DARK_BDR)
+    # 5. α5 PMF sum deviation
+    ax = axes[1, 1]
+    ax.scatter(opps_df["pmf_sum_dev"], opps_df["abs_edge"],
+               c=opps_df["pmf_consistency"], cmap="RdYlGn",
+               alpha=0.7, s=50, edgecolors="none", vmin=0, vmax=1)
+    ax.axvline(PMF_SUM_DEVIATION_MAX, color=_YELLOW, lw=1.5, ls=":",
+               label=f"max dev {PMF_SUM_DEVIATION_MAX}")
+    ax.set_title("α5 Market Consistency vs |Edge|", color="white", fontweight="bold")
+    ax.set_xlabel("PMF sum deviation")
+    ax.set_ylabel("|edge|")
+    ax.legend(fontsize=7, labelcolor="white", facecolor="#21262d", edgecolor=_BORDER)
 
-    plt.suptitle("Polymarket Weather — Opportunity Landscape",
-                 color="white", fontsize=14, fontweight="bold", y=1.01)
+    # 6. α6 Volume recency
+    ax = axes[1, 2]
+    ax.scatter(opps_df["volume_recency"], opps_df["abs_edge"],
+               c=[c_yes if s=="Yes" else c_no for s in opps_df["bet_side"]],
+               alpha=0.7, s=40, edgecolors="none")
+    ax.axvline(INFORMED_RECENCY, color=_YELLOW, lw=1.5, ls=":",
+               label=f"informed >{INFORMED_RECENCY}")
+    ax.set_title("α6 Volume Recency vs |Edge|", color="white", fontweight="bold")
+    ax.set_xlabel("vol_24h / vol_total")
+    ax.set_ylabel("|edge|")
+    ax.legend(fontsize=7, labelcolor="white", facecolor="#21262d", edgecolor=_BORDER)
+
+    # 7. α7 Forecast variance vs edge
+    ax = axes[2, 0]
+    ax.scatter(opps_df["forecast_var"], opps_df["abs_edge"],
+               c=opps_df["days_ahead"], cmap="viridis",
+               alpha=0.7, s=40, edgecolors="none")
+    ax.set_title("α7 Forecast Variance vs |Edge|", color="white", fontweight="bold")
+    ax.set_xlabel("forecast temp variance (°C²)")
+    ax.set_ylabel("|edge|")
+
+    # 8. α8 Hours since market move vs stale
+    ax = axes[2, 1]
+    stale    = opps_df[opps_df["is_stale"]]
+    notstale = opps_df[~opps_df["is_stale"]]
+    ax.scatter(notstale["hours_since_move"], notstale["abs_edge"],
+               c=_BLUE, alpha=0.6, s=40, edgecolors="none", label="Fresh")
+    ax.scatter(stale["hours_since_move"], stale["abs_edge"],
+               c=_RED, alpha=0.8, s=60, edgecolors="none", label="Stale")
+    ax.axvline(STALE_HOURS, color=_YELLOW, lw=1.5, ls=":", label=f"stale>{STALE_HOURS}h")
+    ax.set_title("α8 Market Staleness vs |Edge|", color="white", fontweight="bold")
+    ax.set_xlabel("hours since last significant move")
+    ax.legend(fontsize=7, labelcolor="white", facecolor="#21262d", edgecolor=_BORDER)
+
+    # 9. Alpha score vs EV
+    ax = axes[2, 2]
+    sc = ax.scatter(opps_df["alpha_score"], opps_df["ev_per_dollar"] * 100,
+                    c=opps_df["kelly"], cmap="hot",
+                    alpha=0.7, s=50, edgecolors="none")
+    plt.colorbar(sc, ax=ax, label="kelly frac").ax.tick_params(colors=_MUTED)
+    ax.axhline(0, color=_MUTED, lw=1, ls="--")
+    ax.set_title("Composite Score vs EV/dollar", color="white", fontweight="bold")
+    ax.set_xlabel("alpha_score")
+    ax.set_ylabel("EV per $100 bet")
+
+    plt.suptitle("Alpha Signal Dashboard", color="white",
+                 fontsize=13, fontweight="bold", y=1.01)
     plt.tight_layout()
-    out = output_dir / "edge_landscape.png"
-    plt.savefig(out, dpi=150, bbox_inches="tight", facecolor=DARK_BG)
+    out = output_dir / "alpha_dashboard.png"
+    plt.savefig(out, dpi=150, bbox_inches="tight", facecolor=_DARK)
     plt.close()
     print(f"  Saved: {out}")
 
 
-def plot_forecast_drift(data_dir: Path, city: str, output_dir: Path):
-    try:
-        daily = load_daily(data_dir, city)
-    except FileNotFoundError:
+def plot_forecast_drift_all(data_dir: Path, cities: list[str], output_dir: Path):
+    """One subplot per city showing forecast evolution by target date."""
+    n = len(cities)
+    ncols = min(3, n)
+    nrows = (n + ncols - 1) // ncols
+    fig, axes = _dark_fig(nrows, ncols, figsize=(7*ncols, 4*nrows))
+    axes_flat  = np.array(axes).flat
+
+    for city in cities:
+        ax = next(axes_flat)
+        try:
+            daily = load_daily(data_dir, city)
+        except FileNotFoundError:
+            ax.set_visible(False); continue
+
+        dates   = sorted(daily["date_local"].unique())[-7:]
+        palette = plt.cm.plasma(np.linspace(0.1, 0.9, len(dates)))
+        for i, d in enumerate(dates):
+            sub = daily[daily["date_local"] == d].sort_values("fetched_at_utc")
+            if sub.empty: continue
+            label = str(d.date()) if hasattr(d, "date") else str(d)[:10]
+            ax.plot(sub["fetched_at_utc"], sub["temp_max_c"],
+                    marker="o", ms=3, lw=1.6, color=palette[i], label=label)
+
+        ax.set_title(f"{CITY_NAMES.get(city, city)} — Forecast Drift",
+                     color="white", fontsize=9, fontweight="bold")
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d"))
+        plt.setp(ax.xaxis.get_majorticklabels(), rotation=30, ha="right", fontsize=7)
+        ax.legend(fontsize=6, labelcolor="white", facecolor="#21262d",
+                  edgecolor=_BORDER, loc="upper left", ncol=2)
+        ax.set_ylabel("°C max", fontsize=8)
+
+    for ax in axes_flat:
+        ax.set_visible(False)
+
+    plt.suptitle("Forecast TempMax Evolution", color="white",
+                 fontsize=12, fontweight="bold", y=1.01)
+    plt.tight_layout()
+    out = output_dir / "forecast_drift_all.png"
+    plt.savefig(out, dpi=150, bbox_inches="tight", facecolor=_DARK)
+    plt.close()
+    print(f"  Saved: {out}")
+
+
+def plot_momentum_heatmap(opps_df: pd.DataFrame, output_dir: Path):
+    """Heatmap of EMA momentum by (city, target_date)."""
+    if opps_df.empty or "ema_momentum" not in opps_df.columns:
         return
 
-    fig, ax = _dark_fig(1, 1, figsize=(14, 5))
-    ax = ax if not hasattr(ax, "__iter__") else ax
+    pivot = (opps_df.groupby(["city", "target_date"])["ema_momentum"]
+             .mean().unstack("target_date").fillna(0))
+    if pivot.empty:
+        return
 
-    dates = sorted(daily["date_local"].unique())[-7:]
-    palette = plt.cm.plasma(np.linspace(0.1, 0.9, len(dates)))
+    fig, ax = plt.subplots(figsize=(max(8, len(pivot.columns)*1.2), max(3, len(pivot)*0.8)))
+    fig.patch.set_facecolor(_DARK)
+    ax.set_facecolor(_AX)
 
-    for i, d in enumerate(dates):
-        sub = daily[daily["date_local"] == d].sort_values("fetched_at_utc")
-        if sub.empty: continue
-        ax.plot(sub["fetched_at_utc"], sub["temp_max_c"],
-                marker="o", markersize=4, color=palette[i], lw=1.8,
-                label=str(d.date()) if hasattr(d, "date") else str(d)[:10])
-
-    ax.set_title(f"{CITY_ALIASES.get(city, city)} — Forecast TempMax Drift Over Time",
-                 color="white", fontsize=12, fontweight="bold")
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d %Hh"))
-    plt.setp(ax.xaxis.get_majorticklabels(), rotation=30, ha="right", color=CLR_MUTED)
-    ax.legend(title="Target date", fontsize=7, labelcolor="white",
-              facecolor="#21262d", edgecolor=DARK_BDR, title_fontsize=7)
-    ax.set_ylabel("°C", color=CLR_MUTED)
+    im = ax.imshow(pivot.values, cmap="RdBu_r", aspect="auto",
+                   vmin=-0.5, vmax=0.5)
+    ax.set_xticks(range(len(pivot.columns)))
+    ax.set_xticklabels(pivot.columns, rotation=45, ha="right", color=_MUTED, fontsize=8)
+    ax.set_yticks(range(len(pivot.index)))
+    ax.set_yticklabels(pivot.index, color=_MUTED, fontsize=8)
+    plt.colorbar(im, ax=ax, label="EMA momentum (°C/snap)").ax.tick_params(colors=_MUTED)
+    ax.set_title("α1 Forecast Momentum by City × Date",
+                 color="white", fontweight="bold")
 
     plt.tight_layout()
-    out = output_dir / f"drift_{city}.png"
-    plt.savefig(out, dpi=150, bbox_inches="tight", facecolor=DARK_BG)
+    out = output_dir / "momentum_heatmap.png"
+    plt.savefig(out, dpi=150, bbox_inches="tight", facecolor=_DARK)
     plt.close()
     print(f"  Saved: {out}")
 
 
-# ─── BOT SCAFFOLD ──────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# BETTING BOT
+# ══════════════════════════════════════════════════════════════════════════════
 
 class WeatherBettingBot:
     """
-    Betting bot scaffold. Replace execute_bet() with Polymarket CLOB API.
+    Weather prediction market betting bot.
 
-    Real integration:
+    Modes:
+      dry_run=True   — print orders, don't execute (default)
+      dry_run=False  — execute via py_clob_client (requires POLYMARKET_PRIVATE_KEY)
+
+    live_mode=True   — recalculate days_ahead from NOW and re-verify prices via
+                       the Gamma API before placing any order. Always use this
+                       for real-money execution.
+
+    Execution:
       pip install py-clob-client
+      export POLYMARKET_PRIVATE_KEY="0x..."
+
       from py_clob_client.client import ClobClient
-      client = ClobClient("https://clob.polymarket.com", key=PRIVATE_KEY, chain_id=137)
-      # For a YES bet:
+      from py_clob_client.clob_types import OrderArgs, BUY
+
+      client = ClobClient(
+          host="https://clob.polymarket.com",
+          key=os.environ["POLYMARKET_PRIVATE_KEY"],
+          chain_id=137,   # Polygon
+      )
+      # YES bet: buy YES token at price=their_prob, size=usdc/price shares
       client.create_market_order(OrderArgs(
-          token_id=YES_TOKEN_ID,
-          price=market_prob,
-          size=size_usdc / market_prob,
-          side=BUY
+          token_id=YES_TOKEN_ID,   # from clob_token_ids_json field
+          price=their_prob,
+          size=size_usdc / their_prob,
+          side=BUY,
       ))
     """
 
-    def __init__(self, bankroll=1000.0, min_edge=MIN_EDGE_FRACTION,
-                 min_liq=MIN_LIQUIDITY, dry_run=True):
-        self.bankroll = bankroll
-        self.min_edge = min_edge
-        self.min_liq  = min_liq
-        self.dry_run  = dry_run
-        self.log      = []
+    def __init__(self, bankroll: float = 1000.0,
+                 dry_run: bool = True, live_mode: bool = False):
+        self.bankroll  = bankroll
+        self.dry_run   = dry_run
+        self.live_mode = live_mode
+        self.log: list[dict] = []
 
-    def run(self, opps: pd.DataFrame):
-        if opps.empty:
-            print("  No opportunities to trade.")
+    def run(self, opps: list[Opportunity], min_edge: float = MIN_EDGE):
+        if not opps:
+            print("\n  No tradeable opportunities.")
             return
 
-        # Only trade most recent snapshot per condition_id (avoid stale data)
-        latest = (opps.sort_values("fetched_at")
-                  .groupby("condition_id").last().reset_index())
-        latest = latest[latest["days_ahead"] > 0]  # not yet settled
+        now = datetime.now(timezone.utc)
 
-        print(f"\n{'─'*65}")
-        mode = "DRY RUN" if self.dry_run else "⚠ LIVE"
-        print(f"  WeatherBettingBot [{mode}]  bankroll=${self.bankroll:.0f}")
-        print(f"{'─'*65}")
+        # ── Step 1: filter to future markets using CURRENT time ───────────
+        # days_ahead stored in each Opportunity was computed from the snapshot
+        # fetch_time, which may be hours or days old. Recalculate from NOW.
+        def _days_from_now(o: Opportunity) -> float:
+            target = pd.Timestamp(o.target_date, tz="UTC")
+            return (target - pd.Timestamp(now)).total_seconds() / 86400
 
-        placed, total_exp, total_ev = 0, 0.0, 0.0
-        for _, row in latest.sort_values("score", ascending=False).iterrows():
-            k    = float(row.get("kelly", 0))
-            size = round(self.bankroll * k, 2)
-            if size < 2.0:
+        candidate = [o for o in opps if _days_from_now(o) > 0 and o.kelly > 0]
+
+        if not candidate:
+            print("\n  No future opportunities with positive Kelly.")
+            return
+
+        # ── Step 2 (live_mode): fetch current market prices and re-verify ─
+        if self.live_mode:
+            print(f"\n  [LIVE] Fetching current prices for {len(candidate)} markets …")
+            cids        = list({o.condition_id for o in candidate})
+            live_prices = fetch_live_prices(cids)
+            verified    = []
+            for o in candidate:
+                live_p = live_prices.get(o.condition_id)
+                if live_p is None:
+                    print(f"  [SKIP] {o.condition_id[:16]}… — no live price")
+                    continue
+                if live_p < MIN_MARKET_PRICE or live_p > (1.0 - MIN_MARKET_PRICE):
+                    print(f"  [SKIP] {o.question[:50]} — near-settled ({live_p:.2%})")
+                    continue
+                # Recompute edge with live price
+                live_edge = o.forecast_prob - live_p
+                if o.bet_side == "No":
+                    live_edge = (1.0 - o.forecast_prob) - (1.0 - live_p)
+                if abs(live_edge) < min_edge:
+                    print(f"  [SKIP] {o.question[:50]} — edge closed "
+                          f"(was {o.abs_edge:.1%}, now {abs(live_edge):.1%})")
+                    continue
+                # Update the opportunity with the fresh price and edge
+                o.market_prob_raw = round(live_p, 4)
+                o.their_prob      = round(live_p if o.bet_side == "Yes"
+                                          else 1.0 - live_p, 4)
+                o.edge            = round(live_edge, 4)
+                o.abs_edge        = round(abs(live_edge), 4)
+                o.kelly           = _kelly_size(o)
+                o.ev_per_dollar   = round(o.our_prob / o.their_prob - 1.0, 4)
+                verified.append(o)
+            candidate = verified
+            print(f"  [LIVE] {len(candidate)} markets still have edge after price check\n")
+
+        # ── Step 3: group cap (α9) ────────────────────────────────────────
+        candidate = apply_group_kelly_cap(candidate, self.bankroll)
+
+        # ── Step 4: total portfolio cap ───────────────────────────────────
+        candidate = apply_portfolio_cap(candidate)
+
+        # ── Step 5: sort and deduplicate — one bet per condition_id ───────
+        candidate.sort(key=lambda o: o.alpha_score, reverse=True)
+        seen:  set[str]          = set()
+        final: list[Opportunity] = []
+        for o in candidate:
+            if o.condition_id not in seen:
+                final.append(o)
+                seen.add(o.condition_id)
+
+        # ── Step 6: print and execute ────────────────────────────────────
+        print(f"\n{'─'*78}")
+        mode = ("DRY RUN" if self.dry_run else "⚠  LIVE")
+        live_tag = " + live-price-verified" if self.live_mode else ""
+        print(f"  WeatherBettingBot [{mode}{live_tag}]  bankroll=${self.bankroll:,.0f}")
+        print(f"  Fee model: {FEE_RATE:.0%}  |  Max exposure: {MAX_TOTAL_KELLY:.0%} bankroll")
+        print(f"{'─'*78}")
+        print(f"  {'Side':4s}  {'Size$':>7}  {'Edge':>6}  {'EV$':>7}  "
+              f"{'Liq$':>8}  {'Mom':>6}  {'Sig':8s}  Question")
+        print(f"  {'─'*4}  {'─'*7}  {'─'*6}  {'─'*7}  "
+              f"{'─'*8}  {'─'*6}  {'─'*8}  {'─'*40}")
+
+        total_size = 0.0
+        total_ev   = 0.0
+        for o in final:
+            size = round(self.bankroll * o.kelly, 2)
+            if size < 1.0:
                 continue
-
+            ev    = round(o.ev_per_dollar * size, 2)
+            days  = round(_days_from_now(o), 1)
             order = {
-                "condition_id": row["condition_id"],
-                "question":     row["question"],
-                "bet_side":     row["bet_side"],
-                "size_usdc":    size,
-                "market_prob":  row["their_prob"],
-                "forecast_prob":row["our_prob"],
-                "edge":         row["abs_edge"],
-                "ev_dollar":    round(row["ev_per_$"] * size, 2),
-                "days_ahead":   row["days_ahead"],
-                "timestamp":    datetime.now(timezone.utc).isoformat(),
+                "condition_id":  o.condition_id,
+                "question":      o.question,
+                "bet_side":      o.bet_side,
+                "size_usdc":     size,
+                "market_prob":   o.their_prob,
+                "forecast_prob": o.our_prob,
+                "edge":          o.abs_edge,
+                "ev_dollar":     ev,
+                "alpha_score":   o.alpha_score,
+                "days_to_expiry":days,
+                "sigma_source":  o.sigma_source,
+                "is_stale":      o.is_stale,
+                "live_verified": self.live_mode,
+                "timestamp_utc": now.isoformat(),
             }
             self._execute(order)
-            placed    += 1
-            total_exp += size
-            total_ev  += order["ev_dollar"]
+            total_size += size
+            total_ev   += ev
+            print(f"  {o.bet_side:4s}  ${size:>6.2f}  "
+                  f"{o.abs_edge:>5.1%}  ${ev:>6.2f}  "
+                  f"${o.liquidity:>7,.0f}  "
+                  f"{o.ema_momentum:>+6.2f}  "
+                  f"{o.sigma_source[:8]:8s}  "
+                  f"{o.question[:42]}…  (+{days:.1f}d)")
 
-        print(f"\n  Bets placed : {placed}")
-        print(f"  Total size  : ${total_exp:.2f}")
-        print(f"  Expected EV : ${total_ev:.2f}  ({total_ev/max(total_exp,1)*100:.1f}% ROI)")
+        print(f"{'─'*78}")
+        print(f"  Bets     : {len(self.log)}")
+        print(f"  Exposure : ${total_size:,.2f}  ({total_size/self.bankroll:.1%} of bankroll)")
+        print(f"  Exp. EV  : ${total_ev:+,.2f}  ({total_ev/max(total_size,1)*100:.1f}% ROI)")
 
-    def _execute(self, order):
+    def _execute(self, order: dict):
         self.log.append(order)
-        if self.dry_run:
-            ev_str = f"+${order['ev_dollar']:.2f}"
-            print(f"  {'YES' if order['bet_side']=='Yes' else 'NO ':3s} "
-                  f"${order['size_usdc']:6.2f}  "
-                  f"edge={order['edge']:.1%}  "
-                  f"EV≈{ev_str:>8}  "
-                  f"{order['question'][:55]}…")
-        else:
-            raise NotImplementedError(
-                "Wire in py_clob_client here. See docstring.")
+        if not self.dry_run:
+            raise NotImplementedError("Wire in py_clob_client. See class docstring.")
 
 
-# ─── REPORTING ─────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# REPORTING
+# ══════════════════════════════════════════════════════════════════════════════
 
-def print_report(opps: pd.DataFrame):
-    if opps.empty:
+def opps_to_df(opps: list[Opportunity]) -> pd.DataFrame:
+    if not opps:
+        return pd.DataFrame()
+    rows = []
+    for o in opps:
+        rows.append({k: v for k, v in o.__dict__.items()})
+    return pd.DataFrame(rows)
+
+
+def print_report(opps_df: pd.DataFrame):
+    if opps_df.empty:
         print("\n  No opportunities above threshold.")
         return
 
-    print(f"\n{'═'*80}")
-    print(f"  TOP OPPORTUNITIES  ({len(opps)} total)")
-    print(f"{'═'*80}")
+    pd.set_option("display.width", 220)
+    pd.set_option("display.max_colwidth", 50)
+    pd.set_option("display.float_format", lambda x: f"{x:.4f}")
 
-    cols = ["city", "target_date", "days_ahead", "forecast_mu", "bin_temp_c",
-            "forecast_prob", "market_prob", "edge", "bet_side", "kelly",
-            "ev_per_$", "liquidity", "n_bins"]
-    top = opps.head(25)
-    pd.set_option("display.max_colwidth", 10)
-    pd.set_option("display.width", 200)
-    print(top[cols].to_string(index=False))
+    print(f"\n{'═'*90}")
+    print(f"  OPPORTUNITIES  —  {len(opps_df)} total  "
+          f"(edge≥{MIN_EDGE:.0%}, liq≥{MIN_LIQUIDITY})")
+    print(f"{'═'*90}")
+
+    top_cols = ["city", "target_date", "days_ahead", "forecast_mu",
+                "bin_temp_c" if "bin_temp_c" in opps_df.columns else "forecast_mu",
+                "forecast_prob", "market_prob", "edge", "bet_side",
+                "kelly", "ev_per_dollar", "alpha_score",
+                "ema_momentum", "is_stale", "liquidity"]
+    top_cols = [c for c in top_cols if c in opps_df.columns]
+    print(opps_df.sort_values("alpha_score", ascending=False)
+                 .head(30)[top_cols].to_string(index=False))
 
     print(f"\n  ── By City ──")
-    for city, g in opps.groupby("city"):
-        print(f"  {city:8s}  n={len(g):4d}  "
+    for city, g in opps_df.groupby("city"):
+        print(f"  {city:10s}  n={len(g):4d}  "
               f"avg|edge|={g['abs_edge'].mean():.1%}  "
               f"max|edge|={g['abs_edge'].max():.1%}  "
-              f"total_EV=${(g['ev_per_$']*g['kelly']*1000).sum():.1f}")
+              f"stale={g['is_stale'].sum():3d}  "
+              f"tot_EV≈${(g['ev_per_dollar']*g['kelly']*1000).sum():.0f}")
 
-    print(f"\n  ── Mode-shift anomalies (forecast moved ≥1°C from market mode) ──")
-    shifted = opps[opps["mode_shift_c"].abs() >= 1.0]
-    if not shifted.empty:
-        print(shifted[["city","target_date","forecast_mu","market_mode_c",
-                        "mode_shift_c","edge","bet_side","liquidity"]].head(15).to_string(index=False))
+    print(f"\n  ── Momentum-aligned bets (α1) ──")
+    mom_yes = opps_df[(opps_df["bet_side"]=="Yes") &
+                      (opps_df["ema_momentum"] > MOMENTUM_THRESHOLD)]
+    mom_no  = opps_df[(opps_df["bet_side"]=="No") &
+                      (opps_df["ema_momentum"] < -MOMENTUM_THRESHOLD)]
+    aligned = pd.concat([mom_yes, mom_no])
+    if not aligned.empty:
+        print(aligned[["city","target_date","question","edge",
+                        "bet_side","ema_momentum","alpha_score"]]
+              .sort_values("alpha_score", ascending=False).head(10).to_string(index=False))
+    else:
+        print("  None found")
+
+    print(f"\n  ── Stale markets with large edge (α8) ──")
+    stale = opps_df[opps_df["is_stale"] & (opps_df["abs_edge"] > 0.10)]
+    if not stale.empty:
+        print(stale[["city","target_date","question","edge",
+                     "hours_since_move","alpha_score"]].head(8).to_string(index=False))
+    else:
+        print("  None found")
+
+    print(f"\n  ── Incoherent markets (α5: PMF sum deviation) ──")
+    incoherent = opps_df[opps_df["pmf_sum_dev"] > 0.15].copy()
+    if not incoherent.empty:
+        print(incoherent[["city","target_date","pmf_sum_dev",
+                          "edge","bet_side"]].drop_duplicates(
+                              ["city","target_date"]).head(8).to_string(index=False))
     else:
         print("  None found")
 
 
-# ─── MAIN ──────────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# ENTRY POINT
+# ══════════════════════════════════════════════════════════════════════════════
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Polymarket Weather Inefficiency Analyzer v2",
+        description="Polymarket Weather Analyzer v4 — with live-mode betting",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--data_dir",   default="./data")
     parser.add_argument("--cities",     nargs="+", default=None)
     parser.add_argument("--output_dir", default="./output")
-    parser.add_argument("--min_edge",   type=float, default=MIN_EDGE_FRACTION)
+    parser.add_argument("--min_edge",   type=float, default=MIN_EDGE)
     parser.add_argument("--min_liq",    type=float, default=MIN_LIQUIDITY)
     parser.add_argument("--bankroll",   type=float, default=1000.0)
     parser.add_argument("--no_plots",   action="store_true")
+    parser.add_argument(
+        "--live", action="store_true",
+        help="Live mode: recalculate days_ahead from NOW and re-verify market "
+             "prices via the Gamma API before recommending any bet. Always use "
+             "this for real-money execution.",
+    )
+    parser.add_argument(
+        "--execute", action="store_true",
+        help="Actually place orders (requires POLYMARKET_PRIVATE_KEY env var). "
+             "Implies --live. Use with extreme caution.",
+    )
     args = parser.parse_args()
+
+    dry_run   = not args.execute
+    live_mode = args.live or args.execute
 
     data_dir   = Path(args.data_dir)
     output_dir = Path(args.output_dir)
@@ -727,58 +1660,62 @@ def main():
 
     cities = args.cities or discover_cities(data_dir)
     if not cities:
-        print(f"No *_snapshots.csv found in {data_dir}")
+        print(f"No *_snapshots.csv files found in {data_dir}")
         return
 
-    print(f"\nCities     : {cities}")
-    print(f"Min edge   : {args.min_edge:.0%}  |  Min liquidity: ${args.min_liq:.0f}")
-    print(f"Bankroll   : ${args.bankroll:.0f}")
-    print(f"NWP sigmas : {NWP_SIGMA_BY_DAY}")
+    print(f"\n{'═'*72}")
+    print(f"  Polymarket Weather Analyzer v4")
+    print(f"  Cities   : {cities}")
+    print(f"  Min edge : {args.min_edge:.0%}  Min liq: ${args.min_liq:.0f}  "
+          f"Bankroll: ${args.bankroll:,.0f}")
+    print(f"  Fee      : {FEE_RATE:.0%}  Max portfolio: {MAX_TOTAL_KELLY:.0%}")
+    print(f"  Mode     : {'LIVE (price-verified)' if live_mode else 'BACKTEST'} / "
+          f"{'EXECUTE' if not dry_run else 'DRY RUN'}")
+    print(f"{'═'*72}\n")
 
-    all_raw  = []
-    all_opps = []
-
+    all_opps: list[Opportunity] = []
     for city in cities:
-        print(f"\n── {city.upper()} ──")
-        df = analyze_city(data_dir, city)
-        if df.empty:
-            continue
-        all_raw.append(df)
-        opps = filter_opportunities(df, args.min_edge, args.min_liq)
-        if not opps.empty:
-            all_opps.append(opps)
-            print(f"  → {len(opps)} opportunities")
+        print(f"── {city.upper()} ──")
+        opps = analyse_city(data_dir, city,
+                            min_edge=args.min_edge, min_liq=args.min_liq)
+        if opps:
+            print(f"  → {len(opps)} opportunities found")
+        all_opps.extend(opps)
 
-        if not args.no_plots:
-            plot_forecast_drift(data_dir, city, output_dir)
+    opps_df = opps_to_df(all_opps)
 
-    if all_raw:
-        combined_raw  = pd.concat(all_raw, ignore_index=True)
-        combined_opps = pd.concat(all_opps, ignore_index=True) if all_opps else pd.DataFrame()
+    if not args.no_plots:
+        if not opps_df.empty:
+            all_bins_records = []
+            for o in all_opps:
+                all_bins_records.append({
+                    "city":         o.city,
+                    "target_date":  o.target_date,
+                    "fetched_at":   o.fetched_at,
+                    "bin_temp_c":   o.bin_temp_c,   # actual question temperature
+                    "market_prob":  o.market_prob,
+                    "forecast_prob":o.forecast_prob,
+                    "forecast_mu":  o.forecast_mu,
+                    "days_ahead":   o.days_ahead,
+                    "ema_momentum": o.ema_momentum,
+                })
+            all_bins_df = pd.DataFrame(all_bins_records)
+            plot_pmf_comparison(opps_df, all_bins_df, output_dir)
+            plot_alpha_dashboard(opps_df, output_dir)
+            plot_momentum_heatmap(opps_df, output_dir)
 
-        if not args.no_plots:
-            plot_distribution_comparison(combined_raw, output_dir)
-            if not combined_opps.empty:
-                plot_edge_landscape(combined_opps, output_dir)
+        plot_forecast_drift_all(data_dir, cities, output_dir)
 
-        print_report(combined_opps)
+    print_report(opps_df)
 
-        # Save outputs
-        combined_raw.to_csv(output_dir / "all_bins.csv", index=False)
-        if not combined_opps.empty:
-            combined_opps.to_csv(output_dir / "opportunities_v2.csv", index=False)
-            print(f"\n  Saved: {output_dir}/opportunities_v2.csv")
+    if not opps_df.empty:
+        opps_df.to_csv(output_dir / "opportunities_v4.csv", index=False)
+        print(f"\n  Saved: {output_dir}/opportunities_v4.csv")
 
-        # Run bot
-        bot = WeatherBettingBot(
-            bankroll=args.bankroll,
-            min_edge=args.min_edge,
-            min_liq=args.min_liq,
-            dry_run=True,
-        )
-        bot.run(combined_opps if not combined_opps.empty else pd.DataFrame())
-    else:
-        print("\nNo data loaded.")
+    bot = WeatherBettingBot(
+        bankroll=args.bankroll, dry_run=dry_run, live_mode=live_mode
+    )
+    bot.run(all_opps, min_edge=args.min_edge)
 
     print(f"\nDone → {output_dir.resolve()}")
 

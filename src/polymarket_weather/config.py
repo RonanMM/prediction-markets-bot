@@ -52,7 +52,9 @@ MARKET_KEYWORDS = [
 ]
 
 # ── Open-Meteo API ───────────────────────────────────────────────────────────
-OPEN_METEO_BASE = "https://api.open-meteo.com/v1/forecast"
+OPEN_METEO_BASE          = "https://api.open-meteo.com/v1/forecast"
+OPEN_METEO_ENSEMBLE_BASE = "https://ensemble-api.open-meteo.com/v1/ensemble"
+ENSEMBLE_MODEL           = "icon_seamless"   # 40 members, global, free tier
 OPEN_METEO_PARAMS = {
     "daily": "temperature_2m_max,temperature_2m_min",
     "hourly": "temperature_2m",

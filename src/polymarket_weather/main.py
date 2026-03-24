@@ -28,10 +28,12 @@ from pathlib import Path
 from config import CITIES, LOGS_DIR, PLOTS_DIR
 from fetch_polymarket import fetch_weather_markets, fetch_price_history_for_market
 from fetch_weather import fetch_all_cities, fetch_forecast
+from fetch_ensemble import fetch_ensemble
 from processing import (
     save_market_snapshots,
     save_price_history,
     save_weather_forecast,
+    save_ensemble_forecast,
     compute_city_summary,
 )
 from visualization import generate_all_plots, plot_efficiency_signal
@@ -104,6 +106,21 @@ def step_fetch_weather(cities: list[str]) -> None:
             logger.info("Saved forecast: %d daily rows for %s.", daily_count, city)
         else:
             logger.error("Failed to fetch forecast for %s.", city)
+
+
+def step_fetch_ensemble(cities: list[str]) -> None:
+    logger.info("═══ Step 2b: Fetching ensemble forecasts ═══")
+    for city in cities:
+        logger.info("── Ensemble: %s", city)
+        if city not in CITIES:
+            continue
+        result = fetch_ensemble(city)
+        if result:
+            save_ensemble_forecast(result)
+            n = len(result.get("daily", []))
+            logger.info("Saved ensemble: %d days for %s.", n, city)
+        else:
+            logger.warning("No ensemble data for %s (API may be unavailable).", city)
 
 
 def step_generate_plots(cities: list[str], summaries: list[dict]) -> None:
@@ -226,6 +243,7 @@ def main() -> None:
 
     if not args.skip_weather:
         step_fetch_weather(cities)
+        step_fetch_ensemble(cities)
 
     summaries = step_print_summary(cities)
     step_generate_plots(cities, summaries)
