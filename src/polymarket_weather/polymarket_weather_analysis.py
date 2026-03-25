@@ -1421,7 +1421,8 @@ class WeatherBettingBot:
         self.live_mode = live_mode
         self.log: list[dict] = []
 
-    def run(self, opps: list[Opportunity], min_edge: float = MIN_EDGE):
+    def run(self, opps: list[Opportunity], min_edge: float = MIN_EDGE,
+            min_days: float = 0.0):
         if not opps:
             print("\n  No tradeable opportunities.")
             return
@@ -1435,7 +1436,15 @@ class WeatherBettingBot:
             target = pd.Timestamp(o.target_date, tz="UTC")
             return (target - pd.Timestamp(now)).total_seconds() / 86400
 
-        candidate = [o for o in opps if _days_from_now(o) > 0 and o.kelly > 0]
+        candidate = [
+            o for o in opps
+            if _days_from_now(o) >= min_days and o.kelly > 0
+        ]
+        if min_days > 0:
+            n_skipped = sum(1 for o in opps if 0 < _days_from_now(o) < min_days)
+            if n_skipped:
+                print(f"\n  [min_days={min_days}] Skipped {n_skipped} markets "
+                      f"resolving within {min_days:.0f}d")
 
         if not candidate:
             print("\n  No future opportunities with positive Kelly.")
@@ -1500,7 +1509,7 @@ class WeatherBettingBot:
         print(f"  {'Side':4s}  {'Size$':>7}  {'Edge':>6}  {'EV$':>7}  "
               f"{'Liq$':>8}  {'Mom':>6}  {'Sig':8s}  Question")
         print(f"  {'─'*4}  {'─'*7}  {'─'*6}  {'─'*7}  "
-              f"{'─'*8}  {'─'*6}  {'─'*8}  {'─'*40}")
+              f"{'─'*8}  {'─'*6}  {'─'*8}  {'─'*70}")
 
         total_size = 0.0
         total_ev   = 0.0
@@ -1534,7 +1543,7 @@ class WeatherBettingBot:
                   f"${o.liquidity:>7,.0f}  "
                   f"{o.ema_momentum:>+6.2f}  "
                   f"{o.sigma_source[:8]:8s}  "
-                  f"{o.question[:42]}…  (+{days:.1f}d)")
+                  f"{o.question[:70]}…  (+{days:.1f}d)")
 
         print(f"{'─'*78}")
         print(f"  Bets     : {len(self.log)}")
@@ -1636,6 +1645,9 @@ def main():
     parser.add_argument("--output_dir", default="./output")
     parser.add_argument("--min_edge",   type=float, default=MIN_EDGE)
     parser.add_argument("--min_liq",    type=float, default=MIN_LIQUIDITY)
+    parser.add_argument("--min_days",   type=float, default=0.0,
+                        help="Skip markets resolving in fewer than N days from now "
+                             "(e.g. --min_days 1 excludes today's markets)")
     parser.add_argument("--bankroll",   type=float, default=1000.0)
     parser.add_argument("--no_plots",   action="store_true")
     parser.add_argument(
@@ -1667,7 +1679,7 @@ def main():
     print(f"  Polymarket Weather Analyzer v4")
     print(f"  Cities   : {cities}")
     print(f"  Min edge : {args.min_edge:.0%}  Min liq: ${args.min_liq:.0f}  "
-          f"Bankroll: ${args.bankroll:,.0f}")
+          f"Min days: {args.min_days:.0f}  Bankroll: ${args.bankroll:,.0f}")
     print(f"  Fee      : {FEE_RATE:.0%}  Max portfolio: {MAX_TOTAL_KELLY:.0%}")
     print(f"  Mode     : {'LIVE (price-verified)' if live_mode else 'BACKTEST'} / "
           f"{'EXECUTE' if not dry_run else 'DRY RUN'}")
@@ -1715,7 +1727,7 @@ def main():
     bot = WeatherBettingBot(
         bankroll=args.bankroll, dry_run=dry_run, live_mode=live_mode
     )
-    bot.run(all_opps, min_edge=args.min_edge)
+    bot.run(all_opps, min_edge=args.min_edge, min_days=args.min_days)
 
     print(f"\nDone → {output_dir.resolve()}")
 

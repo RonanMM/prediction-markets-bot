@@ -6,35 +6,42 @@ All cities, API endpoints, and runtime settings live here.
 from zoneinfo import ZoneInfo
 
 # ── Cities ──────────────────────────────────────────────────────────────────
+# IMPORTANT: coordinates must match the exact Wunderground/observatory station
+# that Polymarket uses for resolution — NOT the city centre.
 CITIES = {
     "Seoul": {
         "timezone": ZoneInfo("Asia/Seoul"),
-        "lat": 37.5665,
-        "lon": 126.9780,
+        # Incheon International Airport (RKSI) — Polymarket resolution station
+        "lat": 37.4602,
+        "lon": 126.4407,
         "search_terms": ["Seoul", "seoul"],
     },
     "London": {
         "timezone": ZoneInfo("Europe/London"),
-        "lat": 51.5074,
-        "lon": -0.1278,
+        # London City Airport (EGLC) — Polymarket resolution station
+        "lat": 51.5033,
+        "lon": 0.0554,
         "search_terms": ["London", "london"],
     },
     "Chicago": {
         "timezone": ZoneInfo("America/Chicago"),
-        "lat": 41.8781,
-        "lon": -87.6298,
+        # O'Hare International Airport (KORD) — Polymarket resolution station
+        "lat": 41.9742,
+        "lon": -87.9073,
         "search_terms": ["Chicago", "chicago"],
     },
     "New York City": {
         "timezone": ZoneInfo("America/New_York"),
-        "lat": 40.7128,
-        "lon": -74.0060,
+        # LaGuardia Airport (KLGA) — Polymarket resolution station
+        "lat": 40.7769,
+        "lon": -73.8740,
         "search_terms": ["New York", "NYC", "new york"],
     },
     "Hong Kong": {
         "timezone": ZoneInfo("Asia/Hong_Kong"),
-        "lat": 22.3193,
-        "lon": 114.1694,
+        # Hong Kong Observatory — Polymarket resolution station
+        "lat": 22.3020,
+        "lon": 114.1740,
         "search_terms": ["Hong Kong", "hong kong"],
     },
 }
