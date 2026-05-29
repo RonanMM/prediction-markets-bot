@@ -834,6 +834,52 @@ def fetch_live_prices(condition_ids: list[str]) -> dict[str, float]:
     return prices
 
 
+def check_orderbook_vwap(condition_id: str, bet_side: str, target_size_usdc: float) -> float:
+    """
+    Gets the token_id for the bet_side, pulls the CLOB L2 orderbook,
+    and calculates the effective average price (VWAP) for the target size.
+    Returns the VWAP price, or 1.0 if insufficient liquidity.
+    """
+    import requests as _req
+    try:
+        # 1. Get Token ID from Gamma
+        gamma_resp = _req.get("https://gamma-api.polymarket.com/markets", params={"condition_ids": condition_id}).json()
+        if not gamma_resp: return 1.0
+        
+        tokens = gamma_resp[0].get("tokens", [])
+        token_id = next((t["token_id"] for t in tokens if t.get("outcome") == bet_side), None)
+        if not token_id: return 1.0
+        
+        # 2. Get Order Book from CLOB
+        clob_resp = _req.get("https://clob.polymarket.com/book", params={"token_id": token_id}).json()
+        asks = clob_resp.get("asks", [])
+        asks.sort(key=lambda x: float(x["price"]))
+        
+        filled_usdc = 0.0
+        total_shares = 0.0
+        
+        for ask in asks:
+            price = float(ask["price"])
+            size_shares = float(ask["size"])
+            cost_usdc = size_shares * price
+            
+            if filled_usdc + cost_usdc >= target_size_usdc:
+                needed_usdc = target_size_usdc - filled_usdc
+                total_shares += needed_usdc / price
+                filled_usdc += needed_usdc
+                break
+            else:
+                total_shares += size_shares
+                filled_usdc += cost_usdc
+        
+        if filled_usdc < target_size_usdc or total_shares == 0:
+            return 1.0  # Not enough liquidity to fill
+            
+        return round(target_size_usdc / total_shares, 4)
+    except Exception as e:
+        print(f"  [WARN] Orderbook check failed: {e}")
+        return 1.0
+
 # ══════════════════════════════════════════════════════════════════════════════
 # MAIN ANALYSIS ENGINE
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1517,6 +1563,28 @@ class WeatherBettingBot:
             size = round(self.bankroll * o.kelly, 2)
             if size < 1.0:
                 continue
+
+            if self.live_mode:
+                # For a "Yes" bet, we are buying Yes tokens, so we check the ask side of the Yes token book.
+                # For a "No" bet, we are buying No tokens. The price of a No token is (1 - yes_price).
+                # So, buying a No token at 0.70 is equivalent to selling a Yes token at 0.30.
+                # We check the VWAP for our side and adjust the effective market probability.
+                vwap_price = check_orderbook_vwap(o.condition_id, o.bet_side, size)
+                
+                # The price from the book is for the token we are buying (e.g. price of "No" token)
+                # We need to convert it back to the equivalent "Yes" probability for our edge calculation.
+                effective_market_yes_prob = vwap_price if o.bet_side == "Yes" else 1.0 - vwap_price
+                real_edge = o.forecast_prob - effective_market_yes_prob
+
+                if abs(real_edge) < min_edge:
+                    print(f"  [SKIP] {o.question[:45]}… — Slippage killed edge (VWAP: {vwap_price:.2f})")
+                    continue
+                
+                # Update the opportunity with the true, slippage-adjusted price
+                o.their_prob = vwap_price
+                o.abs_edge   = round(abs(real_edge), 4)
+                o.ev_per_dollar = round(o.our_prob / o.their_prob - 1.0, 4)
+
             ev    = round(o.ev_per_dollar * size, 2)
             days  = round(_days_from_now(o), 1)
             order = {
