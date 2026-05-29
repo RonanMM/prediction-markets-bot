@@ -841,18 +841,50 @@ def check_orderbook_vwap(condition_id: str, bet_side: str, target_size_usdc: flo
     Returns the VWAP price, or 1.0 if insufficient liquidity.
     """
     import requests as _req
+    import time as _time
+    import json as _json
     try:
-        # 1. Get Token ID from Gamma
-        gamma_resp = _req.get("https://gamma-api.polymarket.com/markets", params={"condition_ids": condition_id}).json()
-        if not gamma_resp: return 1.0
+        _time.sleep(0.2)
         
-        tokens = gamma_resp[0].get("tokens", [])
-        token_id = next((t["token_id"] for t in tokens if t.get("outcome") == bet_side), None)
-        if not token_id: return 1.0
+        # 1. Get Token ID from Gamma
+        gamma_req = _req.get("https://gamma-api.polymarket.com/markets", params={"condition_ids": condition_id})
+        gamma_req.raise_for_status()
+        gamma_resp = gamma_req.json()
+        
+        if not gamma_resp: 
+            print(f"  [DEBUG] Gamma API returned empty for condition {condition_id[:8]}...")
+            return 1.0
+        
+        market = gamma_resp[0] if isinstance(gamma_resp, list) else gamma_resp
+        
+        raw_outcomes = market.get("outcomes", "[]")
+        outcomes = _json.loads(raw_outcomes) if isinstance(raw_outcomes, str) else raw_outcomes
+        
+        raw_tokens = market.get("clobTokenIds", "[]")
+        clob_tokens = _json.loads(raw_tokens) if isinstance(raw_tokens, str) else raw_tokens
+        
+        token_id = None
+        for i, outcome in enumerate(outcomes):
+            if outcome == bet_side and i < len(clob_tokens):
+                token_id = clob_tokens[i]
+                break
+                
+        if not token_id: 
+            print(f"  [DEBUG] No token_id found for side '{bet_side}' in condition {condition_id[:8]}...")
+            return 1.0
+        
+        _time.sleep(0.2)
         
         # 2. Get Order Book from CLOB
-        clob_resp = _req.get("https://clob.polymarket.com/book", params={"token_id": token_id}).json()
+        clob_req = _req.get("https://clob.polymarket.com/book", params={"token_id": token_id})
+        clob_req.raise_for_status()
+        clob_resp = clob_req.json()
+        
         asks = clob_resp.get("asks", [])
+        if not asks:
+            print(f"  [DEBUG] CLOB returned 0 asks (empty orderbook) for token {token_id[:8]}...")
+            return 1.0
+            
         asks.sort(key=lambda x: float(x["price"]))
         
         filled_usdc = 0.0
@@ -873,11 +905,12 @@ def check_orderbook_vwap(condition_id: str, bet_side: str, target_size_usdc: flo
                 filled_usdc += cost_usdc
         
         if filled_usdc < target_size_usdc or total_shares == 0:
-            return 1.0  # Not enough liquidity to fill
+            print(f"  [DEBUG] Not enough liquidity to fill ${target_size_usdc:.2f}. Only found ${filled_usdc:.2f}")
+            return 1.0  
             
         return round(target_size_usdc / total_shares, 4)
     except Exception as e:
-        print(f"  [WARN] Orderbook check failed: {e}")
+        print(f"  [WARN] Orderbook check failed for {condition_id[:8]}...: {e}")
         return 1.0
 
 # ══════════════════════════════════════════════════════════════════════════════
