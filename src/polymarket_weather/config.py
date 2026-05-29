@@ -11,37 +11,37 @@ from zoneinfo import ZoneInfo
 CITIES = {
     "Seoul": {
         "timezone": ZoneInfo("Asia/Seoul"),
-        # Incheon International Airport (RKSI) — Polymarket resolution station
-        "lat": 37.4602,
-        "lon": 126.4407,
+        "station_id": "108",
+        "lat": 37.5714,
+        "lon": 126.9658,
         "search_terms": ["Seoul", "seoul"],
     },
     "London": {
         "timezone": ZoneInfo("Europe/London"),
-        # London City Airport (EGLC) — Polymarket resolution station
-        "lat": 51.5033,
-        "lon": 0.0554,
+        "station_id": "EGLL",
+        "lat": 51.4700,
+        "lon": -0.4543,
         "search_terms": ["London", "london"],
     },
     "Chicago": {
         "timezone": ZoneInfo("America/Chicago"),
-        # O'Hare International Airport (KORD) — Polymarket resolution station
+        "station_id": "KORD",
         "lat": 41.9742,
         "lon": -87.9073,
         "search_terms": ["Chicago", "chicago"],
     },
     "New York City": {
         "timezone": ZoneInfo("America/New_York"),
-        # LaGuardia Airport (KLGA) — Polymarket resolution station
-        "lat": 40.7769,
-        "lon": -73.8740,
+        "station_id": "KNYC",
+        "lat": 40.7812,
+        "lon": -73.9665,
         "search_terms": ["New York", "NYC", "new york"],
     },
     "Hong Kong": {
         "timezone": ZoneInfo("Asia/Hong_Kong"),
-        # Hong Kong Observatory — Polymarket resolution station
-        "lat": 22.3020,
-        "lon": 114.1740,
+        "station_id": "HKO",
+        "lat": 22.3019,
+        "lon": 114.1741,
         "search_terms": ["Hong Kong", "hong kong"],
     },
 }
@@ -61,7 +61,7 @@ MARKET_KEYWORDS = [
 # ── Open-Meteo API ───────────────────────────────────────────────────────────
 OPEN_METEO_BASE          = "https://api.open-meteo.com/v1/forecast"
 OPEN_METEO_ENSEMBLE_BASE = "https://ensemble-api.open-meteo.com/v1/ensemble"
-ENSEMBLE_MODEL           = "icon_seamless"   # 40 members, global, free tier
+ENSEMBLE_MODEL           = "icon_seamless,gfs_seamless,ecmwf_ifs04"   # 122 members total (ICON + GFS + ECMWF)
 OPEN_METEO_PARAMS = {
     "daily": "temperature_2m_max,temperature_2m_min",
     "hourly": "temperature_2m",

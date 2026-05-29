@@ -1718,7 +1718,9 @@ def main():
 
         plot_forecast_drift_all(data_dir, cities, output_dir)
 
-    print_report(opps_df)
+    # Only show future markets in the terminal report to avoid confusion
+    today_str = datetime.now(timezone.utc).date().isoformat()
+    print_report(opps_df[opps_df["target_date"] >= today_str] if not opps_df.empty else opps_df)
 
     if not opps_df.empty:
         opps_df.to_csv(output_dir / "opportunities_v4.csv", index=False)

@@ -107,10 +107,11 @@ def fetch_ensemble(city: str) -> dict:
         logger.warning("No daily data in ensemble response for %s", city)
         return {}
 
-    # Collect member column names: e.g. "temperature_2m_max_member01"
+    # Collect member column names.
+    # Single model: "temperature_2m_max_member01"
+    # Multi-model: "temperature_2m_max_gfs_seamless_member01"
     member_keys = sorted(
-        k for k in daily_raw
-        if k.startswith("temperature_2m_max_member")
+        k for k in daily_raw if k.startswith("temperature_2m_max") and "_member" in k
     )
     if not member_keys:
         logger.warning("No ensemble member columns found for %s (got keys: %s)",
