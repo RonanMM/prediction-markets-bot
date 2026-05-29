@@ -49,12 +49,15 @@ def _setup_logging(verbose: bool = False) -> None:
     level = logging.DEBUG if verbose else logging.INFO
     fmt   = "%(asctime)s [%(levelname)s] %(name)s — %(message)s"
 
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+
     logging.basicConfig(
         level=level,
         format=fmt,
         handlers=[
             logging.StreamHandler(sys.stdout),
-            logging.FileHandler(log_file),
+            logging.FileHandler(log_file, encoding="utf-8"),
         ],
     )
     logging.getLogger("urllib3").setLevel(logging.WARNING)

@@ -1576,7 +1576,7 @@ class WeatherBettingBot:
                 effective_market_yes_prob = vwap_price if o.bet_side == "Yes" else 1.0 - vwap_price
                 real_edge = o.forecast_prob - effective_market_yes_prob
 
-                if abs(real_edge) < min_edge:
+                if (o.bet_side == "Yes" and real_edge < min_edge) or (o.bet_side == "No" and real_edge > -min_edge):
                     print(f"  [SKIP] {o.question[:45]}… — Slippage killed edge (VWAP: {vwap_price:.2f})")
                     continue
                 
