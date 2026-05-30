@@ -18,9 +18,9 @@ CITIES = {
     },
     "London": {
         "timezone": ZoneInfo("Europe/London"),
-        "station_id": "EGLL",
-        "lat": 51.4700,
-        "lon": -0.4543,
+        "station_id": "EGLC",
+        "lat": 51.5048,
+        "lon": 0.0520,
         "search_terms": ["London", "london"],
     },
     "Chicago": {
@@ -32,9 +32,9 @@ CITIES = {
     },
     "New York City": {
         "timezone": ZoneInfo("America/New_York"),
-        "station_id": "KNYC",
-        "lat": 40.7812,
-        "lon": -73.9665,
+        "station_id": "KLGA",
+        "lat": 40.7769,
+        "lon": -73.8740,
         "search_terms": ["New York", "NYC", "new york"],
     },
     "Hong Kong": {
