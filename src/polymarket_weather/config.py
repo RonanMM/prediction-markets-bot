@@ -18,7 +18,7 @@ CITIES = {
     },
     "London": {
         "timezone": ZoneInfo("Europe/London"),
-        "station_id": "EGLC",
+        "station_id": "EGLC",  # DO NOT CHANGE: Polymarket uses London City Airport, NOT Heathrow
         "lat": 51.5048,
         "lon": 0.0520,
         "search_terms": ["London", "london"],
@@ -32,7 +32,7 @@ CITIES = {
     },
     "New York City": {
         "timezone": ZoneInfo("America/New_York"),
-        "station_id": "KLGA",
+        "station_id": "KLGA",  # DO NOT CHANGE: Polymarket uses LaGuardia Airport, NOT Central Park
         "lat": 40.7769,
         "lon": -73.8740,
         "search_terms": ["New York", "NYC", "new york"],
