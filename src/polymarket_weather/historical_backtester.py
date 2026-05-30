@@ -8,11 +8,11 @@ from pathlib import Path
 
 # ── 1. The Exact Airport Coordinates ─────────────────────────────────────────
 RESOLUTION_STATIONS = {
-    "Chicago": {"lat": 41.9742, "lon": -87.9073},       
-    "NYC": {"lat": 40.7812, "lon": -73.9665}, 
-    "London": {"lat": 51.4700, "lon": -0.4543},         
-    "HongKong": {"lat": 22.3019, "lon": 114.1741},      
-    "Seoul": {"lat": 37.5714, "lon": 126.9658},         
+    "Chicago": {"lat": 41.9742, "lon": -87.9073},       # O'Hare (KORD)
+    "NYC": {"lat": 40.7769, "lon": -73.8740},           # LaGuardia (KLGA)
+    "London": {"lat": 51.5050, "lon": 0.0553},          # London City Airport (EGLC)
+    "HongKong": {"lat": 22.3019, "lon": 114.1741},      # Hong Kong Observatory HQ
+    "Seoul": {"lat": 37.4602, "lon": 126.4407},         # Incheon Intl Airport (RKSI)
 }
 
 def fetch_actual_weather(city: str, target_date: str) -> float:
