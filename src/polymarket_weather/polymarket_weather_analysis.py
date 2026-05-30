@@ -315,8 +315,9 @@ def _get_nwp_params(days_ahead: float) -> tuple[float, float]:
 
 def _cdf(x: float, mu: float, sigma: float, nu: float) -> float:
     """Student-t CDF; falls back to Gaussian when nu>30."""
+    import scipy.stats
     if nu > 30:
-        return 0.5 * (1 + erf((x - mu) / (sigma * sqrt(2))))
+        return float(scipy.stats.norm.cdf(x, loc=mu, scale=sigma))
     return float(student_t.cdf((x - mu) / sigma, df=nu))
 
 
@@ -324,7 +325,13 @@ def _bin_prob(temp_c: float, mu: float, sigma: float, nu: float,
               half_width: float = 0.5) -> float:
     """P(temp_c - half_width < actual <= temp_c + half_width).
     Use half_width=0.278 for Fahrenheit markets (0.5°F in °C)."""
-    return _cdf(temp_c + half_width, mu, sigma, nu) - _cdf(temp_c - half_width, mu, sigma, nu)
+    import scipy.stats
+    upper_bound = temp_c + half_width
+    lower_bound = temp_c - half_width
+    if nu > 30:
+        prob = scipy.stats.norm.cdf(upper_bound, loc=mu, scale=sigma) - scipy.stats.norm.cdf(lower_bound, loc=mu, scale=sigma)
+        return float(prob)
+    return _cdf(upper_bound, mu, sigma, nu) - _cdf(lower_bound, mu, sigma, nu)
 
 
 def _condition_prob(parsed: dict, mu: float, sigma: float, nu: float) -> float:
@@ -977,10 +984,28 @@ def analyse_city(data_dir: Path, city: str,
 
         ens_params = _get_ensemble_params(ens_df, target_date_ts, fetch_time)
         if ens_params is not None:
-            mu           = ens_params["ens_mean"]
-            sigma        = max(0.5, ens_params["ens_std"]) + s_boost
-            nu           = _fit_nu_from_ensemble(ens_params)   # data-driven tail shape
-            sigma_source = "ensemble"
+            raw_mu = ens_params["ens_mean"]
+            import joblib, json, scipy.stats
+            from datetime import datetime
+            city_slug = city.replace(' ', '_').lower()
+            try:
+                model = joblib.load(f"models/{city_slug}_calibrator.joblib")
+                with open(f"models/{city_slug}_sigma.json", "r") as f:
+                    sigma_data = json.load(f)
+                sigma_cal = sigma_data["sigma"]
+                
+                day_of_year = target_date_ts.dayofyear
+                calibrated_mu = model.predict([[raw_mu, day_of_year]])[0]
+                
+                mu           = calibrated_mu
+                sigma        = sigma_cal
+                nu           = 100.0  # Force Gaussian/scipy norm behavior
+                sigma_source = "ml_calibrated"
+            except Exception as e:
+                mu           = raw_mu
+                sigma        = max(0.5, ens_params["ens_std"]) + s_boost
+                nu           = _fit_nu_from_ensemble(ens_params)   # data-driven tail shape
+                sigma_source = "ensemble"
         else:
             sigma_base, _ = _get_nwp_params(days_fwd)
             mu           = mu_det
