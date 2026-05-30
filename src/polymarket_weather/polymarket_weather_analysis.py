@@ -926,7 +926,8 @@ def check_orderbook_vwap(condition_id: str, bet_side: str, target_size_usdc: flo
 
 def analyse_city(data_dir: Path, city: str,
                  min_edge: float = MIN_EDGE,
-                 min_liq:  float = MIN_LIQUIDITY) -> list[Opportunity]:
+                 min_liq:  float = MIN_LIQUIDITY,
+                 use_ml: bool = True) -> list[Opportunity]:
 
     try:
         snap_df  = load_snapshots(data_dir, city)
@@ -985,23 +986,29 @@ def analyse_city(data_dir: Path, city: str,
         ens_params = _get_ensemble_params(ens_df, target_date_ts, fetch_time)
         if ens_params is not None:
             raw_mu = ens_params["ens_mean"]
-            import joblib, json, scipy.stats
-            from datetime import datetime
-            city_slug = city.replace(' ', '_').lower()
-            try:
-                model = joblib.load(f"models/{city_slug}_calibrator.joblib")
-                with open(f"models/{city_slug}_sigma.json", "r") as f:
-                    sigma_data = json.load(f)
-                sigma_cal = sigma_data["sigma"]
-                
-                day_of_year = target_date_ts.dayofyear
-                calibrated_mu = model.predict([[raw_mu, day_of_year]])[0]
-                
-                mu           = calibrated_mu
-                sigma        = sigma_cal
-                nu           = 100.0  # Force Gaussian/scipy norm behavior
-                sigma_source = "ml_calibrated"
-            except Exception as e:
+            ml_loaded = False
+            if use_ml:
+                import joblib, json, scipy.stats
+                from datetime import datetime
+                city_slug = city.replace(' ', '_').lower()
+                try:
+                    model = joblib.load(f"../../models/{city_slug}_calibrator.joblib")
+                    with open(f"../../models/{city_slug}_sigma.json", "r") as f:
+                        sigma_data = json.load(f)
+                    sigma_cal = sigma_data["sigma"]
+                    
+                    day_of_year = target_date_ts.dayofyear
+                    calibrated_mu = model.predict([[raw_mu, day_of_year]])[0]
+                    
+                    mu           = calibrated_mu
+                    sigma        = sigma_cal
+                    nu           = 100.0  # Force Gaussian/scipy norm behavior
+                    sigma_source = "ml_calibrated"
+                    ml_loaded = True
+                except Exception as e:
+                    pass
+
+            if not ml_loaded:
                 mu           = raw_mu
                 sigma        = max(0.5, ens_params["ens_std"]) + s_boost
                 nu           = _fit_nu_from_ensemble(ens_params)   # data-driven tail shape
@@ -1787,6 +1794,7 @@ def main():
         help="Actually place orders (requires POLYMARKET_PRIVATE_KEY env var). "
              "Implies --live. Use with extreme caution.",
     )
+    parser.add_argument("--disable_ml", action="store_true", help="Disable ML models and fall back to ensemble/student-t")
     args = parser.parse_args()
 
     dry_run   = not args.execute
@@ -1815,7 +1823,7 @@ def main():
     for city in cities:
         print(f"── {city.upper()} ──")
         opps = analyse_city(data_dir, city,
-                            min_edge=args.min_edge, min_liq=args.min_liq)
+                            min_edge=args.min_edge, min_liq=args.min_liq, use_ml=not args.disable_ml)
         if opps:
             print(f"  → {len(opps)} opportunities found")
         all_opps.extend(opps)
@@ -1849,8 +1857,16 @@ def main():
     print_report(opps_df[opps_df["target_date"] >= today_str] if not opps_df.empty else opps_df)
 
     if not opps_df.empty:
+        # Standard save for backward compatibility
         opps_df.to_csv(output_dir / "opportunities_v4.csv", index=False)
+        
+        # Save to evaluation CSVs for the 10-day test (overwrites each time with full history)
+        eval_filename = "opportunities_evaluation_ensemble.csv" if args.disable_ml else "opportunities_evaluation_ml.csv"
+        eval_path = output_dir / eval_filename
+        opps_df.to_csv(eval_path, index=False)
+        
         print(f"\n  Saved: {output_dir}/opportunities_v4.csv")
+        print(f"  Saved evaluation tracker: {eval_path}")
 
     bot = WeatherBettingBot(
         bankroll=args.bankroll, dry_run=dry_run, live_mode=live_mode

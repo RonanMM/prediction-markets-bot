@@ -1,6 +1,7 @@
 """
 historical_backtester.py — Grades your point-in-time weather predictions against actual Polymarket resolutions.
 """
+import sys
 import pandas as pd
 import requests
 import time
@@ -35,9 +36,10 @@ def fetch_actual_weather(city: str, target_date: str) -> float:
         return None
 
 def run_backtest():
-    opps_file = Path("output/opportunities_v4.csv")
+    filename = sys.argv[2] if len(sys.argv) > 2 else "output/opportunities_v4.csv"
+    opps_file = Path(filename)
     if not opps_file.exists():
-        print("No opportunities_v4.csv found. Run your analyzer first!")
+        print(f"No {filename} found. Run your analyzer first!")
         return
 
     df = pd.read_csv(opps_file)
@@ -46,9 +48,9 @@ def run_backtest():
     # Betting 1 hour before expiry is easy because the weather is already happening!
     df = df[df["days_ahead"] >= 0.5].copy()
     
-    # ── POST-MARCH FILTER ──
-    # Only grade markets from May onwards to see the new model's performance
-    df = df[df["target_date"] >= "2026-05-01"].copy()
+    start_date = sys.argv[1] if len(sys.argv) > 1 else "2000-01-01"
+    # ── DATE FILTER ──
+    df = df[df["target_date"] >= start_date].copy()
 
     if df.empty:
         print("No historical bets found with > 0.5 days ahead.")
