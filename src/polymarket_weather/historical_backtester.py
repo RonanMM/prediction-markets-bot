@@ -1,5 +1,12 @@
 """
 historical_backtester.py — Grades your point-in-time weather predictions against actual Polymarket resolutions.
+
+HOW THE BACKTESTING ARCHITECTURE WORKS:
+1. The Data Vault (data/): Every time you run main.py or the fetch scripts, it saves a snapshot of the live Polymarket odds and Open-Meteo forecasts into the `data/` folder. This folder acts as an append-only historical vault.
+2. The Time Machine (polymarket_weather_analysis.py): When you run the analyzer, it iterates through all of those historical snapshots in the `data/` folder. It pretends to be at that exact moment in time, applies your chosen model (e.g. ML Ensemble vs NWP Baseline), makes a betting decision, and saves that massive historical ledger of simulated bets to `output/opportunities_v4.csv`.
+3. The Grader (this script): This script simply reads that `opportunities_v4.csv` simulation ledger. It filters out bets made less than 12 hours in advance (too easy), fetches the actual ground-truth recorded temperatures from the archive API for the resolution airports, and grades the simulated bets as WIN/LOSS to calculate your true ROI.
+
+Because of this architecture, you can completely change the bot's math or switch models, re-run the analyzer to overwrite the CSV with a new simulation, and immediately run this script to see if your new model would have been more profitable over the last few months!
 """
 import pandas as pd
 import requests
@@ -48,7 +55,7 @@ def run_backtest():
     
     # ── POST-MARCH FILTER ──
     # Only grade markets from May onwards to see the new model's performance
-    df = df[df["target_date"] >= "2026-05-01"].copy()
+    # df = df[df["target_date"] >= "2026-05-01"].copy()
 
     if df.empty:
         print("No historical bets found with > 0.5 days ahead.")
