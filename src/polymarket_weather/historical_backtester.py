@@ -56,7 +56,6 @@ def run_backtest():
         print("No historical bets found with > 0.5 days ahead.")
         return
 
-    # ── DEDUPLICATION ──
     # Only grade the final prediction the bot made for each market before the cutoff
     df = df.sort_values("fetched_at").groupby("condition_id").last().reset_index()
 
