@@ -945,9 +945,11 @@ def analyse_city(data_dir: Path, city: str,
         print(f"  Ensemble not available — falling back to NWP_PARAMS table")
 
     results: list[Opportunity] = []
+    cheapest_entries = {}
 
-    # Group by (target_date, fetch_bucket) to process each snapshot window
+    # Group by (target_date, fetch_bucket) to process each snapshot window chronologically
     snap_df["end_date_norm"] = snap_df["end_date_iso"].dt.normalize()
+    snap_df = snap_df.sort_values("fetched_at_utc")
     groups = snap_df.groupby(["end_date_norm", "fetch_bucket"], sort=False)
     print(f"  {city}: {len(groups)} (date × snapshot) groups, "
           f"{snap_df['condition_id'].nunique()} unique markets", flush=True)
@@ -977,15 +979,31 @@ def analyse_city(data_dir: Path, city: str,
         fc_row  = fc_candidates.sort_values("fetched_at_utc").iloc[-1]
         mu_det  = float(fc_row["temp_max_c"])   # deterministic forecast
 
-        # ── Sigma: ensemble spread if available, else NWP lookup ──────────
-        # The ensemble std is a direct measure of model spread (actual
-        # disagreement among 40 members), far superior to a fixed lookup.
         s_boost = spread_sigma_boost(daily_df, target_date_ts, fetch_time)
-        _, nu   = _get_nwp_params(days_fwd)
+        # Default initialization for fallbacks (NWP table)
+        sigma_base, nu_base = _get_nwp_params(days_fwd)
+        mu_ml = mu_ens = mu_det
+        sigma_ml = sigma_ens = sigma_base + s_boost
+        nu_ml = nu_ens = nu_base
+        sigma_source = "nwp_table"
 
         ens_params = _get_ensemble_params(ens_df, target_date_ts, fetch_time)
         if ens_params is not None:
             raw_mu = ens_params["ens_mean"]
+            raw_sigma = max(0.5, ens_params["ens_std"]) + s_boost
+            raw_nu = _fit_nu_from_ensemble(ens_params)
+            
+            # Setup Ensemble parameters
+            mu_ens = raw_mu
+            sigma_ens = raw_sigma
+            nu_ens = raw_nu
+            
+            # Default ML parameters to match Ensemble if ML fails to load
+            mu_ml = raw_mu
+            sigma_ml = raw_sigma
+            nu_ml = raw_nu
+            sigma_source = "ensemble"
+            
             ml_loaded = False
             if use_ml:
                 import joblib, json, scipy.stats
@@ -1000,24 +1018,20 @@ def analyse_city(data_dir: Path, city: str,
                     day_of_year = target_date_ts.dayofyear
                     calibrated_mu = model.predict([[raw_mu, day_of_year]])[0]
                     
-                    mu           = calibrated_mu
-                    sigma        = sigma_cal
-                    nu           = 100.0  # Force Gaussian/scipy norm behavior
-                    sigma_source = "ml_calibrated"
+                    mu_ml = calibrated_mu
+                    sigma_ml = raw_sigma  # Keep dynamic flow-dependent uncertainty for ML
+                    nu_ml = raw_nu
+                    sigma_source = "ml_portfolio"
                     ml_loaded = True
                 except Exception as e:
                     pass
-
-            if not ml_loaded:
-                mu           = raw_mu
-                sigma        = max(0.5, ens_params["ens_std"]) + s_boost
-                nu           = _fit_nu_from_ensemble(ens_params)   # data-driven tail shape
-                sigma_source = "ensemble"
         else:
-            sigma_base, _ = _get_nwp_params(days_fwd)
-            mu           = mu_det
-            sigma        = sigma_base + s_boost
             sigma_source = "nwp_table"
+
+        # Keep default mu, sigma, nu for PMF reconstruction and backward compatibility
+        mu = mu_ml
+        sigma = sigma_ml
+        nu = nu_ml
 
         # ── Alpha signals ──────────────────────────────────────────────────
         mom    = compute_momentum(daily_df, target_date_ts, fetch_time)   # α1
@@ -1064,28 +1078,51 @@ def analyse_city(data_dir: Path, city: str,
         #   f_prob_raw = our model's P(temp = X)  from Student-t distribution
         #   m_prob_raw = b.yes_prob               the actual Polymarket price
         # Do NOT use normalized PMF values for edge/Kelly — those are for the
-        # consistency check (α5) only. The real tradeable edge is raw vs raw.
         for b in exact_bins:
             if b.liquidity < min_liq:
                 continue
 
-            f_prob_raw = _bin_prob(b.temp_c, mu, sigma, nu, b.half_width)
-            m_prob_raw = b.yes_prob   # actual market price you pay
+            # Compute raw probabilities from both models
+            f_prob_ml = _bin_prob(b.temp_c, mu_ml, sigma_ml, nu_ml, b.half_width)
+            f_prob_ens = _bin_prob(b.temp_c, mu_ens, sigma_ens, nu_ens, b.half_width)
 
-            if f_prob_raw < 1e-6:
-                continue
+            m_prob_raw = b.yes_prob   # actual market price you pay
 
             # Skip near-settled markets (price approaching 0 or 1)
             if m_prob_raw < MIN_MARKET_PRICE or m_prob_raw > (1.0 - MIN_MARKET_PRICE):
                 continue
 
-            edge = f_prob_raw - m_prob_raw
-            if abs(edge) < min_edge:
+            # Filter: only bet if the ML model sees a tradeable edge
+            edge_ml = f_prob_ml - m_prob_raw
+            if abs(edge_ml) < min_edge:
                 continue
 
-            bet_side   = "Yes" if edge > 0 else "No"
-            our_prob   = f_prob_raw if edge > 0 else (1.0 - f_prob_raw)
-            their_prob = m_prob_raw if edge > 0 else (1.0 - m_prob_raw)
+            # Bet side is dictated by the direction of the ML model
+            bet_side = "Yes" if edge_ml > 0 else "No"
+            
+            # Sizing: use the maximum of the two probabilities for the bet side (ML vs Ensemble)
+            our_prob_ml = f_prob_ml if bet_side == "Yes" else (1.0 - f_prob_ml)
+            our_prob_ens = f_prob_ens if bet_side == "Yes" else (1.0 - f_prob_ens)
+            our_prob = max(our_prob_ml, our_prob_ens)
+            
+            # Reconstruct f_prob_raw (our effective probability) and edge for Kelly sizing
+            f_prob_raw = our_prob if bet_side == "Yes" else (1.0 - our_prob)
+            their_prob = m_prob_raw if bet_side == "Yes" else (1.0 - m_prob_raw)
+            edge = our_prob - their_prob
+
+            # Lock-In: preserve the early cheap/high-leverage bets in the backtester
+            prev_price = cheapest_entries.get(b.condition_id)
+            if prev_price is not None:
+                # If we entered cheap (<30% price) and the price went up by >10% (more than 10 cents), skip
+                if prev_price < 0.30 and their_prob > (prev_price + 0.10):
+                    continue
+                # General slip: if the price moved against us by >15% (15 cents), skip
+                if their_prob > (prev_price + 0.15):
+                    continue
+            
+            # Update cheapest entry price
+            if prev_price is None or their_prob < prev_price:
+                cheapest_entries[b.condition_id] = their_prob
 
             # PMF-normalized values kept for reporting/consistency signal
             m_prob = market_pmf.get(b.temp_c, m_prob_raw)
