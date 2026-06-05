@@ -1,7 +1,7 @@
 import numpy as np
 np.NaN = np.nan
 import pandas as pd
-from meteostat import Daily, Stations
+from meteostat import daily as Daily, stations as Stations
 from datetime import datetime, timedelta
 import logging
 import os
