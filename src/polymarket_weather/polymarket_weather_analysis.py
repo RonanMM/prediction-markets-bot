@@ -28,6 +28,8 @@ from datetime import datetime, timezone
 from math import erf, sqrt, log, pi
 from pathlib import Path
 from typing import Optional
+from predictors import MLCalibratorPredictor, EnsemblePredictor
+from predictors.nwp_fallback import spread_sigma_boost
 
 import numpy as np
 import pandas as pd
@@ -165,47 +167,6 @@ def load_ensemble(data_dir: Path, city: str) -> Optional[pd.DataFrame]:
     return df
 
 
-def _get_ensemble_params(ens_df: Optional[pd.DataFrame],
-                          target_date, fetch_time) -> Optional[dict]:
-    """
-    Look up the best ensemble snapshot for target_date.
-    Prefers the latest row fetched at or before fetch_time (to avoid look-ahead
-    in back-testing). If none exist (e.g. ensemble was fetched after the snapshot),
-    falls back to the latest available row for that date — correct for live use.
-    Returns dict with ens_mean, ens_std, ens_p10, ens_p90 — or None if unavailable.
-    """
-    if ens_df is None or ens_df.empty:
-        return None
-
-    td = pd.Timestamp(target_date).normalize()
-    if td.tzinfo is not None:
-        td = td.tz_localize(None)
-
-    date_rows = ens_df[ens_df["date_local"].dt.normalize() == td]
-    if date_rows.empty:
-        return None
-
-    # Prefer rows fetched at or before the snapshot's fetch_time (no look-ahead)
-    sub = date_rows[date_rows["fetched_at_utc"] <= fetch_time]
-    if sub.empty:
-        # Fall back to latest available (correct for live analysis)
-        sub = date_rows
-
-    row = sub.sort_values("fetched_at_utc").iloc[-1]
-    std = float(row.get("ens_std", np.nan))
-    if np.isnan(std) or std <= 0:
-        return None
-
-    return {
-        "ens_mean":   float(row.get("ens_mean",   np.nan)),
-        "ens_std":    std,
-        "ens_p10":    float(row.get("ens_p10",    np.nan)),
-        "ens_p90":    float(row.get("ens_p90",    np.nan)),
-        "ens_spread": float(row.get("ens_spread", np.nan)),
-        "n_members":  int(row.get("n_members", 0)),
-    }
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 # QUESTION PARSER
 # ══════════════════════════════════════════════════════════════════════════════
@@ -307,11 +268,6 @@ def parse_question(q: str) -> Optional[dict]:
 # PROBABILITY ENGINE — Student-t with adaptive sigma
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _get_nwp_params(days_ahead: float) -> tuple[float, float]:
-    """Return (sigma, nu) for given horizon."""
-    d = int(np.clip(days_ahead, 0, 5))
-    return NWP_PARAMS.get(d, NWP_BEYOND)
-
 
 def _cdf(x: float, mu: float, sigma: float, nu: float) -> float:
     """Student-t CDF; falls back to Gaussian when nu>30."""
@@ -344,28 +300,6 @@ def _condition_prob(parsed: dict, mu: float, sigma: float, nu: float) -> float:
     if c == "range":  return (_cdf(parsed["temp_hi"], mu, sigma, nu) -
                               _cdf(parsed["temp_lo"], mu, sigma, nu))
     return np.nan
-
-
-def _fit_nu_from_ensemble(ens_params: dict) -> float:
-    """
-    Estimate Student-t degrees-of-freedom (nu) from ensemble p10/p90.
-
-    For a Student-t(nu): (p90 - p10) / sigma = 2 * t.ppf(0.9, df=nu).
-    We solve for the nu whose theoretical ratio best matches the empirical one.
-    Falls back to 8.0 (moderately heavy tails) when data is insufficient.
-    """
-    spread = ens_params.get("ens_spread", np.nan)   # p90 - p10
-    std    = ens_params.get("ens_std",    np.nan)
-    if np.isnan(spread) or np.isnan(std) or std < 1e-6:
-        return 8.0
-
-    empirical_ratio = spread / std   # should be ~2.56 for Gaussian
-    # Search candidate nu values from heavy-tailed to Gaussian
-    for nu in (4.0, 4.5, 5.0, 5.5, 6.0, 7.0, 8.0, 10.0, 12.0, 15.0, 20.0, 30.0):
-        expected = 2.0 * float(student_t.ppf(0.9, df=nu))
-        if expected >= empirical_ratio:
-            return nu
-    return 30.0   # effectively Gaussian
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -954,6 +888,9 @@ def analyse_city(data_dir: Path, city: str,
     print(f"  {city}: {len(groups)} (date × snapshot) groups, "
           f"{snap_df['condition_id'].nunique()} unique markets", flush=True)
 
+    ml_predictor = MLCalibratorPredictor(use_ml=use_ml)
+    ens_predictor = EnsemblePredictor()
+
     for (target_date_ts, fetch_bucket_ts), group in groups:
         # Representative fetch time
         fetch_time = group["fetched_at_utc"].max()
@@ -965,68 +902,39 @@ def analyse_city(data_dir: Path, city: str,
                        (target_date_ts.to_pydatetime() -
                         fetch_time.to_pydatetime()).total_seconds() / 86400)
 
-        # ── Get best forecast for this target date ─────────────────────────
-        td_norm = target_date_ts.normalize()
-        if td_norm.tzinfo is not None:
-            td_norm = td_norm.tz_localize(None)
-
-        fc_candidates = daily_df[
-            (daily_df["date_local"].dt.normalize() == td_norm) &
-            (daily_df["fetched_at_utc"] <= fetch_time)
-        ]
-        if fc_candidates.empty:
-            continue
-        fc_row  = fc_candidates.sort_values("fetched_at_utc").iloc[-1]
-        mu_det  = float(fc_row["temp_max_c"])   # deterministic forecast
-
         s_boost = spread_sigma_boost(daily_df, target_date_ts, fetch_time)
-        # Default initialization for fallbacks (NWP table)
-        sigma_base, nu_base = _get_nwp_params(days_fwd)
-        mu_ml = mu_ens = mu_det
-        sigma_ml = sigma_ens = sigma_base + s_boost
-        nu_ml = nu_ens = nu_base
-        sigma_source = "nwp_table"
 
-        ens_params = _get_ensemble_params(ens_df, target_date_ts, fetch_time)
-        if ens_params is not None:
-            raw_mu = ens_params["ens_mean"]
-            raw_sigma = max(0.5, ens_params["ens_std"]) + s_boost
-            raw_nu = _fit_nu_from_ensemble(ens_params)
-            
-            # Setup Ensemble parameters
-            mu_ens = raw_mu
-            sigma_ens = raw_sigma
-            nu_ens = raw_nu
-            
-            # Default ML parameters to match Ensemble if ML fails to load
-            mu_ml = raw_mu
-            sigma_ml = raw_sigma
-            nu_ml = raw_nu
-            sigma_source = "ensemble"
-            
-            ml_loaded = False
-            if use_ml:
-                import joblib, json, scipy.stats
-                from datetime import datetime
-                city_slug = city.replace(' ', '_').lower()
-                try:
-                    model = joblib.load(f"../../models/{city_slug}_calibrator.joblib")
-                    with open(f"../../models/{city_slug}_sigma.json", "r") as f:
-                        sigma_data = json.load(f)
-                    sigma_cal = sigma_data["sigma"]
-                    
-                    day_of_year = target_date_ts.dayofyear
-                    calibrated_mu = model.predict([[raw_mu, day_of_year]])[0]
-                    
-                    mu_ml = calibrated_mu
-                    sigma_ml = raw_sigma  # Keep dynamic flow-dependent uncertainty for ML
-                    nu_ml = raw_nu
-                    sigma_source = "ml_portfolio"
-                    ml_loaded = True
-                except Exception as e:
-                    pass
-        else:
-            sigma_source = "nwp_table"
+        # ── Predict distribution parameters ────────────────────────────────
+        try:
+            dist_ml = ml_predictor.predict_distribution(
+                city=city,
+                target_date=target_date_ts,
+                fetch_time=fetch_time,
+                days_ahead=days_fwd,
+                daily_df=daily_df,
+                ens_df=ens_df
+            )
+            mu_ml = dist_ml.mu
+            sigma_ml = dist_ml.sigma
+            nu_ml = dist_ml.nu
+            sigma_source = dist_ml.source
+        except Exception:
+            continue
+
+        try:
+            dist_ens = ens_predictor.predict_distribution(
+                city=city,
+                target_date=target_date_ts,
+                fetch_time=fetch_time,
+                days_ahead=days_fwd,
+                daily_df=daily_df,
+                ens_df=ens_df
+            )
+            mu_ens = dist_ens.mu
+            sigma_ens = dist_ens.sigma
+            nu_ens = dist_ens.nu
+        except Exception:
+            mu_ens, sigma_ens, nu_ens = mu_ml, sigma_ml, nu_ml
 
         # Keep default mu, sigma, nu for PMF reconstruction and backward compatibility
         mu = mu_ml
