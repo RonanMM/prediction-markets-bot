@@ -1,3 +1,39 @@
+"""
+EnsemblePredictor: Dynamic Student-t Weather Ensemble Model
+===========================================================
+
+This model constructs a continuous probability distribution for temperatures
+by analyzing the spread across multiple independent weather forecast runs (ensemble members).
+
+Methodology & Core Mechanics:
+-----------------------------
+1. **Dynamic Uncertainty (Sigma Calculation)**:
+   - Traditional models assume a fixed forecast error for a given day (e.g., "forecasts at day 5 
+     have a standard deviation of 2.8°C").
+   - Instead, we query 40 independent runs of the German DWD ICON-Seamless ensemble model. 
+     If the runs are closely clustered, forecast uncertainty is low ($\sigma$ is small). If the 
+     runs diverge, uncertainty is high ($\sigma$ is large).
+   - Standard deviation of the ensemble is calculated and combined with a convective diurnal 
+     spread boost (`spread_sigma_boost`) to yield the dynamic uncertainty $\sigma$.
+
+2. **Heavy-Tail Modeling (Student-t Distribution)**:
+   - Real-world weather errors have heavier tails than a standard normal (Gaussian) distribution 
+     (i.e., extreme cold or hot snaps are more frequent than a bell curve suggests).
+   - We fit a Student-t distribution characterized by degrees of freedom ($\nu$). 
+   - To estimate $\nu$, we compare the empirical spread (p90 - p10 percentiles) against the 
+     standard deviation. We solve:
+     
+     (p90 - p10) / std = 2 * t.ppf(0.9, df=nu)
+     
+     Solving for $\nu$ calibrates the distribution's tail thickness dynamically. A small $\nu$ 
+     (e.g., 4.0) means heavy tails, while a large $\nu$ (e.g., 30.0) approaches a standard Gaussian.
+
+3. **Fallback to NWP Table**:
+   - If the ensemble data is unavailable, the model falls back to the `NWPFallbackPredictor`, 
+     which uses a fixed lookup table (`NWP_PARAMS`) representing typical numerical weather 
+     prediction error spreads for each lead day.
+"""
+
 from typing import Optional
 import pandas as pd
 import numpy as np

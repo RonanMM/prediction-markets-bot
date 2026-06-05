@@ -1,3 +1,35 @@
+"""
+MLCalibratorPredictor: Random Forest Forecast Calibration Model
+===============================================================
+
+This model corrects systematic biases in numerical weather predictions (NWP)
+using machine learning.
+
+Methodology & Core Mechanics:
+-----------------------------
+1. **Bias Correction (Mean Calibration)**:
+   - Raw weather models (like ECMWF or GFS) often suffer from localized errors due to elevation, 
+     urban heat island effects, or grid resolution.
+   - We train a city-specific `RandomForestRegressor` on historical grid forecasts versus 
+     actual airport station measurements (ground truth via Meteostat).
+   - The regressor predicts the calibrated temperature mean ($\mu_{ML}$) by correcting the 
+     raw forecast value based on seasonal trends.
+
+2. **Features Used**:
+   - `grid_temp_max_c`: The raw deterministic/ensemble mean temperature forecast.
+   - `day_of_year`: Captured as a cyclical feature to track seasonal offsets (e.g., the model 
+     might tend to overpredict in summer but underpredict in winter).
+
+3. **Uncertainty Modeling**:
+   - Instead of predicting a fixed error spread, this model inherits the dynamic, 
+     flow-dependent forecast spread ($\sigma_{ens}$) and tail-thickness ($\nu$) from the 
+     weather ensemble. This ensures we don't bet overconfidently when the atmosphere is unstable.
+
+4. **Robust Fallbacks**:
+   - If the ML model file (`.joblib`) is missing or fails to load, the predictor seamlessly 
+     falls back to the pure `EnsemblePredictor`.
+"""
+
 import joblib
 import json
 from pathlib import Path
