@@ -40,6 +40,8 @@ def _bin_prob(temp_c: float, mu: float, sigma: float, nu: float, half_width: flo
     lower_bound = temp_c - half_width
     return _cdf(upper_bound, mu, sigma, nu) - _cdf(lower_bound, mu, sigma, nu)
 
+WEATHER_CACHE = {}
+
 def simulate_strategy(ml_path: Path, strategy_name: str, **kwargs):
     if not ml_path.exists():
         return
@@ -50,8 +52,9 @@ def simulate_strategy(ml_path: Path, strategy_name: str, **kwargs):
     
     df = df.sort_values("fetched_at").groupby("condition_id").last().reset_index()
     
-    weather_cache = {}
+    global WEATHER_CACHE
     total_bets = 0
+
     wins = 0
     total_profit = 0.0
     total_staked = 0.0
@@ -133,11 +136,11 @@ def simulate_strategy(ml_path: Path, strategy_name: str, **kwargs):
             
         # 3. Fetch Truth
         cache_key = f"{city}_{target_date}"
-        if cache_key not in weather_cache:
-            weather_cache[cache_key] = fetch_actual_weather(city, target_date)
+        if cache_key not in WEATHER_CACHE:
+            WEATHER_CACHE[cache_key] = fetch_actual_weather(city, target_date)
             time.sleep(0.05)
             
-        actual_temp = weather_cache[cache_key]
+        actual_temp = WEATHER_CACHE[cache_key]
         if actual_temp is None:
             continue
             
@@ -213,5 +216,3 @@ def main():
 if __name__ == "__main__":
     main()
 
-if __name__ == "__main__":
-    main()
