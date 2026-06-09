@@ -40,8 +40,9 @@ from .ensemble import EnsemblePredictor, get_ensemble_params, fit_nu_from_ensemb
 from .nwp_fallback import spread_sigma_boost
 
 class MLCalibratorPredictor(BasePredictor):
-    def __init__(self, use_ml: bool = True):
+    def __init__(self, use_ml: bool = True, sigma_threshold: float = 1.2):
         self.use_ml = use_ml
+        self.sigma_threshold = sigma_threshold
         self._ensemble_predictor = EnsemblePredictor()
 
     def predict_distribution(
@@ -70,6 +71,14 @@ class MLCalibratorPredictor(BasePredictor):
 
         raw_mu = ens_params["ens_mean"]
         raw_sigma = max(0.5, ens_params["ens_std"])
+        
+        # Sigma Filter: if ensemble spread is too high (unstable/dynamic weather),
+        # trust physics-based ensemble and skip ML bias correction
+        if raw_sigma > self.sigma_threshold:
+            return self._ensemble_predictor.predict_distribution(
+                city, target_date, fetch_time, days_ahead, daily_df, ens_df
+            )
+            
         raw_nu = fit_nu_from_ensemble(ens_params)
         s_boost = spread_sigma_boost(daily_df, target_date, fetch_time)
 

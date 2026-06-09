@@ -658,7 +658,7 @@ def _score_opportunity(opp: Opportunity) -> float:
     return round(score, 6)
 
 
-def _kelly_size(opp: Opportunity, fee: float = FEE_RATE) -> float:
+def _kelly_size(opp: Opportunity, kelly_fraction: float = KELLY_FRACTION, fee: float = FEE_RATE) -> float:
     """
     Fractional Kelly with fee adjustment.
 
@@ -673,7 +673,7 @@ def _kelly_size(opp: Opportunity, fee: float = FEE_RATE) -> float:
     if b <= 0:
         return 0.0
     q   = opp.our_prob
-    raw = KELLY_FRACTION * (b * q - (1.0 - q)) / b
+    raw = kelly_fraction * (b * q - (1.0 - q)) / b
     return float(np.clip(raw, 0.0, MAX_KELLY_PER_BET))
 
 
@@ -861,7 +861,10 @@ def check_orderbook_vwap(condition_id: str, bet_side: str, target_size_usdc: flo
 def analyse_city(data_dir: Path, city: str,
                  min_edge: float = MIN_EDGE,
                  min_liq:  float = MIN_LIQUIDITY,
-                 use_ml: bool = True) -> list[Opportunity]:
+                 use_ml: bool = True,
+                 kelly_fraction: float = KELLY_FRACTION,
+                 sigma_threshold: float = 1.2,
+                 conflict_gating: bool = True) -> list[Opportunity]:
 
     try:
         snap_df  = load_snapshots(data_dir, city)
@@ -888,7 +891,7 @@ def analyse_city(data_dir: Path, city: str,
     print(f"  {city}: {len(groups)} (date × snapshot) groups, "
           f"{snap_df['condition_id'].nunique()} unique markets", flush=True)
 
-    ml_predictor = MLCalibratorPredictor(use_ml=use_ml)
+    ml_predictor = MLCalibratorPredictor(use_ml=use_ml, sigma_threshold=sigma_threshold)
     ens_predictor = EnsemblePredictor()
 
     for (target_date_ts, fetch_bucket_ts), group in groups:
@@ -1000,13 +1003,18 @@ def analyse_city(data_dir: Path, city: str,
             if m_prob_raw < MIN_MARKET_PRICE or m_prob_raw > (1.0 - MIN_MARKET_PRICE):
                 continue
 
-            # Filter: only bet if the ML model sees a tradeable edge
+            # Compute edges and sides for both models
             edge_ml = f_prob_ml - m_prob_raw
-            if abs(edge_ml) < min_edge:
+            edge_ens = f_prob_ens - m_prob_raw
+            
+            bet_side_ml = "Yes" if edge_ml > 0 else "No"
+            bet_side_ens = "Yes" if edge_ens > 0 else "No"
+
+            # Conflict Gating: skip if ML and Ensemble bet sides disagree
+            if conflict_gating and bet_side_ml != bet_side_ens:
                 continue
 
-            # Bet side is dictated by the direction of the ML model
-            bet_side = "Yes" if edge_ml > 0 else "No"
+            bet_side = bet_side_ml
             
             # Sizing: use the maximum of the two probabilities for the bet side (ML vs Ensemble)
             our_prob_ml = f_prob_ml if bet_side == "Yes" else (1.0 - f_prob_ml)
@@ -1017,6 +1025,10 @@ def analyse_city(data_dir: Path, city: str,
             f_prob_raw = our_prob if bet_side == "Yes" else (1.0 - our_prob)
             their_prob = m_prob_raw if bet_side == "Yes" else (1.0 - m_prob_raw)
             edge = our_prob - their_prob
+
+            # Minimum edge check on the combined maximum probability
+            if abs(edge) < min_edge:
+                continue
 
             # Lock-In: preserve the early cheap/high-leverage bets in the backtester
             prev_price = cheapest_entries.get(b.condition_id)
@@ -1082,7 +1094,7 @@ def analyse_city(data_dir: Path, city: str,
                 group_key      = f"{city}|{target_date_ts.date()}",
             )
             opp.alpha_score = _score_opportunity(opp)
-            opp.kelly       = _kelly_size(opp)
+            opp.kelly       = _kelly_size(opp, kelly_fraction=kelly_fraction)
             opp.ev_per_dollar = round(our_prob / their_prob - 1.0, 4)
             results.append(opp)
 
@@ -1094,21 +1106,40 @@ def analyse_city(data_dir: Path, city: str,
                 continue
 
             parsed  = {"condition": b.condition, "temp_c": b.temp_c, "half_width": b.half_width}
-            f_raw_p = _condition_prob(parsed, mu, sigma, nu)
-            m_raw_p = b.yes_prob
+            f_prob_ml = _condition_prob(parsed, mu_ml, sigma_ml, nu_ml)
+            f_prob_ens = _condition_prob(parsed, mu_ens, sigma_ens, nu_ens)
+
+            m_prob_raw = b.yes_prob
 
             # Skip near-settled markets
-            if m_raw_p < MIN_MARKET_PRICE or m_raw_p > (1.0 - MIN_MARKET_PRICE):
+            if m_prob_raw < MIN_MARKET_PRICE or m_prob_raw > (1.0 - MIN_MARKET_PRICE):
                 continue
 
-            edge    = f_raw_p - m_raw_p
+            # Compute edges and sides
+            edge_ml = f_prob_ml - m_prob_raw
+            edge_ens = f_prob_ens - m_prob_raw
 
+            bet_side_ml = "Yes" if edge_ml > 0 else "No"
+            bet_side_ens = "Yes" if edge_ens > 0 else "No"
+
+            # Conflict Gating: skip if ML and Ensemble bet sides disagree
+            if conflict_gating and bet_side_ml != bet_side_ens:
+                continue
+
+            bet_side = bet_side_ml
+
+            # Sizing: use the maximum of the two probabilities
+            our_prob_ml = f_prob_ml if bet_side == "Yes" else (1.0 - f_prob_ml)
+            our_prob_ens = f_prob_ens if bet_side == "Yes" else (1.0 - f_prob_ens)
+            our_prob = max(our_prob_ml, our_prob_ens)
+
+            f_prob_raw = our_prob if bet_side == "Yes" else (1.0 - our_prob)
+            their_prob = m_prob_raw if bet_side == "Yes" else (1.0 - m_prob_raw)
+            edge = our_prob - their_prob
+
+            # Minimum edge check
             if abs(edge) < min_edge:
                 continue
-
-            bet_side   = "Yes" if edge > 0 else "No"
-            our_prob   = f_raw_p if edge > 0 else (1.0 - f_raw_p)
-            their_prob = m_raw_p if edge > 0 else (1.0 - m_raw_p)
 
             vol_rec = volume_recency_signal(
                 group[group["condition_id"] == b.condition_id].iloc[0]
@@ -1128,9 +1159,9 @@ def analyse_city(data_dir: Path, city: str,
                 forecast_nu    = round(nu, 1),
                 sigma_boost    = round(s_boost, 3),
                 sigma_source   = sigma_source,
-                forecast_prob  = round(f_raw_p, 4),
-                market_prob    = round(m_raw_p, 4),
-                market_prob_raw= round(m_raw_p, 4),
+                forecast_prob  = round(f_prob_raw, 4),
+                market_prob    = round(m_prob_raw, 4),
+                market_prob_raw= round(m_prob_raw, 4),
                 edge           = round(edge, 4),
                 abs_edge       = round(abs(edge), 4),
                 bet_side       = bet_side,
@@ -1155,7 +1186,7 @@ def analyse_city(data_dir: Path, city: str,
                 group_key      = f"{city}|{target_date_ts.date()}",
             )
             opp.alpha_score = _score_opportunity(opp)
-            opp.kelly       = _kelly_size(opp)
+            opp.kelly       = _kelly_size(opp, kelly_fraction=kelly_fraction)
             opp.ev_per_dollar = round(our_prob / their_prob - 1.0, 4)
             results.append(opp)
 
@@ -1471,10 +1502,12 @@ class WeatherBettingBot:
     """
 
     def __init__(self, bankroll: float = 1000.0,
-                 dry_run: bool = True, live_mode: bool = False):
+                 dry_run: bool = True, live_mode: bool = False,
+                 kelly_fraction: float = KELLY_FRACTION):
         self.bankroll  = bankroll
         self.dry_run   = dry_run
         self.live_mode = live_mode
+        self.kelly_fraction = kelly_fraction
         self.log: list[dict] = []
 
     def run(self, opps: list[Opportunity], min_edge: float = MIN_EDGE,
@@ -1534,7 +1567,7 @@ class WeatherBettingBot:
                                           else 1.0 - live_p, 4)
                 o.edge            = round(live_edge, 4)
                 o.abs_edge        = round(abs(live_edge), 4)
-                o.kelly           = _kelly_size(o)
+                o.kelly           = _kelly_size(o, kelly_fraction=self.kelly_fraction)
                 o.ev_per_dollar   = round(o.our_prob / o.their_prob - 1.0, 4)
                 verified.append(o)
             candidate = verified
@@ -1740,6 +1773,9 @@ def main():
              "Implies --live. Use with extreme caution.",
     )
     parser.add_argument("--disable_ml", action="store_true", help="Disable ML models and fall back to ensemble/student-t")
+    parser.add_argument("--kelly_fraction", type=float, default=0.25, help="Kelly fraction multiplier for sizing bets")
+    parser.add_argument("--sigma_threshold", type=float, default=1.2, help="Ensemble sigma threshold above which we bypass ML calibrator")
+    parser.add_argument("--disable_conflict_gating", action="store_true", help="Disable conflict gating check between ML and Ensemble predictions")
     args = parser.parse_args()
 
     dry_run   = not args.execute
@@ -1768,7 +1804,12 @@ def main():
     for city in cities:
         print(f"── {city.upper()} ──")
         opps = analyse_city(data_dir, city,
-                            min_edge=args.min_edge, min_liq=args.min_liq, use_ml=not args.disable_ml)
+                            min_edge=args.min_edge,
+                            min_liq=args.min_liq,
+                            use_ml=not args.disable_ml,
+                            kelly_fraction=args.kelly_fraction,
+                            sigma_threshold=args.sigma_threshold,
+                            conflict_gating=not args.disable_conflict_gating)
         if opps:
             print(f"  → {len(opps)} opportunities found")
         all_opps.extend(opps)
@@ -1814,7 +1855,8 @@ def main():
         print(f"  Saved evaluation tracker: {eval_path}")
 
     bot = WeatherBettingBot(
-        bankroll=args.bankroll, dry_run=dry_run, live_mode=live_mode
+        bankroll=args.bankroll, dry_run=dry_run, live_mode=live_mode,
+        kelly_fraction=args.kelly_fraction
     )
     bot.run(all_opps, min_edge=args.min_edge, min_days=args.min_days)
 
