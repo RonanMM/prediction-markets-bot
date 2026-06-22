@@ -94,3 +94,27 @@ COLORS = {
         "#00BBF9", "#FEE440",
     ],
 }
+
+CITY_NAMES = {
+    "new_york_city": "NYC",
+    "new_york":      "NYC",
+    "london":        "London",
+    "chicago":       "Chicago",
+    "hong_kong":     "HongKong",
+    "seoul":         "Seoul",
+}
+# Based on ECMWF verification statistics for 2m Tmax
+MIN_EDGE              = 0.06      # 6 pp raw probability
+MIN_LIQUIDITY         = 1000      # USDC
+MIN_BINS_FOR_PMF      = 3         # need >=3 exact bins to reconstruct distribution
+KELLY_FRACTION        = 0.50      # fractional Kelly multiplier
+MAX_KELLY_PER_BET     = 0.08      # absolute cap per single market
+MAX_KELLY_PER_GROUP   = 0.20      # cap across correlated (city, date) group
+MAX_TOTAL_KELLY       = 0.40      # hard cap on total portfolio exposure per run
+
+# Polymarket fee: ~2% of the trade amount (taker fee on winning side)
+FEE_RATE              = 0.02
+
+# Minimum raw market price on either side of the bet.
+# Prices below this are near-settled/expired markets — skip them.
+MIN_MARKET_PRICE      = 0.02   # 2% — below this the market has effectively resolved

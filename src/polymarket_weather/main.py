@@ -27,7 +27,7 @@ from pathlib import Path
 
 from config import CITIES, LOGS_DIR, PLOTS_DIR
 from fetch_polymarket import fetch_weather_markets, fetch_price_history_for_market
-from fetch_weather import fetch_all_cities, fetch_forecast
+from fetch_weather import fetch_forecast
 from fetch_ensemble import fetch_ensemble
 from processing import (
     save_market_snapshots,

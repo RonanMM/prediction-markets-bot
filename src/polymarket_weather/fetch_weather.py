@@ -145,14 +145,4 @@ def fetch_forecast(city: str) -> dict:
     }
 
 
-def fetch_all_cities() -> dict[str, dict]:
-    """Fetch forecasts for every city in config. Returns {city: forecast_dict}."""
-    results = {}
-    for city in CITIES:
-        forecast = fetch_forecast(city)
-        if forecast:
-            results[city] = forecast
-        else:
-            logger.warning("No forecast data retrieved for %s.", city)
-        time.sleep(0.5)   # polite delay between cities
-    return results
+

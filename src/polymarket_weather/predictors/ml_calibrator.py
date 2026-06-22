@@ -93,16 +93,11 @@ class MLCalibratorPredictor(BasePredictor):
         ]
         
         model = None
-        sigma_cal = None
         for base_path in paths_to_try:
             model_path = base_path / f"{city_slug}_calibrator.joblib"
-            sigma_path = base_path / f"{city_slug}_sigma.json"
-            if model_path.exists() and sigma_path.exists():
+            if model_path.exists():
                 try:
                     model = joblib.load(model_path)
-                    with open(sigma_path, "r") as f:
-                        sigma_data = json.load(f)
-                    sigma_cal = sigma_data["sigma"]
                     break
                 except Exception:
                     pass

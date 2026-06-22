@@ -319,14 +319,7 @@ def load_weather_daily(city: str) -> pd.DataFrame:
     return df
 
 
-def load_price_history(city: str) -> pd.DataFrame:
-    path = _mkt_history_path(city)
-    if not path.exists():
-        return pd.DataFrame()
-    df = pd.read_csv(path)
-    df["timestamp_utc"] = pd.to_datetime(df["timestamp_utc"], utc=True, errors="coerce")
-    df["price"]         = pd.to_numeric(df["price"], errors="coerce")
-    return df
+
 
 def _extract_temp_from_question_str(q: str) -> float | None:
     # Range: "between 62-63°F" or "between 18-20°C"

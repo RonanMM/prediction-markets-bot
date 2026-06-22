@@ -158,14 +158,4 @@ def fetch_ensemble(city: str) -> dict:
     }
 
 
-def fetch_all_cities() -> dict[str, dict]:
-    """Fetch ensemble forecasts for every configured city."""
-    results = {}
-    for city in CITIES:
-        result = fetch_ensemble(city)
-        if result:
-            results[city] = result
-        else:
-            logger.warning("No ensemble data retrieved for %s.", city)
-        time.sleep(0.5)   # polite delay between cities
-    return results
+

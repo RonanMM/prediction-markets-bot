@@ -22,7 +22,6 @@ import pandas as pd
 from config import COLORS, PLOT_DPI, PLOT_STYLE, PLOTS_DIR
 from processing import (
     load_market_snapshots,
-    load_price_history,
     load_weather_daily,
 )
 

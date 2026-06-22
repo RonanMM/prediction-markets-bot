@@ -58,30 +58,6 @@ def _get(url: str, params: dict | None = None) -> dict | list | None:
 
 # ── Gamma API ────────────────────────────────────────────────────────────────
 
-def search_events(keyword: str, limit: int = 50) -> list[dict]:
-    """Search Gamma /events with a free-text keyword."""
-    url = f"{GAMMA_API_BASE}/events"
-    params = {
-        "limit":  limit,
-        "order":  "volume",
-        "ascending": "false",
-    }
-    data = _get(url, params)
-    if not data:
-        return []
-
-    # Gamma returns a list of event objects or {"data": [...]}
-    events: list[dict] = data if isinstance(data, list) else data.get("data", [])
-
-    keyword_lower = keyword.lower()
-    matches = [
-        e for e in events
-        if keyword_lower in (e.get("title") or "").lower()
-        or keyword_lower in (e.get("description") or "").lower()
-    ]
-    return matches
-
-
 def search_markets_by_query(query: str, limit: int = 100) -> list[dict]:
     url = f"{GAMMA_API_BASE}/markets"
     q_lower = query.lower()
@@ -119,13 +95,6 @@ def search_markets_by_query(query: str, limit: int = 100) -> list[dict]:
         time.sleep(0.2)
 
     return matched
-
-
-def fetch_market_detail(condition_id: str) -> dict | None:
-    """Fetch full detail for a single market by its condition_id."""
-    url  = f"{GAMMA_API_BASE}/markets/{condition_id}"
-    return _get(url)
-
 
 # ── CLOB price history ───────────────────────────────────────────────────────
 
