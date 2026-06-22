@@ -26,8 +26,14 @@ python main.py --summary-only
 # Target specific cities
 python main.py --cities London Seoul "New York City"
 
+# Run the parameter sweep optimizer (reads pre-made CSV, very fast)
+python optimizer.py
+
+# Run the full-pipeline grid search optimizer (runs engine back-to-front, slow)
+python optimizer_full.py
+
 # Run the inefficiency analyzer
-python polymarket_weather_analysis.py --data_dir ./data [--min_edge 0.07] [--min_liq 400] [--bankroll 1000]
+python polymarket_weather_analysis.py --data_dir ./data [--min_edge 0.06] [--min_liq 1000] [--bankroll 1000]
 
 # Interactive notebook
 jupyter notebook polymarket_weather_notebook.ipynb
@@ -74,7 +80,9 @@ Open-Meteo API → fetch_weather.py → data/weather/*.csv
 
 ### Inefficiency Analysis (polymarket_weather_analysis.py)
 
-The analyzer implements 9 alpha signals (α1–α9) covering forecast momentum, min/max spread, Student-t tail modeling, constrained PMF fitting, internal consistency, volume recency, forecast convergence, market update lag, and correlated bet grouping. Filtering defaults: `min_edge=7%`, `min_liquidity=$400`. Kelly sizing uses 0.25 fraction with 12–20% caps.
+The analyzer implements 9 alpha signals (α1–α9) covering forecast momentum, min/max spread, Student-t tail modeling, constrained PMF fitting, internal consistency, volume recency, forecast convergence, market update lag, and correlated bet grouping. These have been modularized and split out into `engine.py`, `signals.py`, `models.py`, `pmf.py`, `reports.py`, and `data_loader.py`.
+
+Filtering defaults: `min_edge=6%`, `min_liquidity=$1000` (optimized from $400 to avoid noisy, illiquid slippage). Kelly sizing uses a `0.50` fraction with a strict `8%` cap per market (`MAX_KELLY_PER_BET`) and a `20%` cap per city/date group to protect the bankroll.
 
 ### APIs Used
 
