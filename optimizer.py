@@ -5,32 +5,25 @@ import time
 from pathlib import Path
 from scipy.stats import t as student_t
 import itertools
+import sys
 
-RESOLUTION_STATIONS = {
-    "Chicago": {"lat": 41.9742, "lon": -87.9073},
-    "NYC": {"lat": 40.7769, "lon": -73.8740},
-    "London": {"lat": 51.5050, "lon": 0.0553},
-    "HongKong": {"lat": 22.3019, "lon": 114.1741},
-    "Seoul": {"lat": 37.4602, "lon": 126.4407},
-}
+# Source root on path so intra-project imports (e.g. resolution_anchors) work when run from repo root.
+sys.path.insert(0, str(Path("src/polymarket_weather").absolute()))
+
+from resolution_anchors import RESOLUTION_ANCHORS
+
+# Forecast coords per resolution station, derived from the single source of truth.
+# Keyed by canonical name AND alias (e.g. "NYC", "HongKong") so existing lookups keep working.
+RESOLUTION_STATIONS = {}
+for _city, _a in RESOLUTION_ANCHORS.items():
+    _c = {"lat": _a["forecast_lat"], "lon": _a["forecast_lon"]}
+    RESOLUTION_STATIONS[_city] = _c
+    for _alias in _a.get("aliases", []):
+        RESOLUTION_STATIONS[_alias] = _c
 
 WEATHER_CACHE = {}
 
-def fetch_actual_weather(city: str, target_date: str) -> float:
-    coords = RESOLUTION_STATIONS.get(city)
-    if not coords:
-        return None
-    url = (
-        f"https://archive-api.open-meteo.com/v1/archive?"
-        f"latitude={coords['lat']}&longitude={coords['lon']}"
-        f"&start_date={target_date}&end_date={target_date}"
-        f"&daily=temperature_2m_max&timezone=UTC"
-    )
-    try:
-        resp = requests.get(url, timeout=10).json()
-        return float(resp['daily']['temperature_2m_max'][0])
-    except Exception:
-        return None
+from grading import resolves_yes  # resolution-station truth grader, native-unit rounding
 
 def _cdf(x: float, mu: float, sigma: float, nu: float) -> float:
     from scipy.stats import norm
@@ -178,23 +171,10 @@ def simulate_parameters(df_raw, strategy, params):
         bet_side = row["bet_side"]
         their_prob = row["their_prob"]
         
-        cache_key = f"{city}_{target_date}"
-        if cache_key not in WEATHER_CACHE:
-            WEATHER_CACHE[cache_key] = fetch_actual_weather(city, target_date)
-            time.sleep(0.05)
-            
-        actual_temp = WEATHER_CACHE[cache_key]
-        if actual_temp is None:
+        resolved_yes = resolves_yes(city, target_date, question, bin_temp)
+        if resolved_yes is None:
             continue
-            
-        actual_rounded = round(actual_temp)
-        if "higher" in question or "above" in question or "more" in question or "at least" in question:
-            resolved_yes = actual_rounded >= round(bin_temp)
-        elif "lower" in question or "below" in question or "less" in question or "at most" in question:
-            resolved_yes = actual_rounded <= round(bin_temp)
-        else:
-            resolved_yes = actual_rounded == round(bin_temp)
-            
+
         we_won = (bet_side == "Yes" and resolved_yes) or (bet_side == "No" and not resolved_yes)
         
         bet_size = 1000.0 * row["kelly"]
@@ -228,70 +208,78 @@ def main():
         
     df_raw = pd.read_csv(csv_path)
     
-    print("Warming weather cache...")
-    dates_cities = df_raw[['city', 'target_date']].drop_duplicates()
-    for _, row in dates_cities.iterrows():
-        key = f"{row['city']}_{row['target_date']}"
-        if key not in WEATHER_CACHE:
-            WEATHER_CACHE[key] = fetch_actual_weather(row['city'], row['target_date'])
-            time.sleep(0.05)
-            
-    tier1 = {
-        "MIN_EDGE": [0.04, 0.06, 0.08, 0.10],
-        "KELLY_FRACTION": [0.15, 0.25, 0.35, 0.50],
-        "MAX_KELLY_PER_BET": [0.08, 0.12, 0.20],
-        "sigma_threshold": [1.0, 1.2, 1.5],
-        "conflict_gating": [True, False]
-    }
-    
-    print("\n--- Tier 1 Sweep ---")
-    best_params = {}
-    base_params = {
-        "MIN_EDGE": 0.06,
-        "KELLY_FRACTION": 0.25,
-        "MAX_KELLY_PER_BET": 0.12,
-        "MAX_KELLY_PER_GROUP": 0.20,
-        "MAX_TOTAL_KELLY": 0.40,
-        "sigma_threshold": 1.2,
-        "conflict_gating": True,
-        "MIN_LIQUIDITY": 400,
-        "min_days": 0.0
-    }
-    
-    results = []
-    
-    for key, values in tier1.items():
-        for val in values:
-            params = base_params.copy()
-            params[key] = val
-            res = simulate_parameters(df_raw, "combined_filter", params)
-            print(f"Sweep {key}={val}: ROI={res['roi']:.1%} Profit=${res['profit']:.2f} Bets={res['bets']}")
-            results.append((res['roi'], params.copy()))
-            
-    best_params = sorted(results, key=lambda x: x[0], reverse=True)[0][1]
-    print(f"\nBest params after Tier 1: {best_params}")
-
-    tier2 = {
+    # Search space. Coordinate ascent carries every accepted improvement forward, so it can
+    # COMBINE changes — unlike the old one-change-per-tier sweep, which never could.
+    GRID = {
+        "MIN_EDGE":            [0.04, 0.06, 0.08, 0.10],
+        "KELLY_FRACTION":      [0.15, 0.25, 0.35, 0.50],
+        "MAX_KELLY_PER_BET":   [0.08, 0.12, 0.20],
+        "sigma_threshold":     [1.0, 1.2, 1.5],
+        "conflict_gating":     [True, False],
         "MAX_KELLY_PER_GROUP": [0.15, 0.20, 0.30],
-        "MAX_TOTAL_KELLY": [0.30, 0.40, 0.60],
-        "MIN_LIQUIDITY": [200, 400, 1000],
-        "min_days": [0.0, 0.5, 1.0]
+        "MAX_TOTAL_KELLY":     [0.30, 0.40, 0.60],
+        "MIN_LIQUIDITY":       [200, 400, 1000],
+        "min_days":            [0.0, 0.5, 1.0],
     }
-    
-    print("\n--- Tier 2 Sweep ---")
-    results2 = []
-    for key, values in tier2.items():
-        for val in values:
-            params = best_params.copy()
-            params[key] = val
-            res = simulate_parameters(df_raw, "combined_filter", params)
-            print(f"Sweep {key}={val}: ROI={res['roi']:.1%} Profit=${res['profit']:.2f} Bets={res['bets']}")
-            results2.append((res['roi'], params.copy()))
-            
-    final_best_params = sorted(results2 + [(best_params.get("roi", 0), best_params)], key=lambda x: x[0], reverse=True)[0][1]
-    print(f"\nOptimal parameters: {final_best_params}")
-    res_final = simulate_parameters(df_raw, "combined_filter", final_best_params)
-    print(f"Final Performance: ROI={res_final['roi']:.1%} Profit=${res_final['profit']:.2f} Bets={res_final['bets']}")
+    # Seed = current production config — we only move off it if something genuinely beats it.
+    SEED = {
+        "MIN_EDGE": 0.06, "KELLY_FRACTION": 0.50, "MAX_KELLY_PER_BET": 0.08,
+        "MAX_KELLY_PER_GROUP": 0.20, "MAX_TOTAL_KELLY": 0.40, "sigma_threshold": 1.2,
+        "conflict_gating": True, "MIN_LIQUIDITY": 1000, "min_days": 0.5,
+    }
+
+    def coord_ascent(df, seed):
+        best = dict(seed)
+        best_roi = simulate_parameters(df, "combined_filter", best)["roi"]
+        for _ in range(6):                       # repeat passes until no single change helps
+            improved = False
+            for key, values in GRID.items():
+                for v in values:
+                    if v == best.get(key):
+                        continue
+                    trial = dict(best); trial[key] = v
+                    roi = simulate_parameters(df, "combined_filter", trial)["roi"]
+                    if roi > best_roi + 1e-9:
+                        best, best_roi, improved = trial, roi, True
+            if not improved:
+                break
+        return best, best_roi
+
+    # ---- Out-of-sample, time-ordered: tune on train, JUDGE on held-out validation ----
+    df_sorted = df_raw.sort_values("target_date")
+    dates = sorted(df_sorted["target_date"].unique())
+    cut = dates[int(len(dates) * 0.6)] if len(dates) > 2 else None
+    train = df_sorted[df_sorted["target_date"] <= cut] if cut else df_sorted
+    valid = df_sorted[df_sorted["target_date"] > cut] if cut else df_sorted.iloc[0:0]
+
+    tuned, train_roi = coord_ascent(train, SEED)
+    seed_va  = simulate_parameters(valid, "combined_filter", SEED)
+    tuned_va = simulate_parameters(valid, "combined_filter", tuned)
+
+    print("\n================ OPTIMIZER (coordinate ascent, out-of-sample) ================")
+    print(f"Eval data: {len(df_raw)} rows, {df_raw['condition_id'].nunique()} markets, "
+          f"{dates[0]}..{dates[-1]}   train<= {cut}   validate> {cut}")
+    print(f"  SEED  (current config):  train ROI {simulate_parameters(train,'combined_filter',SEED)['roi']:.1%}"
+          f"   held-out ROI {seed_va['roi']:.1%} ({seed_va['bets']} bets)")
+    print(f"  TUNED (in-sample best):  train ROI {train_roi:.1%}"
+          f"   held-out ROI {tuned_va['roi']:.1%} ({tuned_va['bets']} bets)")
+    print(f"  Tuned params: {tuned}")
+
+    # Guardrail: only endorse a change that beats seed OUT-OF-SAMPLE on a non-tiny sample.
+    MIN_VALID_BETS = 30
+    if valid.empty:
+        verdict = "INSUFFICIENT DATA — no validation split; keep current config."
+    elif tuned_va["bets"] < MIN_VALID_BETS:
+        verdict = (f"NOT ROBUST — only {tuned_va['bets']} held-out bets (<{MIN_VALID_BETS}); "
+                   "keep current config until more data is available.")
+    elif tuned_va["roi"] <= seed_va["roi"] + 1e-9:
+        verdict = "NO out-of-sample improvement over current config; keep config."
+    else:
+        verdict = (f"Tuned beats seed out-of-sample by +{(tuned_va['roi']-seed_va['roi'])*100:.1f} pp — "
+                   "candidate, but confirm on more data before committing.")
+    print(f"\n  VERDICT: {verdict}")
+    print("  (Reported only — this script does NOT modify config.py or CLAUDE.md.)")
+    print("==============================================================================")
 
 if __name__ == "__main__":
     main()

@@ -5,45 +5,30 @@ All cities, API endpoints, and runtime settings live here.
 
 from zoneinfo import ZoneInfo
 
+from resolution_anchors import RESOLUTION_ANCHORS
+
 # ── Cities ──────────────────────────────────────────────────────────────────
-# IMPORTANT: coordinates must match the exact Wunderground/observatory station
-# that Polymarket uses for resolution — NOT the city centre.
+# Forecast coordinates and the resolution station code come from
+# resolution_anchors.py — the single source of truth. Only the fields that are
+# NOT part of the resolution anchor live here: the local timezone and the
+# Polymarket market search terms.
+_CITY_META = {
+    "Seoul":         {"timezone": ZoneInfo("Asia/Seoul"),       "search_terms": ["Seoul", "seoul"]},
+    "London":        {"timezone": ZoneInfo("Europe/London"),    "search_terms": ["London", "london"]},
+    "Chicago":       {"timezone": ZoneInfo("America/Chicago"),  "search_terms": ["Chicago", "chicago"]},
+    "New York City": {"timezone": ZoneInfo("America/New_York"), "search_terms": ["New York", "NYC", "new york"]},
+    "Hong Kong":     {"timezone": ZoneInfo("Asia/Hong_Kong"),   "search_terms": ["Hong Kong", "hong kong"]},
+}
+
 CITIES = {
-    "Seoul": {
-        "timezone": ZoneInfo("Asia/Seoul"),
-        "station_id": "108",
-        "lat": 37.5714,
-        "lon": 126.9658,
-        "search_terms": ["Seoul", "seoul"],
-    },
-    "London": {
-        "timezone": ZoneInfo("Europe/London"),
-        "station_id": "EGLC",  # DO NOT CHANGE: Polymarket uses London City Airport, NOT Heathrow
-        "lat": 51.5048,
-        "lon": 0.0520,
-        "search_terms": ["London", "london"],
-    },
-    "Chicago": {
-        "timezone": ZoneInfo("America/Chicago"),
-        "station_id": "KORD",
-        "lat": 41.9742,
-        "lon": -87.9073,
-        "search_terms": ["Chicago", "chicago"],
-    },
-    "New York City": {
-        "timezone": ZoneInfo("America/New_York"),
-        "station_id": "KLGA",  # DO NOT CHANGE: Polymarket uses LaGuardia Airport, NOT Central Park
-        "lat": 40.7769,
-        "lon": -73.8740,
-        "search_terms": ["New York", "NYC", "new york"],
-    },
-    "Hong Kong": {
-        "timezone": ZoneInfo("Asia/Hong_Kong"),
-        "station_id": "HKO",
-        "lat": 22.3019,
-        "lon": 114.1741,
-        "search_terms": ["Hong Kong", "hong kong"],
-    },
+    city: {
+        "timezone":     meta["timezone"],
+        "station_id":   RESOLUTION_ANCHORS[city]["station_code"],   # == anchor station_code (ICAO/obs)
+        "lat":          RESOLUTION_ANCHORS[city]["forecast_lat"],
+        "lon":          RESOLUTION_ANCHORS[city]["forecast_lon"],
+        "search_terms": meta["search_terms"],
+    }
+    for city, meta in _CITY_META.items()
 }
 
 # ── Polymarket API ───────────────────────────────────────────────────────────

@@ -191,7 +191,8 @@ def reconstruct_pmf(bins: list[MarketBin],
 
     # Upper residual: P(> max_exact_temp) from gte bin or forecast tail
     if max_gte_temp is not None:
-        upper_residual = max(0.0, gte[0].yes_prob -
+        max_gte_bin = max(gte, key=lambda b: b.temp_c)
+        upper_residual = max(0.0, max_gte_bin.yes_prob -
                              sum(v for k, v in raw_mkt.items() if k >= max_gte_temp))
     else:
         # Estimate from forecast: probability beyond highest exact bin
@@ -199,7 +200,8 @@ def reconstruct_pmf(bins: list[MarketBin],
 
     # Lower residual: P(< min_exact_temp) from lte bin or forecast tail
     if min_lte_temp is not None:
-        lower_residual = max(0.0, lte[0].yes_prob -
+        min_lte_bin = min(lte, key=lambda b: b.temp_c)
+        lower_residual = max(0.0, min_lte_bin.yes_prob -
                              sum(v for k, v in raw_mkt.items() if k <= min_lte_temp))
     else:
         lower_residual = max(0.0, _cdf(min(obs_temps) - 0.5, mu, sigma, nu))

@@ -58,15 +58,14 @@ def apply_group_kelly_cap(opps: list[Opportunity],
         # Sort by alpha_score descending
         group.sort(key=lambda x: x.alpha_score, reverse=True)
 
-        # Remove near-duplicate bets: same side, adjacent temp bins within 1°C.
-        # Key on actual bin temperature (rounded to nearest degree), not probability.
-        seen_temps = set()
-        filtered   = []
+        # Remove near-duplicate bets: same side, adjacent temp bins.
+        # Key on actual bin temperature, using correct Celsius or Fahrenheit threshold.
+        filtered = []
         for o in group:
-            key = (o.bet_side, round(o.bin_temp_c))
-            if key in seen_temps:
+            is_f = "F" in o.question or "f" in o.question
+            threshold = 1.0 if not is_f else (5.0 / 9.0)
+            if any(prev.bet_side == o.bet_side and abs(prev.bin_temp_c - o.bin_temp_c) < threshold for prev in filtered):
                 continue
-            seen_temps.add(key)
             filtered.append(o)
 
         # Scale kelly to group cap

@@ -11,10 +11,14 @@ import joblib
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-from src.polymarket_weather.config import CITIES
+from config import CITIES
+
+# Canonical model dir: src/polymarket_weather/models — the SAME dir ml_calibrator.py loads from,
+# anchored to this file so training updates the live models regardless of the working directory.
+MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
 
 def train_calibrator():
-    os.makedirs("models", exist_ok=True)
+    os.makedirs(MODELS_DIR, exist_ok=True)
     
     for city in CITIES.keys():
         logger.info(f"Training model for {city}")
@@ -51,8 +55,8 @@ def train_calibrator():
         rmse = float(np.sqrt(mean_squared_error(y_test, y_pred)))
         logger.info(f"{city} Model RMSE: {rmse:.4f}")
         
-        joblib.dump(model, f"models/{city_slug}_calibrator.joblib")
-        with open(f"models/{city_slug}_sigma.json", "w") as f:
+        joblib.dump(model, os.path.join(MODELS_DIR, f"{city_slug}_calibrator.joblib"))
+        with open(os.path.join(MODELS_DIR, f"{city_slug}_sigma.json"), "w") as f:
             json.dump({"sigma": rmse}, f)
             
 if __name__ == "__main__":

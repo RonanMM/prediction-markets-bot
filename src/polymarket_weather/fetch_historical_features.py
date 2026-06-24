@@ -7,7 +7,7 @@ import os
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-from src.polymarket_weather.config import CITIES
+from config import CITIES
 
 def fetch_historical_features():
     os.makedirs("data/weather", exist_ok=True)

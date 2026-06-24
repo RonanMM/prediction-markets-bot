@@ -81,13 +81,32 @@ Open-Meteo Ensemble API → fetch_ensemble.py ───┘
 - **Bypassed time expirations in backtesting**: The engine allows evaluating expired historical bets for simulations by checking date logic instead of calling `datetime.now()`.
 - **City Name Normalization**: The bot utilizes a mapping dictionary `CITY_NAMES` in `config.py` to reconcile differences between Polymarket city tags (`"NYC"`) and weather station labels (`"new_york_city"`), preventing grading mismatches.
 
+### Resolution Anchors — the single most important model (do not break)
+**A market resolves on a NAMED STATION's daily reading, not a coordinate.**
+`src/polymarket_weather/resolution_anchors.py` is the **single source of truth** and deliberately
+separates THREE anchors per city. `config.CITIES` and every aux script DERIVE their coordinates
+from it — there are no hardcoded coords anywhere.
+- **Resolution anchor** — `resolution_url` + `resolution_unit` (what the UMA oracle reads).
+- **Truth anchor** — `meteostat_id` (the station whose observations grade/label bets, via `grading.py`).
+- **Forecast anchor** — `forecast_lat`/`forecast_lon` (where Open-Meteo is pointed). Usually the
+  station's location, but **not always**.
+
+⚠️ **Seoul is the key exception. Do NOT "correct" its forecast coords back to the airport.** The
+Incheon-airport ERA5 grid cell is coastal/sea-damped and predicts the station poorly, so the
+forecast anchor is a skill-optimized inland **"Bucheon corridor" point (37.5035, 126.766)**, while
+truth/resolution stay **Incheon RKSI / Meteostat 47113**. Validated: CV RMSE ≈1.2 (Bucheon) vs ≈1.96
+(airport cell). A loud comment in the file says the same.
+
 ---
 
 ## Module Responsibilities
 
 | File | Responsibility |
 |---|---|
-| `config.py` | Configuration constants: city lat/lon, endpoints, fees, and optimal sizing limits. |
+| `resolution_anchors.py` | **Single source of truth** for per-city resolution / truth / forecast anchors (see above). |
+| `config.py` | `CITIES` (coords DERIVED from `resolution_anchors.py`), endpoints, fees, and optimal sizing limits. |
+| `grading.py` | Grades markets against the resolution-**station** observation (station truth), not a forecast grid cell. |
+| `data_status.py` | Track-record progress report: collected / resolved / station-gradable counts vs the pre-committed gate. |
 | `fetch_polymarket.py` | Gamma API (market search/details) + CLOB API (price history). Parses temperature bins from market questions. |
 | `fetch_weather.py` | Open-Meteo 16-day forecast. Returns daily and hourly forecasts. |
 | `fetch_ensemble.py` | Fetches Open-Meteo ensemble forecasts (ECMWF/ICON spreads) to compute dynamic uncertainty metrics. |
@@ -125,7 +144,17 @@ The engine implements 9 alpha signals to evaluate trading opportunities:
 * **α9 (Correlated Bet Grouping)**: Caps group exposure to 20% and portfolio exposure to 40%.
 
 ### Calibrated Execution Parameters
-Our grid searches optimized the following parameter set (proven to yield **127.5% ROI** in backtests):
+Grid searches (coordinate ascent + out-of-sample split) endorse the parameter set below as
+near-optimal — both `optimizer.py` and `optimizer_full.py` keep the current config rather than
+moving off it. **Do not re-tune; the bottleneck is data, not parameters.**
+
+> ⚠️ **Performance honesty.** Earlier "**127.5% ROI**" / "~70% win-rate" figures were *grid-graded
+> artifacts*: the backtest graded the "actual" temperature from the **same Open-Meteo grid the
+> model forecasts from**, so prediction and outcome shared the grid's error → inflated ROI, often
+> further boosted by in-sample filtering. Grading the identical bet set against **station truth**
+> (`grading.py`) roughly **halved** measured ROI (e.g. 48% → 22% on one 64–76 bet sample). The
+> honest reading: **in-sample station-truth ROI ≈ 20–35%, and out-of-sample edge is unproven**
+> (held-out sample still tiny). Params are validated; *edge is not* — see the gate above.
 - `MIN_EDGE = 0.06` (6% minimum advantage over market price)
 - `MIN_LIQUIDITY = 1000` (USDC)
 - `KELLY_FRACTION = 0.50` (half-Kelly bet sizing multiplier)

@@ -1,4 +1,4 @@
-"""
+r"""
 MLCalibratorPredictor: Random Forest Forecast Calibration Model
 ===============================================================
 
@@ -84,28 +84,25 @@ class MLCalibratorPredictor(BasePredictor):
 
         city_slug = city.replace(' ', '_').lower()
         
-        # Resolve model paths
-        current_dir = Path(__file__).parent.resolve()
-        # Look in workspace root models/ first, then package models/
-        paths_to_try = [
-            current_dir / ".." / ".." / "models",
-            current_dir / ".." / "models"
-        ]
-        
+        # Canonical model location: src/polymarket_weather/models (package-relative, CWD-independent).
+        # This is the SAME dir train_calibrator.py writes to — keep them in lock-step.
+        models_dir = Path(__file__).resolve().parent.parent / "models"
         model = None
-        for base_path in paths_to_try:
-            model_path = base_path / f"{city_slug}_calibrator.joblib"
-            if model_path.exists():
-                try:
-                    model = joblib.load(model_path)
-                    break
-                except Exception:
-                    pass
+        model_path = models_dir / f"{city_slug}_calibrator.joblib"
+        if model_path.exists():
+            try:
+                model = joblib.load(model_path)
+            except Exception:
+                pass
 
         if model is not None:
             try:
                 day_of_year = target_date.dayofyear
-                calibrated_mu = model.predict([[raw_mu, day_of_year]])[0]
+                # Predict with a named DataFrame matching the training columns
+                # (train_calibrator uses X = df[['grid_temp_max_c','day_of_year']]) so sklearn
+                # doesn't emit the "X has feature names" warning on every call.
+                X = pd.DataFrame([[raw_mu, day_of_year]], columns=["grid_temp_max_c", "day_of_year"])
+                calibrated_mu = model.predict(X)[0]
                 
                 return TemperatureDistribution(
                     mu=float(calibrated_mu),

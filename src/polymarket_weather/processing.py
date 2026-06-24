@@ -73,6 +73,8 @@ def _append_csv(path: Path, records: list[dict], dedup_cols: list[str]) -> int:
             logger.debug("No new rows to append to %s.", path.name)
             return 0
 
+        # Align columns to prevent misalignment corruption
+        new_df = new_df.reindex(columns=existing.columns)
         new_df.to_csv(path, mode="a", header=False, index=False)
     else:
         new_df.to_csv(path, index=False)
@@ -217,7 +219,7 @@ def compute_implied_temperature(outcome_probs: dict[str, float], question: str =
         p_yes = outcome_probs.get("Yes", outcome_probs.get("yes", 0.0))
         temp = _extract_temp_from_question(question)
         if temp is not None:
-            return temp * p_yes   # e.g. 18°C × 0.03 = implied ~0.5°C contribution
+            return None
         return None
 
     # ── Bucket market ─────────────────────────────────────────────────────

@@ -1,15 +1,14 @@
-import sys
 import pytest
 import pandas as pd
 from pathlib import Path
 
-# Add src/polymarket_weather to import path
-sys.path.insert(0, str(Path(__file__).parent.parent / "src" / "polymarket_weather"))
-
+# Import path is set centrally in conftest.py (source root = src/polymarket_weather).
 from config import CITY_NAMES, KELLY_FRACTION, FEE_RATE
 from pmf import parse_question
 from models import Opportunity
 from engine import _kelly_size
+import grading
+from grading import native_round, resolves_yes
 
 def test_city_names_mapping():
     """Verify that city name mappings are correct and resolve key bugs."""
@@ -82,4 +81,38 @@ def test_kelly_sizing():
     # raw kelly = 0.50 * (0.98 * 0.55 - 0.45) / 0.98 = 0.50 * (0.539 - 0.45) / 0.98 = 0.50 * 0.089 / 0.98 = 0.0454
     size_small = _kelly_size(opp, kelly_fraction=0.50, fee=0.02)
     assert pytest.approx(size_small, abs=0.001) == 0.0454
+
+
+def test_native_round_units():
+    """Temperatures must round onto the market's NATIVE resolution grid, not always °C."""
+    # whole °F: the °C value of a whole-°F threshold round-trips back to that °F.
+    assert native_round((35 - 32) * 5 / 9, "whole °F") == 35
+    # 2.2 °C is 35.96 °F -> 36 °F (NOT 2). Proves we round in °F, not °C.
+    assert native_round(2.2, "whole °F") == 36
+    # whole °C (default) and tenths-of-°C grids.
+    assert native_round(2.2, "whole °C") == 2
+    assert native_round(2.6, "whole °C") == 3
+    assert native_round(25.64, "0.1 °C") == 25.6
+
+
+def test_resolves_yes_fahrenheit_boundary(monkeypatch):
+    """A °F market where °C-rounding would have flipped the outcome (the bug this fixes)."""
+    bin_c = (35 - 32) * 5 / 9  # 35 °F expressed in °C (~1.667)
+    q = "Will the highest temperature in Chicago be 35°F or below on March 23?"
+    # Station reads 2.2 °C = 35.96 °F -> 36 °F. 36 <= 35 is False -> resolves NO.
+    monkeypatch.setattr(grading, "fetch_actual_weather", lambda *a, **k: 2.2)
+    assert resolves_yes("Chicago", "2026-03-23", q, bin_c) is False
+    # (Old °C grading: round(2.2)=2 <= round(1.667)=2 -> would have wrongly said YES.)
+    # And a clear case below the threshold: 0.5 °C = 32.9 °F -> 33 °F <= 35 -> YES.
+    monkeypatch.setattr(grading, "fetch_actual_weather", lambda *a, **k: 0.5)
+    assert resolves_yes("Chicago", "2026-03-23", q, bin_c) is True
+
+
+def test_resolves_yes_celsius_and_missing(monkeypatch):
+    """Whole-°C market grades in °C; returns None when station truth is unavailable."""
+    q = "Will the highest temperature in London be 20°C or higher on June 25?"
+    monkeypatch.setattr(grading, "fetch_actual_weather", lambda *a, **k: 19.6)  # ->20 °C
+    assert resolves_yes("London", "2026-06-25", q, 20.0) is True
+    monkeypatch.setattr(grading, "fetch_actual_weather", lambda *a, **k: None)
+    assert resolves_yes("London", "2026-06-25", q, 20.0) is None
 

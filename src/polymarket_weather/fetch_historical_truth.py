@@ -1,7 +1,7 @@
 import numpy as np
 np.NaN = np.nan
 import pandas as pd
-from meteostat import daily as Daily, stations as Stations
+from meteostat import daily, Parameter
 from datetime import datetime, timedelta
 import logging
 import os
@@ -9,15 +9,8 @@ import os
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-from src.polymarket_weather.config import CITIES
-
-STATION_OVERRIDE = {
-    "London": "EGLC0",
-    "New York City": "72503",
-    "Chicago": "72530",
-    "Seoul": "47113",
-    "Hong Kong": "45007"
-}
+from config import CITIES
+from resolution_anchors import RESOLUTION_ANCHORS  # single source of truth for station ids
 
 def fetch_historical_truth():
     os.makedirs("data/weather", exist_ok=True)
@@ -25,23 +18,19 @@ def fetch_historical_truth():
     start_date = datetime(2015, 1, 1)
 
     for city, config in CITIES.items():
-        station_id = STATION_OVERRIDE.get(city, config['station_id'])
+        # Truth-label station comes from the anchor (falls back to config's ICAO if absent).
+        station_id = RESOLUTION_ANCHORS.get(city, {}).get("meteostat_id", config['station_id'])
         logger.info(f"Fetching truth for {city} (Station: {station_id})")
         
-        data = Daily(station_id, start_date, end_date)
-        data = data.fetch()
-        
+        data = daily(station_id, start_date, end_date,
+                     parameters=[Parameter.TMAX, Parameter.TMIN]).fetch()
         if data.empty:
             raise ValueError(f"Downloaded empty dataset for {city} (Station: {station_id})")
-        
-        df = data.reset_index()
-        if 'time' in df.columns:
-            df = df.rename(columns={'time': 'date_local'})
-            
-        df = df[['date_local', 'tmax']]
-        df = df.rename(columns={'tmax': 'temp_max_c'})
-        
-        df['date_local'] = df['date_local'].dt.strftime('%Y-%m-%d')
+
+        df = data.reset_index().rename(columns={
+            'time': 'date_local', 'tmax': 'temp_max_c', 'tmin': 'temp_min_c'})
+        df = df[['date_local', 'temp_max_c', 'temp_min_c']]
+        df['date_local'] = pd.to_datetime(df['date_local']).dt.strftime('%Y-%m-%d')
         df = df.dropna(subset=['temp_max_c'])
         
         if len(df) <= 3000:

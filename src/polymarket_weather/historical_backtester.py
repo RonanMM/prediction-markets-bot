@@ -8,32 +8,18 @@ import time
 from pathlib import Path
 
 # ── 1. The Exact Airport Coordinates ─────────────────────────────────────────
-RESOLUTION_STATIONS = {
-    "Chicago": {"lat": 41.9742, "lon": -87.9073},       # O'Hare (KORD)
-    "NYC": {"lat": 40.7769, "lon": -73.8740},           # LaGuardia (KLGA)
-    "London": {"lat": 51.5050, "lon": 0.0553},          # London City Airport (EGLC)
-    "HongKong": {"lat": 22.3019, "lon": 114.1741},      # Hong Kong Observatory HQ
-    "Seoul": {"lat": 37.4602, "lon": 126.4407},         # Incheon Intl Airport (RKSI)
-}
+from resolution_anchors import RESOLUTION_ANCHORS
 
-def fetch_actual_weather(city: str, target_date: str) -> float:
-    """Fetch the exact historical temperature from the resolution airport."""
-    coords = RESOLUTION_STATIONS.get(city)
-    if not coords:
-        return None
-        
-    url = (
-        f"https://archive-api.open-meteo.com/v1/archive?"
-        f"latitude={coords['lat']}&longitude={coords['lon']}"
-        f"&start_date={target_date}&end_date={target_date}"
-        f"&daily=temperature_2m_max&timezone=UTC"
-    )
-    try:
-        resp = requests.get(url, timeout=10).json()
-        # Polymarket rules: take the max temp and round to nearest integer
-        return float(resp['daily']['temperature_2m_max'][0])
-    except Exception:
-        return None
+# Forecast coords per resolution station, derived from the single source of truth.
+# Keyed by canonical name AND alias (e.g. "NYC", "HongKong") so existing lookups keep working.
+RESOLUTION_STATIONS = {}
+for _city, _a in RESOLUTION_ANCHORS.items():
+    _c = {"lat": _a["forecast_lat"], "lon": _a["forecast_lon"]}
+    RESOLUTION_STATIONS[_city] = _c
+    for _alias in _a.get("aliases", []):
+        RESOLUTION_STATIONS[_alias] = _c
+
+from grading import fetch_actual_weather, resolves_yes  # station-truth grader (+ native-unit resolution)
 
 def run_backtest():
     filename = sys.argv[2] if len(sys.argv) > 2 else "output/opportunities_v4.csv"
@@ -78,25 +64,15 @@ def run_backtest():
         question = str(row["question"]).lower()
         
         # 1. Fetch Truth Data
-        cache_key = f"{city}_{target_date}"
-        if cache_key not in weather_cache:
-            weather_cache[cache_key] = fetch_actual_weather(city, target_date)
-            time.sleep(0.1) # Be polite to the API
-            
-        actual_temp = weather_cache[cache_key]
+        actual_temp = fetch_actual_weather(city, target_date, question)
         if actual_temp is None:
             continue
-            
-        actual_rounded = round(actual_temp)
-        
-        # 2. Did the market resolve Yes or No?
-        if "higher" in question or "above" in question or "more" in question or "at least" in question:
-            resolved_yes = actual_rounded >= round(bin_temp)
-        elif "lower" in question or "below" in question or "less" in question or "at most" in question:
-            resolved_yes = actual_rounded <= round(bin_temp)
-        else:
-            resolved_yes = actual_rounded == round(bin_temp) # Exact market
-            
+
+        actual_rounded = round(actual_temp)  # °C, for the display column only
+
+        # 2. Did the market resolve Yes or No? (graded in the market's native unit)
+        resolved_yes = resolves_yes(city, target_date, question, bin_temp)
+
         # 3. Did we win?
         we_won = (bet_side == "Yes" and resolved_yes) or (bet_side == "No" and not resolved_yes)
         

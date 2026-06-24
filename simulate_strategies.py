@@ -4,30 +4,23 @@ import requests
 import time
 from pathlib import Path
 from scipy.stats import t as student_t
+import sys
 
-RESOLUTION_STATIONS = {
-    "Chicago": {"lat": 41.9742, "lon": -87.9073},
-    "NYC": {"lat": 40.7769, "lon": -73.8740},
-    "London": {"lat": 51.5050, "lon": 0.0553},
-    "HongKong": {"lat": 22.3019, "lon": 114.1741},
-    "Seoul": {"lat": 37.4602, "lon": 126.4407},
-}
+# Source root on path so intra-project imports (e.g. resolution_anchors) work when run from repo root.
+sys.path.insert(0, str(Path("src/polymarket_weather").absolute()))
 
-def fetch_actual_weather(city: str, target_date: str) -> float:
-    coords = RESOLUTION_STATIONS.get(city)
-    if not coords:
-        return None
-    url = (
-        f"https://archive-api.open-meteo.com/v1/archive?"
-        f"latitude={coords['lat']}&longitude={coords['lon']}"
-        f"&start_date={target_date}&end_date={target_date}"
-        f"&daily=temperature_2m_max&timezone=UTC"
-    )
-    try:
-        resp = requests.get(url, timeout=10).json()
-        return float(resp['daily']['temperature_2m_max'][0])
-    except Exception:
-        return None
+from resolution_anchors import RESOLUTION_ANCHORS
+
+# Forecast coords per resolution station, derived from the single source of truth.
+# Keyed by canonical name AND alias (e.g. "NYC", "HongKong") so existing lookups keep working.
+RESOLUTION_STATIONS = {}
+for _city, _a in RESOLUTION_ANCHORS.items():
+    _c = {"lat": _a["forecast_lat"], "lon": _a["forecast_lon"]}
+    RESOLUTION_STATIONS[_city] = _c
+    for _alias in _a.get("aliases", []):
+        RESOLUTION_STATIONS[_alias] = _c
+
+from grading import resolves_yes  # resolution-station truth grader, native-unit rounding
 
 def _cdf(x: float, mu: float, sigma: float, nu: float) -> float:
     from scipy.stats import norm
@@ -125,34 +118,21 @@ def simulate_strategy(ml_path: Path, strategy_name: str, **kwargs):
             else:
                 bet_side_ml = "Yes" if edge_blended > 0 else "No"
                 our_prob_ml = f_prob_blended if bet_side_ml == "Yes" else (1.0 - f_prob_blended)
-                # update the price we pay
-                their_prob = their_prob_yes if bet_side_ml == "Yes" else (1.0 - their_prob_yes)
                 
         elif strategy_name == "baseline_ml":
-            their_prob = row["their_prob"]
+            pass
             
         if skip:
             continue
             
+        # Recalculate their_prob based on the final active bet side
+        their_prob = their_prob_yes if bet_side_ml == "Yes" else (1.0 - their_prob_yes)
+            
         # 3. Fetch Truth
-        cache_key = f"{city}_{target_date}"
-        if cache_key not in WEATHER_CACHE:
-            WEATHER_CACHE[cache_key] = fetch_actual_weather(city, target_date)
-            time.sleep(0.05)
-            
-        actual_temp = WEATHER_CACHE[cache_key]
-        if actual_temp is None:
+        resolved_yes = resolves_yes(city, target_date, question, bin_temp)
+        if resolved_yes is None:
             continue
-            
-        actual_rounded = round(actual_temp)
-        
-        if "higher" in question or "above" in question or "more" in question or "at least" in question:
-            resolved_yes = actual_rounded >= round(bin_temp)
-        elif "lower" in question or "below" in question or "less" in question or "at most" in question:
-            resolved_yes = actual_rounded <= round(bin_temp)
-        else:
-            resolved_yes = actual_rounded == round(bin_temp)
-            
+
         we_won = (bet_side_ml == "Yes" and resolved_yes) or (bet_side_ml == "No" and not resolved_yes)
         
         # Kelly Sizing

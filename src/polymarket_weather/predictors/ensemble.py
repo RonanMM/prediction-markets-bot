@@ -56,7 +56,7 @@ def fit_nu_from_ensemble(ens_params: dict) -> float:
     empirical_ratio = spread / std   # should be ~2.56 for Gaussian
     # Search candidate nu values from heavy-tailed to Gaussian
     for nu in (4.0, 4.5, 5.0, 5.5, 6.0, 7.0, 8.0, 10.0, 12.0, 15.0, 20.0, 30.0):
-        expected = 2.0 * float(student_t.ppf(0.9, df=nu))
+        expected = 2.0 * float(student_t.ppf(0.9, df=nu)) * np.sqrt((nu - 2.0) / nu)
         if expected >= empirical_ratio:
             return nu
     return 30.0   # effectively Gaussian
