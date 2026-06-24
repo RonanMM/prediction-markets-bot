@@ -136,6 +136,34 @@ Our grid searches optimized the following parameter set (proven to yield **127.5
 
 ---
 
+## Out-of-Sample Track Record & Pre-Committed Sample-Size Gate
+
+**Do not draw any performance conclusion (ROI, win rate) until the gate below is met.** This
+threshold is committed in advance specifically so it cannot be moved post-hoc to fit a result.
+
+**The gate (both conditions required):**
+- **≥ 150 resolved markets graded against STATION TRUTH**, and
+- **≥ 100 out-of-sample bets** at the production params.
+
+These constants live in `src/polymarket_weather/data_status.py` (`GATE_RESOLVED_MARKETS`,
+`GATE_OOS_BETS`); keep the two in sync if either changes.
+
+**Why:** prior ROI numbers (e.g. the "127.5% ROI" above) were graded from the same Open-Meteo
+grid the model forecasts from, so prediction and outcome shared the grid's error → inflated ROI.
+Grading the same bets against station truth roughly halved measured ROI, and the honest
+out-of-sample sample is currently too small (a handful of held-out bets) to confirm any edge.
+Until the gate is met, every ROI figure is noise. (Full re-framing is Handoff Step 2.)
+
+**Check progress** (run from `src/polymarket_weather/`):
+```bash
+python data_status.py   # prints collected / resolved / station-gradable counts vs the gate
+```
+The binding constraint is usually **Meteostat's publishing lag** (~2–3 weeks): a market only
+becomes gradable once its resolution-station observation is published, so refresh truth
+(`fetch_historical_truth.py`) before regenerating the eval tracker.
+
+---
+
 ## Unit Testing
 
 Unit tests reside in [tests/test_polymarket_weather.py](file:///Users/ronanmulligan/Documents/GitHub/raincheck/tests/test_polymarket_weather.py). Ensure any changes to the question parsers, config mappings, or Kelly calculations pass the test suite:

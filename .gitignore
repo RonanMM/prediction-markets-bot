@@ -58,4 +58,4 @@ src/polymarket_weather/plots/
 src/polymarket_weather/__pycache__/
 src/polymarket_weather/polymarket/
 data/
-output/
+output/logs/
