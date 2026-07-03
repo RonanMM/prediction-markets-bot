@@ -28,7 +28,7 @@ from pathlib import Path
 
 import pandas as pd
 from models import Opportunity
-from config import MIN_EDGE, MIN_LIQUIDITY, FEE_RATE, MAX_TOTAL_KELLY, KELLY_FRACTION
+from config import MIN_EDGE, MIN_LIQUIDITY, FEE_RATE, MAX_TOTAL_KELLY, KELLY_FRACTION, SHRINK_WEIGHT
 from reports import plot_pmf_comparison, plot_alpha_dashboard, plot_forecast_drift_all, plot_momentum_heatmap, print_report, opps_to_df
 from engine import analyse_city, WeatherBettingBot
 from data_loader import discover_cities
@@ -65,10 +65,10 @@ def main():
         help="Actually place orders (requires POLYMARKET_PRIVATE_KEY env var). "
              "Implies --live. Use with extreme caution.",
     )
-    parser.add_argument("--disable_ml", action="store_true", help="Disable ML models and fall back to ensemble/student-t")
+    parser.add_argument("--disable-calibrator", dest="disable_calibrator", action="store_true", help="Disable the calibrator (EMOS) entirely and use the pure ensemble/student-t")
+    parser.add_argument("--shrink_weight", type=float, default=None, help="Shrink model probability toward market: our_prob=w*model+(1-w)*market. Default uses config.SHRINK_WEIGHT.")
     parser.add_argument("--kelly_fraction", type=float, default=KELLY_FRACTION, help="Kelly fraction multiplier for sizing bets")
-    parser.add_argument("--sigma_threshold", type=float, default=1.2, help="Ensemble sigma threshold above which we bypass ML calibrator")
-    parser.add_argument("--disable_conflict_gating", action="store_true", help="Disable conflict gating check between ML and Ensemble predictions")
+    parser.add_argument("--disable_conflict_gating", action="store_true", help="Disable conflict gating check between calibrator and Ensemble predictions")
     args = parser.parse_args()
 
     dry_run   = not args.execute
@@ -99,10 +99,11 @@ def main():
         opps = analyse_city(data_dir, city,
                             min_edge=args.min_edge,
                             min_liq=args.min_liq,
-                            use_ml=not args.disable_ml,
+                            use_calibrator=not args.disable_calibrator,
                             kelly_fraction=args.kelly_fraction,
-                            sigma_threshold=args.sigma_threshold,
-                            conflict_gating=not args.disable_conflict_gating)
+                            conflict_gating=not args.disable_conflict_gating,
+                            shrink_weight=(args.shrink_weight if args.shrink_weight is not None
+                                           else SHRINK_WEIGHT))
         if opps:
             print(f"  → {len(opps)} opportunities found")
         all_opps.extend(opps)
@@ -140,7 +141,7 @@ def main():
         opps_df.to_csv(output_dir / "opportunities_v4.csv", index=False)
         
         # Save to evaluation CSVs for the 10-day test (overwrites each time with full history)
-        eval_filename = "opportunities_evaluation_ensemble.csv" if args.disable_ml else "opportunities_evaluation_ml.csv"
+        eval_filename = "opportunities_evaluation_ensemble.csv" if args.disable_calibrator else "opportunities_evaluation_calibrated.csv"
         eval_path = output_dir / eval_filename
         opps_df.to_csv(eval_path, index=False)
         

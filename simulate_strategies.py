@@ -164,7 +164,7 @@ def simulate_strategy(ml_path: Path, strategy_name: str, **kwargs):
     print(f"{name_str:<25}: Bets={total_bets:<3} Wins={wins:<3} WinRate={wins/total_bets if total_bets>0 else 0:.1%} Staked=${total_staked:<7.2f} Profit=${total_profit:<+8.2f} ROI={roi:.1%}")
 
 def main():
-    ml_path = Path("src/polymarket_weather/output/opportunities_evaluation_ml.csv")
+    ml_path = Path("src/polymarket_weather/output/opportunities_evaluation_calibrated.csv")
     print("="*85)
     print("SIMULATING STRATEGIES FOR MAXIMIZING P&L")
     print("="*85)

@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 from math import log
 from models import Opportunity
+from config import COHERENCE_MIN_LIQ
 
 # Momentum signal: EMA span (in number of forecast snapshots)
 MOMENTUM_EMA_SPAN     = 3
@@ -139,8 +140,10 @@ def score_opportunity(opp: Opportunity) -> float:
     elif opp.bet_side == "No" and opp.ema_momentum < -MOMENTUM_THRESHOLD:
         score *= 1.0 + min(abs(opp.ema_momentum) / 0.5, 0.4)
 
-    # α5 Consistency bonus: incoherent market = better edge
-    if opp.pmf_sum_dev > 0.15:
+    # α5 Consistency bonus: an incoherent market (bins not summing to 1) is a tradeable mispricing
+    # ONLY when it is liquid enough to actually fill both sides — otherwise incoherence just means
+    # the market is thin. Guard the bonus with COHERENCE_MIN_LIQ so we stop rewarding illiquidity.
+    if opp.pmf_sum_dev > 0.15 and opp.liquidity >= COHERENCE_MIN_LIQ:
         score *= 1.0 + min(opp.pmf_sum_dev * 0.5, 0.3)
 
     # α6 Volume recency — high recent volume means informed traders may have

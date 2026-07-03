@@ -6,7 +6,7 @@ only — no ROI / win-rate — because the gate must be met BEFORE any performan
 (see the pre-committed gate in CLAUDE.md and Handoff Steps 1 & 3).
 
 A "bet" is one flagged opportunity row in the eval tracker
-(`output/opportunities_evaluation_ml.csv`); every row there already passed MIN_EDGE and has
+(`output/opportunities_evaluation_calibrated.csv`); every row there already passed MIN_EDGE and has
 kelly > 0. A bet is GRADABLE once the resolution-station observation exists for its
 target_date (via grading.fetch_actual_weather, i.e. station truth — NOT the forecast grid).
 
@@ -23,7 +23,7 @@ from grading import fetch_actual_weather, _SLUG, _truth
 GATE_RESOLVED_MARKETS = 150   # minimum resolved, station-gradable markets before any verdict
 GATE_OOS_BETS = 100           # minimum gradable bets before any ROI/calibration conclusion
 
-_EVAL = Path(__file__).resolve().parent / "output" / "opportunities_evaluation_ml.csv"
+_EVAL = Path(__file__).resolve().parent / "output" / "opportunities_evaluation_calibrated.csv"
 _TRUTH_DIR = Path(__file__).resolve().parent / "data" / "weather"
 
 

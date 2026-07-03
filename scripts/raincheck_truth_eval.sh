@@ -2,7 +2,7 @@
 # raincheck_truth_eval.sh — refresh station truth, then regenerate the eval tracker
 # (Handoff Step 1, actions 2-3). Run daily, AFTER collection. Order matters:
 # refresh truth first so newly-published station obs make resolved markets gradable,
-# THEN regenerate output/opportunities_evaluation_ml.csv from the grown snapshot history.
+# THEN regenerate output/opportunities_evaluation_calibrated.csv from the grown snapshot history.
 
 set -u
 PYTHON="/Users/ronanmulligan/.pyenv/versions/3.11.9/bin/python3"

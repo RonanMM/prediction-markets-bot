@@ -146,9 +146,12 @@ def extract_market_snapshot(market: dict, city: str) -> dict[str, Any]:
             raw_token_ids = json.loads(raw_token_ids)
         except (json.JSONDecodeError, TypeError):
             raw_token_ids = []
+    # Keep every non-empty token id. Polymarket CLOB token ids are *decimal* strings
+    # (e.g. "71047..."), NOT 0x-prefixed hex — an earlier `startswith("0x")` filter
+    # silently dropped all of them, so no price-history/order-book series was ever stored.
     clob_token_ids: list[str] = [
-        t for t in raw_token_ids
-        if isinstance(t, str) and t.startswith("0x")   # valid hex token IDs only
+        str(t) for t in raw_token_ids
+        if t is not None and str(t).strip() != ""
     ]
 
     # Volumes

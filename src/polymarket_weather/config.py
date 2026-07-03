@@ -92,6 +92,10 @@ CITY_NAMES = {
 MIN_EDGE              = 0.06      # 6 pp raw probability
 MIN_LIQUIDITY         = 1000      # USDC
 MIN_BINS_FOR_PMF      = 3         # need >=3 exact bins to reconstruct distribution
+# α5 coherence bonus only applies to markets this liquid. Incoherent bins (sum != 1) are only a
+# tradeable mispricing when there is real two-sided liquidity; otherwise incoherence just means the
+# market is thin and won't fill — so we do NOT reward it. Set above MIN_LIQUIDITY on purpose.
+COHERENCE_MIN_LIQ     = 2000      # USDC
 KELLY_FRACTION        = 0.50      # fractional Kelly multiplier
 MAX_KELLY_PER_BET     = 0.08      # absolute cap per single market
 MAX_KELLY_PER_GROUP   = 0.20      # cap across correlated (city, date) group
@@ -99,6 +103,19 @@ MAX_TOTAL_KELLY       = 0.40      # hard cap on total portfolio exposure per run
 
 # Polymarket fee: ~2% of the trade amount (taker fee on winning side)
 FEE_RATE              = 0.02
+
+# Backtest execution realism: half of the bid-ask spread paid on entry (in probability units).
+# Live fills cross the spread and eat slippage; the backtest otherwise fills at the last
+# snapshot mid-price, which flatters ROI. Applied as an extra cost to `their_prob` on entry so
+# measured edge must survive realistic execution, not just an idealized mid.
+HALF_SPREAD           = 0.01   # 1 cent per share on entry (tune once real order-book data exists)
+
+# Shrink-to-market weight for the model's probability: our_prob = w·model + (1-w)·market.
+# The market currently out-predicts the model on Brier, so deviating fully from the price loses.
+# w=1.0 → pure model (no shrink, current behaviour); w<1.0 → only deviate on strong signal, which
+# lowers Brier and sizes conservatively. Fit the Brier-minimizing w with evaluate_oos.py (it prints
+# a recommendation), then set it here. Default 1.0 keeps behaviour unchanged until it is validated.
+SHRINK_WEIGHT         = 1.0
 
 # Minimum raw market price on either side of the bet.
 # Prices below this are near-settled/expired markets — skip them.

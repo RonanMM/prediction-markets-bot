@@ -4,9 +4,10 @@ from pathlib import Path
 from datetime import datetime, timezone
 from models import Opportunity, MarketBin
 from config import (MIN_EDGE, MIN_LIQUIDITY, MIN_MARKET_PRICE, KELLY_FRACTION,
-                    FEE_RATE, MAX_KELLY_PER_BET, MAX_KELLY_PER_GROUP, MAX_TOTAL_KELLY, CITY_NAMES)
+                    FEE_RATE, MAX_KELLY_PER_BET, MAX_KELLY_PER_GROUP, MAX_TOTAL_KELLY, CITY_NAMES,
+                    SHRINK_WEIGHT)
 from signals import score_opportunity, compute_momentum, forecast_convergence, volume_recency_signal, market_staleness
-from predictors.ml_calibrator import MLCalibratorPredictor
+from predictors.emos import EMOSPredictor
 from predictors.ensemble import EnsemblePredictor
 from predictors.nwp_fallback import spread_sigma_boost
 from pmf import parse_question, _bin_prob, _condition_prob, reconstruct_pmf
@@ -149,10 +150,10 @@ def _create_opportunity(
 def analyse_city(data_dir: Path, city: str,
                  min_edge: float = MIN_EDGE,
                  min_liq:  float = MIN_LIQUIDITY,
-                 use_ml: bool = True,
+                 use_calibrator: bool = True,
                  kelly_fraction: float = KELLY_FRACTION,
-                 sigma_threshold: float = 1.2,
-                 conflict_gating: bool = True) -> list[Opportunity]:
+                 conflict_gating: bool = True,
+                 shrink_weight: float = SHRINK_WEIGHT) -> list[Opportunity]:
 
     try:
         snap_df  = load_snapshots(data_dir, city)
@@ -170,7 +171,6 @@ def analyse_city(data_dir: Path, city: str,
         print("  Ensemble not available — falling back to NWP_PARAMS table")
 
     results: list[Opportunity] = []
-    cheapest_entries = {}
 
     # Group by (target_date, fetch_bucket) to process each snapshot window chronologically
     snap_df["end_date_norm"] = snap_df["end_date_iso"].dt.normalize()
@@ -179,7 +179,10 @@ def analyse_city(data_dir: Path, city: str,
     print(f"  {city}: {len(groups)} (date × snapshot) groups, "
           f"{snap_df['condition_id'].nunique()} unique markets", flush=True)
 
-    ml_predictor = MLCalibratorPredictor(use_ml=use_ml, sigma_threshold=sigma_threshold)
+    # Primary (calibrated) predictor:
+    #   use_calibrator off → pure ensemble (primary == secondary, so the averaging is a no-op)
+    #   default            → EMOS / Nonhomogeneous Regression (calibrated ensemble post-processing)
+    ml_predictor = EMOSPredictor() if use_calibrator else EnsemblePredictor()
     ens_predictor = EnsemblePredictor()
 
     for (target_date_ts, fetch_bucket_ts), group in groups:
@@ -303,34 +306,25 @@ def analyse_city(data_dir: Path, city: str,
                 continue
 
             bet_side = bet_side_ml
-            
-            # Sizing: use the maximum of the two probabilities for the bet side (ML vs Ensemble)
+
+            # Sizing: AVERAGE the two model probabilities for the bet side (ML vs Ensemble).
+            # Never take the max — max-selection cherry-picks the more optimistic model and
+            # systematically inflates edge, which oversizes Kelly and worsens calibration.
             our_prob_ml = f_prob_ml if bet_side == "Yes" else (1.0 - f_prob_ml)
             our_prob_ens = f_prob_ens if bet_side == "Yes" else (1.0 - f_prob_ens)
-            our_prob = max(our_prob_ml, our_prob_ens)
-            
+            our_prob_model = 0.5 * (our_prob_ml + our_prob_ens)
+            their_prob = m_prob_raw if bet_side == "Yes" else (1.0 - m_prob_raw)
+            # Shrink toward the market (w=1 → pure model). The market out-predicts the model, so
+            # only deviate from the price in proportion to shrink_weight.
+            our_prob = shrink_weight * our_prob_model + (1.0 - shrink_weight) * their_prob
+
             # Reconstruct f_prob_raw (our effective probability) and edge for Kelly sizing
             f_prob_raw = our_prob if bet_side == "Yes" else (1.0 - our_prob)
-            their_prob = m_prob_raw if bet_side == "Yes" else (1.0 - m_prob_raw)
             edge = our_prob - their_prob
 
-            # Minimum edge check on the combined maximum probability
+            # Minimum edge check on the (averaged, shrunk) probability
             if abs(edge) < min_edge:
                 continue
-
-            # Lock-In: preserve the early cheap/high-leverage bets in the backtester
-            prev_price = cheapest_entries.get(b.condition_id)
-            if prev_price is not None:
-                # If we entered cheap (<30% price) and the price went up by >10% (more than 10 cents), skip
-                if prev_price < 0.30 and their_prob > (prev_price + 0.10):
-                    continue
-                # General slip: if the price moved against us by >15% (15 cents), skip
-                if their_prob > (prev_price + 0.15):
-                    continue
-            
-            # Update cheapest entry price
-            if prev_price is None or their_prob < prev_price:
-                cheapest_entries[b.condition_id] = their_prob
 
             # PMF-normalized values kept for reporting/consistency signal
             m_prob = market_pmf.get(b.temp_c, m_prob_raw)
@@ -381,13 +375,15 @@ def analyse_city(data_dir: Path, city: str,
 
             bet_side = bet_side_ml
 
-            # Sizing: use the maximum of the two probabilities
+            # Sizing: AVERAGE the two model probabilities (never max — see exact-bin note above),
+            # then shrink toward the market by shrink_weight.
             our_prob_ml = f_prob_ml if bet_side == "Yes" else (1.0 - f_prob_ml)
             our_prob_ens = f_prob_ens if bet_side == "Yes" else (1.0 - f_prob_ens)
-            our_prob = max(our_prob_ml, our_prob_ens)
+            our_prob_model = 0.5 * (our_prob_ml + our_prob_ens)
+            their_prob = m_prob_raw if bet_side == "Yes" else (1.0 - m_prob_raw)
+            our_prob = shrink_weight * our_prob_model + (1.0 - shrink_weight) * their_prob
 
             f_prob_raw = our_prob if bet_side == "Yes" else (1.0 - our_prob)
-            their_prob = m_prob_raw if bet_side == "Yes" else (1.0 - m_prob_raw)
             edge = our_prob - their_prob
 
             # Minimum edge check

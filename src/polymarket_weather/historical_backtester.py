@@ -20,6 +20,7 @@ for _city, _a in RESOLUTION_ANCHORS.items():
         RESOLUTION_STATIONS[_alias] = _c
 
 from grading import fetch_actual_weather, resolves_yes  # station-truth grader (+ native-unit resolution)
+from config import FEE_RATE, HALF_SPREAD
 
 def run_backtest():
     filename = sys.argv[2] if len(sys.argv) > 2 else "output/opportunities_v4.csv"
@@ -83,9 +84,12 @@ def run_backtest():
         if bet_size < 1.0:
             continue
 
+        # Honest execution cost: cross half the spread on entry (fewer shares), and pay the
+        # taker fee on the winning payout — not a flat discount on net profit.
+        their_eff = min(0.999, their_prob + HALF_SPREAD)
+        shares = bet_size / their_eff
         if we_won:
-            payout = bet_size / their_prob
-            profit = (payout - bet_size) * 0.98 # Minus 2% Polymarket fee
+            profit = shares * (1.0 - FEE_RATE) - bet_size
             wins += 1
             result_str = "✅ WIN"
         else:

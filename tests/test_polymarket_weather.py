@@ -116,3 +116,134 @@ def test_resolves_yes_celsius_and_missing(monkeypatch):
     monkeypatch.setattr(grading, "fetch_actual_weather", lambda *a, **k: None)
     assert resolves_yes("London", "2026-06-25", q, 20.0) is None
 
+
+# ── EMOS calibrator (WS2) ────────────────────────────────────────────────────
+
+def test_emos_mean_and_sigma_math():
+    """Mean is a linear calibration; sigma trusts ensemble spread but never drops below the floor."""
+    from predictors.emos import emos_mean, emos_sigma
+    params = {"a": 1.0, "b": 0.9, "c_sin": 0.0, "c_cos": 0.0, "s0_floor": 1.5, "s1": 1.0}
+    # mean = 1 + 0.9*20 = 19.0 (seasonal terms zero)
+    assert pytest.approx(emos_mean(params, 20.0, 182)) == 19.0
+    # low ensemble spread -> floored to s0_floor (fixes overconfidence)
+    assert pytest.approx(emos_sigma(params, 0.8, 0.0)) == 1.5
+    # high ensemble spread -> trusted, plus diurnal boost
+    assert pytest.approx(emos_sigma(params, 3.0, 0.25)) == 3.25
+
+
+def _tiny_frames():
+    daily = pd.DataFrame({
+        "date_local":     pd.to_datetime(["2026-07-02"]),
+        "fetched_at_utc": pd.to_datetime(["2026-07-01T00:00:00Z"]),
+        "temp_max_c":     [20.0],
+        "temp_min_c":     [12.0],
+    })
+    ens = pd.DataFrame({
+        "date_local":     pd.to_datetime(["2026-07-02"]),
+        "fetched_at_utc": pd.to_datetime(["2026-07-01T00:00:00Z"]),
+        "ens_mean": [19.5], "ens_std": [1.0], "ens_p10": [18.0], "ens_p25": [19.0],
+        "ens_median": [19.5], "ens_p75": [20.0], "ens_p90": [21.0], "ens_spread": [3.0],
+        "n_members": [30],
+    })
+    return daily, ens
+
+
+def test_emos_predictor_uses_deterministic_mean(monkeypatch):
+    """With trained params, EMOS calibrates the DETERMINISTIC forecast (no train/serve skew)."""
+    from predictors import emos as emos_mod
+    daily, ens = _tiny_frames()
+    monkeypatch.setattr(emos_mod, "_load_params",
+                        lambda slug: {"a": 1.0, "b": 0.9, "c_sin": 0.0, "c_cos": 0.0,
+                                      "s0_floor": 1.5, "s1": 1.0})
+    dist = emos_mod.EMOSPredictor().predict_distribution(
+        "London", pd.Timestamp("2026-07-02"), pd.Timestamp("2026-07-01T12:00:00Z"),
+        1.0, daily, ens)
+    assert dist.source == "emos"
+    assert pytest.approx(dist.mu) == 19.0          # 1 + 0.9*20 (deterministic 20, not ens_mean 19.5)
+    assert pytest.approx(dist.sigma) == 1.5        # max(1.0, 1.5) floor, no diurnal boost
+
+
+def test_emos_predictor_falls_back_without_params(monkeypatch):
+    """No trained params -> defer to the pure ensemble predictor."""
+    from predictors import emos as emos_mod
+    daily, ens = _tiny_frames()
+    monkeypatch.setattr(emos_mod, "_load_params", lambda slug: None)
+    dist = emos_mod.EMOSPredictor().predict_distribution(
+        "London", pd.Timestamp("2026-07-02"), pd.Timestamp("2026-07-01T12:00:00Z"),
+        1.0, daily, ens)
+    assert dist.source == "ensemble"
+
+
+def test_emos_self_gates_when_calibration_worse(monkeypatch):
+    """Self-gating (Fix #2): if the honest holdout says calibration did NOT beat the raw forecast
+    (holdout_rmse_calibrated >= holdout_rmse_raw — e.g. London, NYC), EMOS defers to the pure
+    ensemble rather than injecting a mean that hurt out of sample."""
+    from predictors import emos as emos_mod
+    daily, ens = _tiny_frames()
+    monkeypatch.setattr(emos_mod, "_load_params",
+                        lambda slug: {"a": 1.0, "b": 0.9, "c_sin": 0.0, "c_cos": 0.0,
+                                      "s0_floor": 1.5, "s1": 1.0,
+                                      "holdout_rmse_calibrated": 1.20,
+                                      "holdout_rmse_raw": 0.98})
+    dist = emos_mod.EMOSPredictor().predict_distribution(
+        "London", pd.Timestamp("2026-07-02"), pd.Timestamp("2026-07-01T12:00:00Z"),
+        1.0, daily, ens)
+    assert dist.source == "ensemble"          # calibration didn't help -> pure ensemble
+
+
+def test_emos_applies_when_calibration_helps(monkeypatch):
+    """The gate keeps EMOS where calibration DID beat the raw forecast on the holdout
+    (holdout_rmse_calibrated < holdout_rmse_raw — e.g. Seoul, Chicago, Hong Kong)."""
+    from predictors import emos as emos_mod
+    daily, ens = _tiny_frames()
+    monkeypatch.setattr(emos_mod, "_load_params",
+                        lambda slug: {"a": 1.0, "b": 0.9, "c_sin": 0.0, "c_cos": 0.0,
+                                      "s0_floor": 1.5, "s1": 1.0,
+                                      "holdout_rmse_calibrated": 1.20,
+                                      "holdout_rmse_raw": 1.70})
+    dist = emos_mod.EMOSPredictor().predict_distribution(
+        "London", pd.Timestamp("2026-07-02"), pd.Timestamp("2026-07-01T12:00:00Z"),
+        1.0, daily, ens)
+    assert dist.source == "emos"              # calibration helped -> keep EMOS
+
+
+# ── Shrink-to-market weight sweep (WS3) ──────────────────────────────────────
+
+def test_best_shrink_weight_picks_the_more_accurate_source():
+    """The sweep should lean toward whichever of model/market predicts the outcomes better."""
+    from evaluate_oos import _best_shrink_weight
+    y = [1, 0, 1, 0, 1, 0]
+    # Market nails it, model is a coin flip -> best w should be 0 (trust the market).
+    mkt_good = pd.DataFrame({"outcome": y,
+                             "forecast_prob": [0.5] * 6,
+                             "market_prob_raw": [0.95, 0.05, 0.95, 0.05, 0.95, 0.05]})
+    best_w, _, _, _ = _best_shrink_weight(mkt_good)
+    assert best_w == 0.0
+    # Model nails it, market is a coin flip -> best w should be 1 (trust the model).
+    model_good = pd.DataFrame({"outcome": y,
+                               "forecast_prob": [0.95, 0.05, 0.95, 0.05, 0.95, 0.05],
+                               "market_prob_raw": [0.5] * 6})
+    best_w, _, _, _ = _best_shrink_weight(model_good)
+    assert best_w == 1.0
+
+
+# ── Guarded coherence bonus (WS6) ────────────────────────────────────────────
+
+def _opp_for_scoring(liquidity, pmf_sum_dev):
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        abs_edge=0.10, bet_side="Yes", ema_momentum=0.0, pmf_sum_dev=pmf_sum_dev,
+        volume_recency=0.0, forecast_var=0.0, is_stale=False,
+        liquidity=liquidity, days_ahead=1.0)
+
+
+def test_coherence_bonus_requires_liquidity():
+    """The α5 incoherence bonus fires only when the market is liquid enough to actually trade."""
+    from signals import score_opportunity
+    # Liquid: incoherent (sum!=1) scores HIGHER than coherent — bonus active.
+    assert score_opportunity(_opp_for_scoring(5000, 0.5)) > \
+           score_opportunity(_opp_for_scoring(5000, 0.0))
+    # Illiquid: incoherence earns NO bonus (thin market, won't fill) — scores identical.
+    assert score_opportunity(_opp_for_scoring(500, 0.5)) == \
+           score_opportunity(_opp_for_scoring(500, 0.0))
+

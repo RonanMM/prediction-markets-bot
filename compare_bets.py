@@ -77,7 +77,7 @@ def grade_opportunities(df_path: Path):
     return pd.DataFrame(graded_rows)
 
 def main():
-    ml_path = Path("src/polymarket_weather/output/opportunities_evaluation_ml.csv")
+    ml_path = Path("src/polymarket_weather/output/opportunities_evaluation_calibrated.csv")
     ens_path = Path("src/polymarket_weather/output/opportunities_evaluation_ensemble.csv")
     
     print("Grading ML predictions...")

@@ -201,7 +201,7 @@ def simulate_parameters(df_raw, strategy, params):
     }
 
 def main():
-    csv_path = Path("src/polymarket_weather/output/opportunities_evaluation_ml.csv")
+    csv_path = Path("src/polymarket_weather/output/opportunities_evaluation_calibrated.csv")
     if not csv_path.exists():
         print(f"Data not found at {csv_path}")
         return

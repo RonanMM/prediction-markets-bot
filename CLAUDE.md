@@ -12,7 +12,10 @@ The active project code lives in `src/polymarket_weather/`, not in `src/rainchec
 
 ## Commands
 
-All commands should be executed from the `src/polymarket_weather/` directory:
+Most commands run from the `src/polymarket_weather/` directory. **Exceptions:** the two
+optimizer scripts (`optimizer.py`, `optimizer_full.py`) live at the **repo root** and must be
+run from there — they do `sys.path.insert(0, "src/polymarket_weather")`, a path relative to the
+cwd — and the unit tests also run from the repo root (see below).
 
 ```bash
 # Install dependencies
@@ -37,9 +40,11 @@ python polymarket_weather_analysis.py --data_dir ./data --live
 python polymarket_weather_analysis.py --data_dir ./data
 
 # Run the Parameter Sweep Optimizer (reads pre-calculated CSV, very fast)
+# NOTE: run from the REPO ROOT, not src/polymarket_weather/ (see above)
 python optimizer.py
 
 # Run the Full-Pipeline Grid Search Optimizer (runs engine back-to-front, slow)
+# NOTE: run from the REPO ROOT, not src/polymarket_weather/ (see above)
 python optimizer_full.py
 ```
 
@@ -65,7 +70,7 @@ Open-Meteo Ensemble API → fetch_ensemble.py ───┘
                                                      ↓
                                       processing.py (deduplication & normalisation)
                                                      ↓
-              [MLCalibratorPredictor / EnsemblePredictor / NWPFallbackPredictor]
+              [EMOSPredictor / EnsemblePredictor / NWPFallbackPredictor]
                                                      ↓
                               engine.py (analyses city markets & computes Kelly sizing)
                                                      ↓
@@ -117,16 +122,51 @@ truth/resolution stay **Incheon RKSI / Meteostat 47113**. Validated: CV RMSE ≈
 | `pmf.py` | Parsing rules for questions (exact, gte, lte) and reconstruction of the probability mass function (PMF). |
 | `reports.py` | Terminal reports, summary generators, and plotting wrappers. |
 | `visualization.py` | Generates diagnostic PNG plots (forecast drift, efficiency signals, price momentum). |
-| `ml_calibrator.py` | Random Forest Regressor to calibrate raw numerical weather forecasts. |
+| `predictors/emos.py` | **Default calibrator.** EMOS / Nonhomogeneous Regression — calibrated ensemble post-processing (per-city params in `models/{slug}_emos.json`, fit by `train_calibrator.py`). Self-gates to the pure ensemble per city where calibration didn't beat the raw forecast on the holdout. |
 
 ---
 
 ## Predictor Models
 
-The system supports three predictor models under `predictors/`:
-1. **`MLCalibratorPredictor`**: City-specific Random Forest models trained on historical forecast errors. Uses `day_of_year` and `raw_mu` to correct forecasts. If the ensemble standard deviation (`sigma`) is too high (`> 1.2`), it bypasses itself and falls back to the physics-based ensemble.
-2. **`EnsemblePredictor`**: Predicts probabilities using the ECMWF/ICON ensemble spread (standard deviation and Student-t tails).
-3. **`NWPFallbackPredictor`**: Used when ensemble data is missing; falls back to static standard deviation tables defined in `config.py`.
+Predictors live under `predictors/`. The engine's **default calibrator is `EMOSPredictor`**. (An
+earlier RandomForest calibrator was verified net-negative vs the ensemble and has been removed.)
+1. **`EMOSPredictor`** *(default)*: EMOS / Nonhomogeneous Regression — the standard method for
+   post-processing an ensemble into a *calibrated* predictive distribution.
+   `mu = a + b·grid_temp + seasonal`, `sigma = max(s1·ens_std, s0_floor) + diurnal_boost`. A handful
+   of parameters (cannot overfit), temporal-CV trained (`train_calibrator.py` → small
+   `models/{slug}_emos.json`), and served on the SAME deterministic forecast variable it was
+   trained on (no train/serve skew). The `s0_floor` is the fix for the overconfidence that lost on
+   Brier. Falls back to the ensemble if params or a forecast are missing, and **self-gates to the
+   ensemble per city** when calibration didn't beat the raw forecast on the holdout (currently London
+   & NYC, whose `holdout_rmse_calibrated ≥ holdout_rmse_raw`).
+2. **`EnsemblePredictor`**: Predicts probabilities using the ECMWF/ICON ensemble spread (standard
+   deviation and Student-t tails). Also the fallback for EMOS.
+3. **`NWPFallbackPredictor`**: Used when ensemble data is missing; falls back to static standard
+   deviation tables defined in `config.py`.
+
+### Recent engine corrections (edge honesty)
+- **No more max-selection.** `engine.py` combined ML+ensemble via `our_prob = max(...)`, which
+  cherry-picked the more optimistic model and manufactured edge. It now **averages** the two.
+- **Lock-in artifact removed.** The `cheapest_entries` block that preserved the cheapest historical
+  entry price (an optimistic backtest artifact) is gone.
+- **Honest backtest costs.** `evaluate_oos.py` and `historical_backtester.py` now cross a half-spread
+  on entry (`config.HALF_SPREAD`) and pay the fee on the winning payout — so measured edge must
+  survive realistic execution. Expect apparent ROI to drop; that is the point.
+- **`evaluate_oos.py` is the arbiter.** It now prints per-city Brier, temperature-level CRPS
+  (MODEL vs ENSEMBLE), an explicit EDGE CHECK PASS/FAIL (model Brier < market AND ≤ ensemble), and a
+  shrink-to-market sweep recommending the Brier-minimizing `w`.
+- **Shrink-to-market (`config.SHRINK_WEIGHT`, default 1.0 = no-op).** `our_prob = w·model +
+  (1-w)·market`. Because the market currently out-predicts the model, betting the pure model loses;
+  set `w<1` (from the `evaluate_oos.py` sweep) to deviate from the price only on strong signal. This
+  scales edge and Kelly by `w`, so it also sizes conservatively. Override per-run with `--shrink_weight`.
+- **α5 coherence bonus is liquidity-guarded (`config.COHERENCE_MIN_LIQ`).** Incoherent bins (sum≠1)
+  only earn the α5 score bonus when the market is liquid enough to actually fill both sides;
+  otherwise incoherence is just thinness, so it is no longer rewarded.
+
+### One-command validation
+`./scripts/raincheck_validate.sh` runs the whole honest loop in a networked env: fetch station truth
++ archive features → `train_calibrator.py` (EMOS) → regenerate both eval trackers (EMOS + `--disable-calibrator`
+ensemble) → `evaluate_oos.py` (EDGE CHECK + shrink-weight recommendation) → `data_status.py` (gate).
 
 ---
 
