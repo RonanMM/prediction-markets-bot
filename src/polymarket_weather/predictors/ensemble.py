@@ -88,7 +88,7 @@ def get_ensemble_params(ens_df: Optional[pd.DataFrame], target_date, fetch_time)
     if np.isnan(std) or std <= 0:
         return None
 
-    return {
+    out = {
         "ens_mean":   float(row.get("ens_mean",   np.nan)),
         "ens_std":    std,
         "ens_p10":    float(row.get("ens_p10",    np.nan)),
@@ -96,19 +96,27 @@ def get_ensemble_params(ens_df: Optional[pd.DataFrame], target_date, fetch_time)
         "ens_spread": float(row.get("ens_spread", np.nan)),
         "n_members":  int(row.get("n_members", 0)),
     }
+    # Daily-MIN member stats (Tmin markets) — present once fetch_ensemble collects them.
+    for key in ("ens_min_mean", "ens_min_std"):
+        val = row.get(key, np.nan)
+        out[key] = None if pd.isna(val) else float(val)
+    return out
 
 class EnsemblePredictor(BasePredictor):
     def __init__(self):
         self._fallback_predictor = NWPFallbackPredictor()
 
     def predict_distribution(
-        self, 
-        city: str, 
-        target_date: pd.Timestamp, 
+        self,
+        city: str,
+        target_date: pd.Timestamp,
         fetch_time: pd.Timestamp,
         days_ahead: float,
         daily_df: pd.DataFrame,
-        ens_df: pd.DataFrame = None
+        ens_df: pd.DataFrame = None,
+        mm_df: pd.DataFrame = None,   # unused; part of the shared predictor interface
+        obs_df: pd.DataFrame = None,  # unused; part of the shared predictor interface
+        nbm_df: pd.DataFrame = None,  # unused; part of the shared predictor interface
     ) -> TemperatureDistribution:
         ens_params = get_ensemble_params(ens_df, target_date, fetch_time)
         if ens_params is None:

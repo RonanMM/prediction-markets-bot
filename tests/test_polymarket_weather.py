@@ -117,18 +117,27 @@ def test_resolves_yes_celsius_and_missing(monkeypatch):
     assert resolves_yes("London", "2026-06-25", q, 20.0) is None
 
 
-# ── EMOS calibrator (WS2) ────────────────────────────────────────────────────
+# ── EMOS calibrator v2 (per-lead) ────────────────────────────────────────────
 
-def test_emos_mean_and_sigma_math():
-    """Mean is a linear calibration; sigma trusts ensemble spread but never drops below the floor."""
-    from predictors.emos import emos_mean, emos_sigma
-    params = {"a": 1.0, "b": 0.9, "c_sin": 0.0, "c_cos": 0.0, "s0_floor": 1.5, "s1": 1.0}
-    # mean = 1 + 0.9*20 = 19.0 (seasonal terms zero)
-    assert pytest.approx(emos_mean(params, 20.0, 182)) == 19.0
-    # low ensemble spread -> floored to s0_floor (fixes overconfidence)
-    assert pytest.approx(emos_sigma(params, 0.8, 0.0)) == 1.5
-    # high ensemble spread -> trusted, plus diurnal boost
-    assert pytest.approx(emos_sigma(params, 3.0, 0.25)) == 3.25
+def _v2_fit(use_cal=True, a=1.0, sigma=1.5):
+    return {"a": a, "b": 0.9, "c_sin": 0.0, "c_cos": 0.0,
+            "use_calibrated_mean": use_cal, "sigma": sigma, "nu": 8.0,
+            "holdout_rmse_calibrated": 1.2, "holdout_rmse_raw": 1.7}
+
+
+def _v2_params(input_kind="mm_mean", use_cal=True, sigma=1.5):
+    return {"version": 2, "input": input_kind,
+            "mm_models": ["ecmwf", "gfs"],
+            "leads": {"1": {"mm_mean": _v2_fit(use_cal, a=1.0, sigma=sigma),
+                            "mm_proxy": _v2_fit(use_cal, a=3.0, sigma=sigma),
+                            "best_match": _v2_fit(use_cal, a=2.0, sigma=sigma)}}}
+
+
+def test_emos_mean_math_and_gating():
+    """Calibrated mean is linear; a holdout-gated fit returns the raw input unchanged."""
+    from predictors.emos import emos_mean
+    assert pytest.approx(emos_mean(_v2_fit(use_cal=True), 20.0, 182)) == 19.0   # 1 + 0.9*20
+    assert pytest.approx(emos_mean(_v2_fit(use_cal=False), 20.0, 182)) == 20.0  # gated -> raw
 
 
 def _tiny_frames():
@@ -143,68 +152,228 @@ def _tiny_frames():
         "fetched_at_utc": pd.to_datetime(["2026-07-01T00:00:00Z"]),
         "ens_mean": [19.5], "ens_std": [1.0], "ens_p10": [18.0], "ens_p25": [19.0],
         "ens_median": [19.5], "ens_p75": [20.0], "ens_p90": [21.0], "ens_spread": [3.0],
-        "n_members": [30],
+        "n_members": [30], "ens_min_mean": [11.0], "ens_min_std": [0.8],
     })
     return daily, ens
 
 
-def test_emos_predictor_uses_deterministic_mean(monkeypatch):
-    """With trained params, EMOS calibrates the DETERMINISTIC forecast (no train/serve skew)."""
+def test_emos_v2_prefers_exact_mm_then_proxy(monkeypatch):
+    """With daily_mm data the EXACT multi-model mean is used with the mm_mean fit;
+    without it, the live ensemble mean is used WITH THE PROXY FIT (its own sigma) —
+    never the full-blend coefficients."""
     from predictors import emos as emos_mod
     daily, ens = _tiny_frames()
-    monkeypatch.setattr(emos_mod, "_load_params",
-                        lambda slug: {"a": 1.0, "b": 0.9, "c_sin": 0.0, "c_cos": 0.0,
-                                      "s0_floor": 1.5, "s1": 1.0})
+    monkeypatch.setattr(emos_mod, "_load_params", lambda slug, kind="max": _v2_params("mm_mean"))
+    mm = pd.DataFrame({
+        "date_local":     pd.to_datetime(["2026-07-02"]),
+        "fetched_at_utc": pd.to_datetime(["2026-07-01T00:00:00Z"]),
+        "tmax_ecmwf": [21.0], "tmax_gfs": [23.0],
+    })
     dist = emos_mod.EMOSPredictor().predict_distribution(
         "London", pd.Timestamp("2026-07-02"), pd.Timestamp("2026-07-01T12:00:00Z"),
+        1.0, daily, ens, mm_df=mm)
+    assert dist.source == "emos_v2"
+    assert pytest.approx(dist.mu) == 1.0 + 0.9 * 22.0   # exact mm mean (21+23)/2, mm_mean fit
+    assert pytest.approx(dist.sigma) == 1.5             # max(ens_std 1.0 + boost 0, floor 1.5)
+    assert pytest.approx(dist.nu) == 8.0
+    # no mm_df -> ensemble mean with the mm_proxy fit (a=3.0)
+    dist2 = emos_mod.EMOSPredictor().predict_distribution(
+        "London", pd.Timestamp("2026-07-02"), pd.Timestamp("2026-07-01T12:00:00Z"),
         1.0, daily, ens)
-    assert dist.source == "emos"
-    assert pytest.approx(dist.mu) == 19.0          # 1 + 0.9*20 (deterministic 20, not ens_mean 19.5)
-    assert pytest.approx(dist.sigma) == 1.5        # max(1.0, 1.5) floor, no diurnal boost
+    assert pytest.approx(dist2.mu) == 3.0 + 0.9 * 19.5
 
 
-def test_emos_predictor_falls_back_without_params(monkeypatch):
+def test_emos_v2_falls_back_to_deterministic_with_matching_fit(monkeypatch):
+    """No ensemble data -> the deterministic input is used WITH the best_match fit
+    (never the mm_mean coefficients), and the sigma floor still applies."""
+    from predictors import emos as emos_mod
+    daily, _ = _tiny_frames()
+    monkeypatch.setattr(emos_mod, "_load_params", lambda slug, kind="max": _v2_params("mm_mean", sigma=5.0))
+    dist = emos_mod.EMOSPredictor().predict_distribution(
+        "London", pd.Timestamp("2026-07-02"), pd.Timestamp("2026-07-01T12:00:00Z"),
+        1.0, daily, None)
+    assert dist.source == "emos_v2"
+    assert pytest.approx(dist.mu) == 2.0 + 0.9 * 20.0   # deterministic 20 with the best_match fit
+    assert dist.sigma >= 5.0                            # per-lead floor binds over the NWP table
+
+
+def test_emos_v2_falls_back_without_params(monkeypatch):
     """No trained params -> defer to the pure ensemble predictor."""
     from predictors import emos as emos_mod
     daily, ens = _tiny_frames()
-    monkeypatch.setattr(emos_mod, "_load_params", lambda slug: None)
+    monkeypatch.setattr(emos_mod, "_load_params", lambda slug, kind="max": None)
     dist = emos_mod.EMOSPredictor().predict_distribution(
         "London", pd.Timestamp("2026-07-02"), pd.Timestamp("2026-07-01T12:00:00Z"),
         1.0, daily, ens)
     assert dist.source == "ensemble"
 
 
-def test_emos_self_gates_when_calibration_worse(monkeypatch):
-    """Self-gating (Fix #2): if the honest holdout says calibration did NOT beat the raw forecast
-    (holdout_rmse_calibrated >= holdout_rmse_raw — e.g. London, NYC), EMOS defers to the pure
-    ensemble rather than injecting a mean that hurt out of sample."""
+def test_emos_v2_gates_mean_but_keeps_sigma_floor(monkeypatch):
+    """Where the holdout gated the mean correction off, the raw input mean is served —
+    but the per-lead sigma floor is NEVER gated away (it is the main overconfidence fix)."""
     from predictors import emos as emos_mod
     daily, ens = _tiny_frames()
     monkeypatch.setattr(emos_mod, "_load_params",
-                        lambda slug: {"a": 1.0, "b": 0.9, "c_sin": 0.0, "c_cos": 0.0,
-                                      "s0_floor": 1.5, "s1": 1.0,
-                                      "holdout_rmse_calibrated": 1.20,
-                                      "holdout_rmse_raw": 0.98})
+                        lambda slug, kind="max": _v2_params("mm_mean", use_cal=False))
     dist = emos_mod.EMOSPredictor().predict_distribution(
         "London", pd.Timestamp("2026-07-02"), pd.Timestamp("2026-07-01T12:00:00Z"),
         1.0, daily, ens)
-    assert dist.source == "ensemble"          # calibration didn't help -> pure ensemble
+    assert dist.source == "emos_v2"
+    assert pytest.approx(dist.mu) == 19.5     # raw ens_mean, no correction
+    assert pytest.approx(dist.sigma) == 1.5   # floor still applied
 
 
-def test_emos_applies_when_calibration_helps(monkeypatch):
-    """The gate keeps EMOS where calibration DID beat the raw forecast on the holdout
-    (holdout_rmse_calibrated < holdout_rmse_raw — e.g. Seoul, Chicago, Hong Kong)."""
+def test_censored_bin_probabilities():
+    """With a floor f (running observed max), T = max(f, Z): bins entirely below f get 0,
+    the bin containing f absorbs the point mass P(Z <= f), thresholds below f are certain."""
+    from pmf import _bin_prob, _cdf
+    mu, sigma, nu = 20.0, 1.0, 30.0   # ~Gaussian
+    # bin far below the floor: impossible
+    assert _bin_prob(16.0, mu, sigma, nu, 0.5, floor=19.0) == 0.0
+    # threshold already reached: P(T >= 18) = 1 - F_T(17.5) = 1
+    assert 1.0 - _cdf(17.5, mu, sigma, nu, floor=19.0) == 1.0
+    # the floor bin picks up the collapsed mass: sum over all bins ≈ 1
+    bins = [ _bin_prob(t, mu, sigma, nu, 0.5, floor=19.0) for t in range(15, 27) ]
+    assert abs(sum(bins) - 1.0) < 0.01
+    # and the floor bin (19) is strictly larger than without the floor
+    assert _bin_prob(19.0, mu, sigma, nu, 0.5, floor=19.0) > _bin_prob(19.0, mu, sigma, nu, 0.5)
+
+
+def _obs_frame(date_str, temps_by_hour):
+    return pd.DataFrame({
+        "valid_local": pd.to_datetime([f"{date_str} {h:02d}:51" for h in temps_by_hour]),
+        "date_local":  [date_str] * len(temps_by_hour),
+        "temp_c":      list(temps_by_hour.values()),
+    })
+
+
+def test_emos_v2_intraday_conditioning(monkeypatch):
+    """Same-station-local-day bet with obs: the per-hour fit replaces mu/sigma and the
+    distribution is floored at the running max; next-day bets are untouched."""
+    from predictors import emos as emos_mod
+    daily, ens = _tiny_frames()
+    monkeypatch.setattr(emos_mod, "_load_params", lambda slug, kind="max": _v2_params("mm_mean"))
+    monkeypatch.setattr(emos_mod, "_load_intraday",
+                        lambda slug, kind="max": {"version": 1, "nu": 6.0,
+                                      "hours": {"13": {"a": 0.5, "b": 0.4, "c": 0.6,
+                                                       "sigma": 0.7}}})
+    obs = _obs_frame("2026-07-02", {9: 17.0, 11: 18.5, 12: 19.2})
+    # fetch at 13:30 local London (UTC+1 in July) on the target day itself
+    dist = emos_mod.EMOSPredictor().predict_distribution(
+        "London", pd.Timestamp("2026-07-02"), pd.Timestamp("2026-07-02T12:30:00Z"),
+        0.0, daily, ens, obs_df=obs)
+    assert dist.source == "emos_v2_intraday"
+    assert pytest.approx(dist.floor) == 19.2                      # running max
+    assert pytest.approx(dist.mu) == 0.5 + 0.4 * 20.0 + 0.6 * 19.2  # a + b·det + c·M
+    assert pytest.approx(dist.sigma) == 0.7
+    assert pytest.approx(dist.nu) == 6.0
+    # same obs, but a NEXT-day target: no conditioning, no floor
+    daily2 = daily.copy(); daily2["date_local"] = pd.to_datetime(["2026-07-03"])
+    ens2 = ens.copy(); ens2["date_local"] = pd.to_datetime(["2026-07-03"])
+    dist2 = emos_mod.EMOSPredictor().predict_distribution(
+        "London", pd.Timestamp("2026-07-03"), pd.Timestamp("2026-07-02T12:30:00Z"),
+        1.0, daily2, ens2, obs_df=obs)
+    assert dist2.source == "emos_v2"
+    assert dist2.floor is None
+
+
+def test_emos_v2_intraday_floor_without_hour_fit(monkeypatch):
+    """Hours the trainer gated off still get the floor (pure information, costs nothing) —
+    but keep the unconditioned mu/sigma."""
+    from predictors import emos as emos_mod
+    daily, ens = _tiny_frames()
+    monkeypatch.setattr(emos_mod, "_load_params", lambda slug, kind="max": _v2_params("mm_mean"))
+    monkeypatch.setattr(emos_mod, "_load_intraday",
+                        lambda slug, kind="max": {"version": 1, "nu": 6.0, "hours": {}})
+    obs = _obs_frame("2026-07-02", {9: 17.0})
+    dist = emos_mod.EMOSPredictor().predict_distribution(
+        "London", pd.Timestamp("2026-07-02"), pd.Timestamp("2026-07-02T12:30:00Z"),
+        0.0, daily, ens, obs_df=obs)
+    assert dist.source == "emos_v2"
+    assert pytest.approx(dist.floor) == 17.0
+    assert pytest.approx(dist.mu) == 3.0 + 0.9 * 19.5   # unchanged proxy-fit calibration
+
+
+def test_emos_v2_nbm_as_of_join(monkeypatch):
+    """input=nbm -> the latest NBM run AVAILABLE at fetch_time is used with the nbm fit;
+    runs published later must not leak into the backtest."""
+    from predictors import emos as emos_mod
+    daily, ens = _tiny_frames()
+    params = _v2_params("nbm")
+    params["leads"]["1"]["nbm"] = _v2_fit(a=4.0)
+    monkeypatch.setattr(emos_mod, "_load_params", lambda slug, kind="max": params)
+    nbm = pd.DataFrame({
+        "avail_utc": pd.to_datetime(["2026-07-01T08:00:00Z", "2026-07-01T14:00:00Z"], utc=True),
+        "date_local": ["2026-07-02", "2026-07-02"],
+        "nbm_tmax_txn_c": [24.0, 26.0],
+        "nbm_tmax_tmp_c": [23.0, 25.0],
+    })
+    dist = emos_mod.EMOSPredictor().predict_distribution(
+        "New York City", pd.Timestamp("2026-07-02"), pd.Timestamp("2026-07-01T12:00:00Z"),
+        1.0, daily, ens, nbm_df=nbm)
+    assert dist.source == "emos_v2"
+    # only the 08:00Z run was available at 12:00Z; txn (24.0) preferred over tmp (23.0)
+    assert pytest.approx(dist.mu) == 4.0 + 0.9 * 24.0
+    # without NBM data the chain falls back to the exact/proxy/deterministic inputs
+    dist2 = emos_mod.EMOSPredictor().predict_distribution(
+        "New York City", pd.Timestamp("2026-07-02"), pd.Timestamp("2026-07-01T12:00:00Z"),
+        1.0, daily, ens)
+    assert pytest.approx(dist2.mu) == 3.0 + 0.9 * 19.5   # mm_proxy fit on ens_mean
+
+
+def test_emos_v2_min_distribution_and_ceiling(monkeypatch):
+    """kind='min' -> the Tmin params price off the ensemble MIN stats with their own
+    fit; same-day obs set a CEILING (Tmin cannot end above the running min); and with
+    no trained Tmin params the predictor returns None (engine skips min bins)."""
     from predictors import emos as emos_mod
     daily, ens = _tiny_frames()
     monkeypatch.setattr(emos_mod, "_load_params",
-                        lambda slug: {"a": 1.0, "b": 0.9, "c_sin": 0.0, "c_cos": 0.0,
-                                      "s0_floor": 1.5, "s1": 1.0,
-                                      "holdout_rmse_calibrated": 1.20,
-                                      "holdout_rmse_raw": 1.70})
+                        lambda slug, kind="max": _v2_params("mm_mean") if kind == "min" else None)
+    monkeypatch.setattr(emos_mod, "_load_intraday", lambda slug, kind="max": None)
+    # next-day min bet: proxy fit (a=3.0) on ens_min_mean 11.0; sigma floored at 1.5
     dist = emos_mod.EMOSPredictor().predict_distribution(
         "London", pd.Timestamp("2026-07-02"), pd.Timestamp("2026-07-01T12:00:00Z"),
-        1.0, daily, ens)
-    assert dist.source == "emos"              # calibration helped -> keep EMOS
+        1.0, daily, ens, kind="min")
+    assert dist.source == "emos_v2_min"
+    assert pytest.approx(dist.mu) == 3.0 + 0.9 * 11.0
+    assert pytest.approx(dist.sigma) == 1.5      # max(ens_min_std 0.8, sigma_lead 1.5)
+    assert dist.ceiling is None and dist.floor is None
+    # same-day with obs: ceiling = running MIN of the day's observations
+    obs = _obs_frame("2026-07-02", {6: 9.5, 9: 11.0, 12: 15.0})
+    dist2 = emos_mod.EMOSPredictor().predict_distribution(
+        "London", pd.Timestamp("2026-07-02"), pd.Timestamp("2026-07-02T12:30:00Z"),
+        0.0, daily, ens, obs_df=obs, kind="min")
+    assert pytest.approx(dist2.ceiling) == 9.5
+    assert dist2.floor is None
+    # no trained min params -> None (never price min bins off a Tmax distribution)
+    monkeypatch.setattr(emos_mod, "_load_params", lambda slug, kind="max": None)
+    assert emos_mod.EMOSPredictor().predict_distribution(
+        "London", pd.Timestamp("2026-07-02"), pd.Timestamp("2026-07-01T12:00:00Z"),
+        1.0, daily, ens, kind="min") is None
+
+
+def test_censored_ceiling_probabilities():
+    """Ceiling censoring: bins entirely above the ceiling get 0; P(Tmin <= t) = 1 for
+    thresholds at/above it; total mass is conserved."""
+    from pmf import _bin_prob, _cdf
+    mu, sigma, nu = 10.0, 1.0, 30.0
+    assert _bin_prob(13.0, mu, sigma, nu, 0.5, ceiling=9.0) == 0.0
+    assert _cdf(9.5, mu, sigma, nu, ceiling=9.0) == 1.0
+    bins = [_bin_prob(t, mu, sigma, nu, 0.5, ceiling=9.0) for t in range(4, 15)]
+    assert abs(sum(bins) - 1.0) < 0.01
+    assert _bin_prob(9.0, mu, sigma, nu, 0.5, ceiling=9.0) > _bin_prob(9.0, mu, sigma, nu, 0.5)
+
+
+def test_emos_v2_uses_nearest_trained_lead(monkeypatch):
+    """days_ahead beyond the trained leads clamps to the nearest available lead entry."""
+    from predictors import emos as emos_mod
+    daily, ens = _tiny_frames()
+    monkeypatch.setattr(emos_mod, "_load_params", lambda slug, kind="max": _v2_params("mm_mean"))
+    dist = emos_mod.EMOSPredictor().predict_distribution(
+        "London", pd.Timestamp("2026-07-02"), pd.Timestamp("2026-07-01T12:00:00Z"),
+        6.0, daily, ens)   # only lead "1" is trained
+    assert dist.source == "emos_v2"
+    assert pytest.approx(dist.mu) == 3.0 + 0.9 * 19.5
 
 
 # ── Shrink-to-market weight sweep (WS3) ──────────────────────────────────────

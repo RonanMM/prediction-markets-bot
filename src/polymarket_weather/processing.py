@@ -41,6 +41,9 @@ def _weather_hourly_path(city: str) -> Path:
 def _ensemble_path(city: str) -> Path:
     return Path(WEATHER_DIR) / f"{_slug(city)}_ensemble.csv"
 
+def _weather_daily_mm_path(city: str) -> Path:
+    return Path(WEATHER_DIR) / f"{_slug(city)}_daily_mm.csv"
+
 def _slug(city: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", city.lower()).strip("_")
 
@@ -132,6 +135,17 @@ def save_weather_forecast(forecast: dict) -> None:
         _weather_hourly_path(city),
         forecast.get("hourly", []),
         dedup_cols=["city", "datetime_local", "fetched_at_utc"],
+    )
+
+
+def save_multimodel_forecast(forecast: dict) -> None:
+    """Persist per-model deterministic daily Tmax records for one city
+    (the calibrated predictor's multi-model mean input)."""
+    city = forecast.get("city", "unknown")
+    _append_csv(
+        _weather_daily_mm_path(city),
+        forecast.get("daily", []),
+        dedup_cols=["city", "date_local", "fetched_at_utc"],
     )
 
 

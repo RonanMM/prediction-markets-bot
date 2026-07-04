@@ -27,13 +27,14 @@ from pathlib import Path
 
 from config import CITIES, LOGS_DIR, PLOTS_DIR
 from fetch_polymarket import fetch_weather_markets, fetch_price_history_for_market
-from fetch_weather import fetch_forecast
+from fetch_weather import fetch_forecast, fetch_forecast_multimodel
 from fetch_ensemble import fetch_ensemble
 from processing import (
     save_market_snapshots,
     save_price_history,
     save_weather_forecast,
     save_ensemble_forecast,
+    save_multimodel_forecast,
     compute_city_summary,
 )
 from visualization import generate_all_plots, plot_efficiency_signal
@@ -109,6 +110,29 @@ def step_fetch_weather(cities: list[str]) -> None:
             logger.info("Saved forecast: %d daily rows for %s.", daily_count, city)
         else:
             logger.error("Failed to fetch forecast for %s.", city)
+
+        mm = fetch_forecast_multimodel(city)
+        if mm:
+            save_multimodel_forecast(mm)
+            logger.info("Saved multi-model forecast: %d daily rows for %s.",
+                        len(mm.get("daily", [])), city)
+        else:
+            logger.warning("No multi-model forecast for %s.", city)
+
+    # Hourly station obs top-up (last 3 days) — same-day bets condition on the
+    # running observed max, so the obs file must be fresh at analysis time.
+    try:
+        from fetch_station_obs import fetch_station_obs
+        fetch_station_obs(recent_only=True)
+    except Exception as e:
+        logger.warning("Station obs top-up failed: %s", e)
+
+    # NBM station guidance top-up (US cities) — runtime-stamped, as-of joined.
+    try:
+        from fetch_nbm import fetch_nbm
+        fetch_nbm(recent_only=True)
+    except Exception as e:
+        logger.warning("NBM top-up failed: %s", e)
 
 
 def step_fetch_ensemble(cities: list[str]) -> None:

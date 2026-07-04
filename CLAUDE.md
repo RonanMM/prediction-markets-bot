@@ -92,15 +92,20 @@ Open-Meteo Ensemble API → fetch_ensemble.py ───┘
 separates THREE anchors per city. `config.CITIES` and every aux script DERIVE their coordinates
 from it — there are no hardcoded coords anywhere.
 - **Resolution anchor** — `resolution_url` + `resolution_unit` (what the UMA oracle reads).
-- **Truth anchor** — `meteostat_id` (the station whose observations grade/label bets, via `grading.py`).
+- **Truth anchor** — the resolution-faithful observation feed `fetch_historical_truth.py` reads
+  (NWS CLI via IEM for KLGA/KORD, IEM METAR daily for EGLC/RKSI, the HKO open-data API for HKO).
+  Grading (`grading.py`) reads the resulting `{slug}_historical_actuals.csv`. **Meteostat is
+  legacy/reference only** — a 2026-07-03 audit found it corrupted for recent weeks (KLGA June
+  daily maxes off by up to ~9 °C vs the NWS CLI report) and its HK station 45007 off HKO by
+  >1.5 °C on ~66 days/yr. Truth lag is now ~1 day (HKO ~1 month).
 - **Forecast anchor** — `forecast_lat`/`forecast_lon` (where Open-Meteo is pointed). Usually the
   station's location, but **not always**.
 
 ⚠️ **Seoul is the key exception. Do NOT "correct" its forecast coords back to the airport.** The
 Incheon-airport ERA5 grid cell is coastal/sea-damped and predicts the station poorly, so the
 forecast anchor is a skill-optimized inland **"Bucheon corridor" point (37.5035, 126.766)**, while
-truth/resolution stay **Incheon RKSI / Meteostat 47113**. Validated: CV RMSE ≈1.2 (Bucheon) vs ≈1.96
-(airport cell). A loud comment in the file says the same.
+truth/resolution stay **Incheon RKSI** (truth now read from IEM METAR daily for RKSI). Validated:
+CV RMSE ≈1.2 (Bucheon) vs ≈1.96 (airport cell). A loud comment in the file says the same.
 
 ---
 
@@ -113,8 +118,16 @@ truth/resolution stay **Incheon RKSI / Meteostat 47113**. Validated: CV RMSE ≈
 | `grading.py` | Grades markets against the resolution-**station** observation (station truth), not a forecast grid cell. |
 | `data_status.py` | Track-record progress report: collected / resolved / station-gradable counts vs the pre-committed gate. |
 | `fetch_polymarket.py` | Gamma API (market search/details) + CLOB API (price history). Parses temperature bins from market questions. |
-| `fetch_weather.py` | Open-Meteo 16-day forecast. Returns daily and hourly forecasts. |
-| `fetch_ensemble.py` | Fetches Open-Meteo ensemble forecasts (ECMWF/ICON spreads) to compute dynamic uncertainty metrics. |
+| `fetch_weather.py` | Open-Meteo 16-day forecast (daily + hourly) **plus `fetch_forecast_multimodel`** — per-model deterministic Tmax (ECMWF/GFS/ICON/JMA → `{slug}_daily_mm.csv`), the exact serving input for the calibrated multi-model mean. |
+| `fetch_ensemble.py` | Fetches Open-Meteo ensemble forecasts (ICON+GFS+ECMWF, 122 members) to compute dynamic uncertainty metrics. |
+| `fetch_historical_truth.py` | **Resolution-faithful station truth** (NWS CLI / IEM METAR / HKO API, 2015→now, ~1-day lag). Replaced Meteostat (corrupted; see Resolution Anchors). |
+| `fetch_historical_leads.py` | Archived real forecasts at leads 1–7 (Open-Meteo Previous Runs, `best_match`, 2022→now) — EMOS v2 training data. |
+| `fetch_historical_leads_mm.py` | Same, per model chain (ECMWF/GFS/ICON) for the multi-model mean input. Seoul additionally uses a JMA file (`{slug}_historical_leads_jma.csv`). |
+| `fetch_historical_leads_cand.py` | Blend-expansion candidates (AIFS/GEM/MF/CMA/BOM) per lead — feeds the per-city model-set selection in `train_calibrator.py` (see `MM_MODELS_BY_CITY`). |
+| `fetch_nbm.py` | NBM (NWS National Blend) station guidance for KLGA/KORD via the IEM NBS archive — runtime-stamped (`avail_utc`) so backtests as-of join only runs that actually existed. **Tested and NOT selected**: our multi-model blend beats raw NBM by 0.4–0.75 °C at leads 1–3; NBM stays a self-gating input candidate (scores recorded in the params JSON). `--recent` top-up runs inside main.py. |
+| `fetch_historical_leads_min.py` | Per-lead archived forecasts of the daily **MIN** (best_match leads 1–7 + the 7 blend models leads 1–4) — training data for the Tmin model. |
+| `train_intraday.py` | Per-city, per-local-hour fits of `Tmax \| (fcst, running max)` AND `Tmin \| (fcst, running min)` → `models/{slug}_intraday[_min].json`, self-gated per hour. |
+| `fetch_station_obs.py` | Hourly METAR observations per resolution station (IEM, 2022→now; `--recent` top-up runs inside main.py). Feeds intraday conditioning. No HKO feed → Hong Kong un-conditioned. |
 | `processing.py` | CSV append, normalisation, and deduplication logic. |
 | `engine.py` | Runs the core analysis loop, applying conflict gating, group caps, and portfolio exposure limits via `WeatherBettingBot`. |
 | `signals.py` | Implementation of alpha signals (momentum, convergence, staleness, volume ratios). |
@@ -122,27 +135,69 @@ truth/resolution stay **Incheon RKSI / Meteostat 47113**. Validated: CV RMSE ≈
 | `pmf.py` | Parsing rules for questions (exact, gte, lte) and reconstruction of the probability mass function (PMF). |
 | `reports.py` | Terminal reports, summary generators, and plotting wrappers. |
 | `visualization.py` | Generates diagnostic PNG plots (forecast drift, efficiency signals, price momentum). |
-| `predictors/emos.py` | **Default calibrator.** EMOS / Nonhomogeneous Regression — calibrated ensemble post-processing (per-city params in `models/{slug}_emos.json`, fit by `train_calibrator.py`). Self-gates to the pure ensemble per city where calibration didn't beat the raw forecast on the holdout. |
+| `predictors/emos.py` | **Default calibrator (v2, per-lead).** EMOS / Nonhomogeneous Regression trained on real archived forecasts per lead time (params in `models/{slug}_emos.json`, fit by `train_calibrator.py`). Mean self-gates per lead; the per-lead sigma floor is never gated (it is the overconfidence fix). |
 
 ---
 
 ## Predictor Models
 
-Predictors live under `predictors/`. The engine's **default calibrator is `EMOSPredictor`**. (An
-earlier RandomForest calibrator was verified net-negative vs the ensemble and has been removed.)
-1. **`EMOSPredictor`** *(default)*: EMOS / Nonhomogeneous Regression — the standard method for
-   post-processing an ensemble into a *calibrated* predictive distribution.
-   `mu = a + b·grid_temp + seasonal`, `sigma = max(s1·ens_std, s0_floor) + diurnal_boost`. A handful
-   of parameters (cannot overfit), temporal-CV trained (`train_calibrator.py` → small
-   `models/{slug}_emos.json`), and served on the SAME deterministic forecast variable it was
-   trained on (no train/serve skew). The `s0_floor` is the fix for the overconfidence that lost on
-   Brier. Falls back to the ensemble if params or a forecast are missing, and **self-gates to the
-   ensemble per city** when calibration didn't beat the raw forecast on the holdout (currently London
-   & NYC, whose `holdout_rmse_calibrated ≥ holdout_rmse_raw`).
-2. **`EnsemblePredictor`**: Predicts probabilities using the ECMWF/ICON ensemble spread (standard
-   deviation and Student-t tails). Also the fallback for EMOS.
+Predictors live under `predictors/`. The engine's **default calibrator is `EMOSPredictor` v2**.
+(An earlier RandomForest calibrator was verified net-negative and removed; EMOS **v1** — trained on
+the ERA5 *reanalysis* archive — was replaced 2026-07 after an audit showed it understated live
+forecast error 2–3× at betting leads, producing the overconfident tails that lost on Brier.)
+1. **`EMOSPredictor` v2** *(default)*: per-city, **per-lead (1–7)** Nonhomogeneous Regression
+   trained on REAL archived forecasts (Open-Meteo Previous Runs, 2022→now) against
+   resolution-faithful station truth — so train and serve share both the model family and the
+   lead time. Per lead: `mu = a + b·input + seasonal` (self-gated per lead by temporal holdout),
+   `sigma = max(ens_std + diurnal_boost, sigma_lead)` where `sigma_lead` is the honest holdout
+   residual std at that lead (never gated — it is the main fix), and Student-t `nu` from residual
+   kurtosis. The mean input per city is chosen by holdout RMSE between `mm_mean` (multi-model
+   deterministic mean — served exactly from `{slug}_daily_mm.csv`) and `best_match`
+   (deterministic forecast). Per-city model sets come from the 2026-07-03 blend-expansion sweep
+   (`train_calibrator.MM_MODELS_BY_CITY`): GEM broadly adopted, Météo-France for NYC/London,
+   ECMWF-AIFS for Seoul/NYC/London (Seoul gains 5–8% at every lead), JMA Seoul-only; CMA/BOM
+   rejected. When the exact multi-model inputs are unavailable (pre-daily_mm snapshots, model
+   outage) serving falls back to the live ensemble mean WITH ITS OWN `mm_proxy` fit — never the
+   full-blend sigma on the blunter proxy input. Live AIFS is `ecmwf_aifs025_single` (the
+   previous-runs archive calls it `ecmwf_aifs025`). Input selection between `mm_mean`,
+   `best_match` and `nbm` (US cities) is scored on PER-LEAD COMMON WINDOWS (paired dates), since
+   the archives start at different times. NBM was tested and lost to the blend at both US
+   stations (e.g. KORD lead-1 1.94 vs 1.19) — a useful negative: the US-city deficit is not
+   mean-forecast quality. When the v2 distribution is active the engine does NOT average it
+   with the raw ensemble (that would re-thin the tails); conflict gating remains.
+2. **`EnsemblePredictor`**: Predicts probabilities using the ICON+GFS+ECMWF ensemble spread
+   (standard deviation and Student-t tails). Also the fallback for EMOS, and the
+   `--disable-calibrator` baseline.
 3. **`NWPFallbackPredictor`**: Used when ensemble data is missing; falls back to static standard
    deviation tables defined in `config.py`.
+
+### Intraday conditioning (same-day bets)
+For a bet placed ON the target's station-local day, the predictor conditions on the running
+observed daily max M (hourly METARs via `fetch_station_obs.py`): the predictive distribution is
+**floored** at M (`TemperatureDistribution.floor` — Tmax cannot end below what was already
+recorded; `pmf._cdf/_bin_prob/_condition_prob` and the CRPS all honor the censoring), and for
+self-gated local hours a per-hour regression `Tmax = a_h + b_h·fcst + c_h·M_h` replaces mu/sigma
+(`train_intraday.py`; by 14:00 local it roughly halves sigma, by 17:00 it's ~0.4 °C with c≈0.95).
+This mostly matters LIVE (morning/midday, before the market converges); sparse historical
+snapshots rarely exercise it, so its effect barely shows in the backtest tracker.
+
+### Market-type coverage — Tmin ("lowest temperature") markets
+~20% of markets settle on the daily MIN. They were briefly excluded (pricing them off the Tmax
+distribution produced garbage: model 0.2% vs market 38%); since 2026-07-04 they are priced by a
+dedicated **Tmin model** mirroring the Tmax stack: per-lead Tmin EMOS
+(`fetch_historical_leads_min.py` → `models/{slug}_emos_min.json`, same per-city blends), live min
+inputs (`temperature_2m_min` in the ensemble + daily_mm fetches), and intraday conditioning with a
+**ceiling** at the running observed min (`models/{slug}_intraday_min.json`; the overnight low is
+largely locked by mid-morning — London sigma@12 ≈ 0.7 °C). The engine routes `lowest` bins to the
+min distribution (own PMF group, no raw-ensemble averaging or conflict gating — there is no
+ensemble Tmin baseline); if a city has no trained Tmin params the predictor returns None and those
+bins are skipped, never mispriced. `grading.py` grades them from `temp_min_c` as before.
+
+Status (2026-07-03, 71 gradable markets — preview, gate not met): v2+intraday beats the raw
+ensemble on Brier (0.140 vs 0.157) and temperature CRPS (1.24 vs 1.41); London (largest-n city,
+most same-day bets) now edges the market (0.146 vs 0.149, n=29). Overall the market still beats
+the model on model-flagged bets (0.111 vs 0.140) — driven mainly by Seoul at leads 2–3 — so
+**edge remains unproven**. The fast truth feed (~1-day lag) is filling the gate quickly.
 
 ### Recent engine corrections (edge honesty)
 - **No more max-selection.** `engine.py` combined ML+ensemble via `our_prob = max(...)`, which
@@ -165,8 +220,10 @@ earlier RandomForest calibrator was verified net-negative vs the ensemble and ha
 
 ### One-command validation
 `./scripts/raincheck_validate.sh` runs the whole honest loop in a networked env: fetch station truth
-+ archive features → `train_calibrator.py` (EMOS) → regenerate both eval trackers (EMOS + `--disable-calibrator`
-ensemble) → `evaluate_oos.py` (EDGE CHECK + shrink-weight recommendation) → `data_status.py` (gate).
+(NWS CLI / IEM METAR / HKO) + per-lead archived forecasts (Previous Runs, single- and multi-model) →
+`train_calibrator.py` (per-lead EMOS v2) → regenerate both eval trackers (calibrated +
+`--disable-calibrator` ensemble) → `evaluate_oos.py` (EDGE CHECK + shrink-weight recommendation) →
+`data_status.py` (gate).
 
 ---
 
@@ -227,9 +284,9 @@ Until the gate is met, every ROI figure is noise. (Full re-framing is Handoff St
 ```bash
 python data_status.py   # prints collected / resolved / station-gradable counts vs the gate
 ```
-The binding constraint is usually **Meteostat's publishing lag** (~2–3 weeks): a market only
-becomes gradable once its resolution-station observation is published, so refresh truth
-(`fetch_historical_truth.py`) before regenerating the eval tracker.
+Truth publishing lag is no longer the bottleneck: the resolution-faithful feeds (NWS CLI / IEM
+METAR) publish within ~1 day (HKO ~1 month), so a market becomes gradable almost as soon as it
+resolves. Refresh truth (`fetch_historical_truth.py`) before regenerating the eval tracker.
 
 ---
 

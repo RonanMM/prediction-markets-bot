@@ -11,7 +11,8 @@ from predictors.emos import EMOSPredictor
 from predictors.ensemble import EnsemblePredictor
 from predictors.nwp_fallback import spread_sigma_boost
 from pmf import parse_question, _bin_prob, _condition_prob, reconstruct_pmf
-from data_loader import load_snapshots, load_daily, load_ensemble, fetch_live_prices, check_orderbook_vwap
+from data_loader import (load_snapshots, load_daily, load_daily_mm, load_ensemble,
+                         load_nbm, load_obs_hourly, fetch_live_prices, check_orderbook_vwap)
 
 def _days_from_now(o: Opportunity) -> float:
     from datetime import datetime, timezone
@@ -101,7 +102,8 @@ def _create_opportunity(
     f_prob_raw: float, m_prob_raw: float, m_prob: float, edge: float, bet_side: str,
     our_prob: float, their_prob: float, mom: dict, fc_var: float,
     vol_rec: float, stale: dict, consistency: float, pmf_dev: float,
-    exact_bins: list, market_mode_c: float, kelly_fraction: float
+    exact_bins: list, market_mode_c: float, kelly_fraction: float,
+    floor: float = None, ceiling: float = None
 ) -> Opportunity:
     opp = Opportunity(
         city           = CITY_NAMES.get(city, city),
@@ -141,6 +143,8 @@ def _create_opportunity(
         mode_shift_c   = round(mu - market_mode_c, 2),
         bin_temp_c     = b.temp_c,
         group_key      = f"{city}|{target_date_ts.date()}",
+        forecast_floor = None if floor is None else round(float(floor), 2),
+        forecast_ceiling = None if ceiling is None else round(float(ceiling), 2),
     )
     opp.alpha_score = score_opportunity(opp)
     opp.kelly       = _kelly_size(opp, kelly_fraction=kelly_fraction)
@@ -169,6 +173,17 @@ def analyse_city(data_dir: Path, city: str,
         print(f"  Ensemble loaded: {len(ens_df)} rows ({ens_df['fetched_at_utc'].max()})")
     else:
         print("  Ensemble not available — falling back to NWP_PARAMS table")
+
+    # Live deterministic multi-model forecasts — the exact serving input for the
+    # calibrated predictor's multi-model mean; older snapshots fall back to ens_mean.
+    mm_df = load_daily_mm(data_dir, city)
+
+    # Hourly station observations — intraday conditioning of same-day bets
+    # (running-max floor + per-hour regression). None where not collected (Hong Kong).
+    obs_df = load_obs_hourly(data_dir, city)
+
+    # NBM station guidance (US cities) — runtime-stamped, as-of joined per snapshot.
+    nbm_df = load_nbm(data_dir, city)
 
     results: list[Opportunity] = []
 
@@ -206,7 +221,10 @@ def analyse_city(data_dir: Path, city: str,
                 fetch_time=fetch_time,
                 days_ahead=days_fwd,
                 daily_df=daily_df,
-                ens_df=ens_df
+                ens_df=ens_df,
+                mm_df=mm_df,
+                obs_df=obs_df,
+                nbm_df=nbm_df
             )
             mu_ml = dist_ml.mu
             sigma_ml = dist_ml.sigma
@@ -230,6 +248,19 @@ def analyse_city(data_dir: Path, city: str,
         except Exception:
             mu_ens, sigma_ens, nu_ens = mu_ml, sigma_ml, nu_ml
 
+        # Tmin distribution for "lowest temperature" markets (EMOS-only — the raw
+        # ensemble predictor has no min support; None => min bins are skipped rather
+        # than priced off a Tmax distribution).
+        dist_min = None
+        if isinstance(ml_predictor, EMOSPredictor):
+            try:
+                dist_min = ml_predictor.predict_distribution(
+                    city=city, target_date=target_date_ts, fetch_time=fetch_time,
+                    days_ahead=days_fwd, daily_df=daily_df, ens_df=ens_df,
+                    mm_df=mm_df, obs_df=obs_df, kind="min")
+            except Exception:
+                dist_min = None
+
         # Keep default mu, sigma, nu for PMF reconstruction and backward compatibility
         mu = mu_ml
         sigma = sigma_ml
@@ -240,15 +271,20 @@ def analyse_city(data_dir: Path, city: str,
         fc_var = forecast_convergence(daily_df, target_date_ts, fetch_time)  # α7
 
         # ── Parse all bins in this group ───────────────────────────────────
+        # "Lowest temperature" markets settle on the daily MIN and are routed to the
+        # Tmin distribution (min_bins); everything else is a Tmax market. They must
+        # never share a distribution or a PMF group.
         market_bins: list[MarketBin] = []
+        min_bins: list[MarketBin] = []
         for _, row in group.iterrows():
-            parsed = parse_question(str(row.get("question", "")))
+            question = str(row.get("question", ""))
+            parsed = parse_question(question)
             if parsed is None:
                 continue
             yp = row["yes_prob"]
             if np.isnan(yp):
                 continue
-            market_bins.append(MarketBin(
+            bin_ = MarketBin(
                 condition_id = str(row["condition_id"]),
                 question     = str(row.get("question", "")),
                 condition    = parsed["condition"],
@@ -258,14 +294,75 @@ def analyse_city(data_dir: Path, city: str,
                 liquidity    = float(row.get("liquidity_usdc", 0) or 0),
                 volume_24h   = float(row.get("volume_24h_usdc", 0) or 0),
                 volume_total = float(row.get("volume_usdc", 0) or 0),
-            ))
+            )
+            if "lowest" in question.lower():
+                min_bins.append(bin_)
+            else:
+                market_bins.append(bin_)
+
+        if not market_bins and not min_bins:
+            continue
+
+        # ── Tmin ("lowest temperature") markets ────────────────────────────
+        # Priced purely from the calibrated Tmin distribution (no raw-ensemble
+        # averaging or conflict gating — there is no ensemble Tmin baseline), with
+        # ceiling censoring on same-day bets (Tmin cannot end above the running min).
+        if min_bins and dist_min is not None:
+            mu_mn, sg_mn, nu_mn = dist_min.mu, dist_min.sigma, dist_min.nu
+            _, _, consistency_mn = reconstruct_pmf(
+                min_bins, mu_mn, sg_mn, nu_mn, ceiling=dist_min.ceiling)
+            exact_mn = [b for b in min_bins if b.condition == "exact"]
+            pmf_dev_mn = abs(sum(b.yes_prob for b in exact_mn) - 1.0) if exact_mn else 0.0
+            mode_mn = (max(exact_mn, key=lambda b: b.yes_prob).temp_c
+                       if exact_mn else mu_mn)
+            for b in min_bins:
+                if b.liquidity < min_liq:
+                    continue
+                if b.condition == "exact":
+                    f_prob = _bin_prob(b.temp_c, mu_mn, sg_mn, nu_mn, b.half_width,
+                                       ceiling=dist_min.ceiling)
+                elif b.condition in ("gte", "lte"):
+                    parsed = {"condition": b.condition, "temp_c": b.temp_c,
+                              "half_width": b.half_width}
+                    f_prob = _condition_prob(parsed, mu_mn, sg_mn, nu_mn,
+                                             ceiling=dist_min.ceiling)
+                else:
+                    continue
+
+                m_prob_raw = b.yes_prob
+                if m_prob_raw < MIN_MARKET_PRICE or m_prob_raw > (1.0 - MIN_MARKET_PRICE):
+                    continue
+
+                bet_side = "Yes" if (f_prob - m_prob_raw) > 0 else "No"
+                our_prob_model = f_prob if bet_side == "Yes" else (1.0 - f_prob)
+                their_prob = m_prob_raw if bet_side == "Yes" else (1.0 - m_prob_raw)
+                our_prob = shrink_weight * our_prob_model + (1.0 - shrink_weight) * their_prob
+                f_prob_raw = our_prob if bet_side == "Yes" else (1.0 - our_prob)
+                edge = our_prob - their_prob
+                if abs(edge) < min_edge:
+                    continue
+
+                vol_rec = volume_recency_signal(
+                    group[group["condition_id"] == b.condition_id].iloc[0]
+                    if len(group[group["condition_id"] == b.condition_id]) else pd.Series())
+                stale = market_staleness(snap_df, b.condition_id, fetch_time, days_fwd)
+
+                opp = _create_opportunity(
+                    b, city, target_date_ts, fetch_time, days_fwd,
+                    mu_mn, sg_mn, nu_mn, 0.0, dist_min.source,
+                    f_prob_raw, m_prob_raw, m_prob_raw, edge, bet_side,
+                    our_prob, their_prob, mom, fc_var, vol_rec, stale,
+                    consistency_mn, pmf_dev_mn, exact_mn, mode_mn, kelly_fraction,
+                    ceiling=dist_min.ceiling
+                )
+                results.append(opp)
 
         if not market_bins:
             continue
 
         # ── Reconstruct PMF (α4/5) ─────────────────────────────────────────
         market_pmf, forecast_pmf, consistency = reconstruct_pmf(
-            market_bins, mu, sigma, nu)
+            market_bins, mu, sigma, nu, floor=dist_ml.floor)
 
         exact_bins = [b for b in market_bins if b.condition == "exact"]
         raw_sum    = sum(b.yes_prob for b in exact_bins)
@@ -285,7 +382,8 @@ def analyse_city(data_dir: Path, city: str,
                 continue
 
             # Compute raw probabilities from both models
-            f_prob_ml = _bin_prob(b.temp_c, mu_ml, sigma_ml, nu_ml, b.half_width)
+            f_prob_ml = _bin_prob(b.temp_c, mu_ml, sigma_ml, nu_ml, b.half_width,
+                                  floor=dist_ml.floor)
             f_prob_ens = _bin_prob(b.temp_c, mu_ens, sigma_ens, nu_ens, b.half_width)
 
             m_prob_raw = b.yes_prob   # actual market price you pay
@@ -310,9 +408,13 @@ def analyse_city(data_dir: Path, city: str,
             # Sizing: AVERAGE the two model probabilities for the bet side (ML vs Ensemble).
             # Never take the max — max-selection cherry-picks the more optimistic model and
             # systematically inflates edge, which oversizes Kelly and worsens calibration.
+            # Exception: EMOS v2 already consumes the ensemble mean AND spread with honest
+            # per-lead dispersion; averaging it with the raw (underdispersed) ensemble would
+            # re-thin the tails, so the calibrated distribution stands alone.
             our_prob_ml = f_prob_ml if bet_side == "Yes" else (1.0 - f_prob_ml)
             our_prob_ens = f_prob_ens if bet_side == "Yes" else (1.0 - f_prob_ens)
-            our_prob_model = 0.5 * (our_prob_ml + our_prob_ens)
+            our_prob_model = (our_prob_ml if sigma_source.startswith("emos_v2")
+                              else 0.5 * (our_prob_ml + our_prob_ens))
             their_prob = m_prob_raw if bet_side == "Yes" else (1.0 - m_prob_raw)
             # Shrink toward the market (w=1 → pure model). The market out-predicts the model, so
             # only deviate from the price in proportion to shrink_weight.
@@ -341,7 +443,8 @@ def analyse_city(data_dir: Path, city: str,
                 mu, sigma, nu, s_boost, sigma_source,
                 f_prob_raw, b.yes_prob, m_prob, edge, bet_side,
                 our_prob, their_prob, mom, fc_var, vol_rec, stale,
-                consistency, pmf_dev, exact_bins, market_mode_c, kelly_fraction
+                consistency, pmf_dev, exact_bins, market_mode_c, kelly_fraction,
+                floor=dist_ml.floor
             )
             results.append(opp)
 
@@ -353,7 +456,7 @@ def analyse_city(data_dir: Path, city: str,
                 continue
 
             parsed  = {"condition": b.condition, "temp_c": b.temp_c, "half_width": b.half_width}
-            f_prob_ml = _condition_prob(parsed, mu_ml, sigma_ml, nu_ml)
+            f_prob_ml = _condition_prob(parsed, mu_ml, sigma_ml, nu_ml, floor=dist_ml.floor)
             f_prob_ens = _condition_prob(parsed, mu_ens, sigma_ens, nu_ens)
 
             m_prob_raw = b.yes_prob
@@ -376,10 +479,11 @@ def analyse_city(data_dir: Path, city: str,
             bet_side = bet_side_ml
 
             # Sizing: AVERAGE the two model probabilities (never max — see exact-bin note above),
-            # then shrink toward the market by shrink_weight.
+            # then shrink toward the market by shrink_weight. EMOS v2 stands alone (see above).
             our_prob_ml = f_prob_ml if bet_side == "Yes" else (1.0 - f_prob_ml)
             our_prob_ens = f_prob_ens if bet_side == "Yes" else (1.0 - f_prob_ens)
-            our_prob_model = 0.5 * (our_prob_ml + our_prob_ens)
+            our_prob_model = (our_prob_ml if sigma_source.startswith("emos_v2")
+                              else 0.5 * (our_prob_ml + our_prob_ens))
             their_prob = m_prob_raw if bet_side == "Yes" else (1.0 - m_prob_raw)
             our_prob = shrink_weight * our_prob_model + (1.0 - shrink_weight) * their_prob
 
@@ -400,7 +504,8 @@ def analyse_city(data_dir: Path, city: str,
                 mu, sigma, nu, s_boost, sigma_source,
                 f_prob_raw, m_prob_raw, m_prob_raw, edge, bet_side,
                 our_prob, their_prob, mom, fc_var, vol_rec, stale,
-                consistency, pmf_dev, exact_bins, market_mode_c, kelly_fraction
+                consistency, pmf_dev, exact_bins, market_mode_c, kelly_fraction,
+                floor=dist_ml.floor
             )
             results.append(opp)
 

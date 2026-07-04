@@ -62,18 +62,36 @@ def _logloss(p, y):
     return s / len(p)
 
 
-def _crps_student_t(mu, sigma, nu, y):
+def _crps_student_t(mu, sigma, nu, y, floor=None, ceiling=None):
     """CRPS of a Student-t predictive distribution vs the observed temperature y (°C).
 
     CRPS = ∫ (F(x) - 1{x>=y})^2 dx, evaluated numerically over a grid wide enough to cover the
     tails. Lower is better. Unlike per-market Brier, this scores the whole *temperature*
     distribution, so it distinguishes a well-calibrated forecast from an overconfident one.
+    With a censoring `floor` f (same-day bets: the running observed max), T = max(f, Z), so
+    F(x) = 0 below the floor.
     """
     if any(v is None or (isinstance(v, float) and np.isnan(v)) for v in (mu, sigma, nu, y)):
         return None
+    if floor is not None and (isinstance(floor, float) and np.isnan(floor)):
+        floor = None
+    if ceiling is not None and (isinstance(ceiling, float) and np.isnan(ceiling)):
+        ceiling = None
     hw = max(12.0, 6.0 * float(sigma))
-    xs = np.linspace(float(mu) - hw, float(mu) + hw, 241)
+    lo = float(mu) - hw
+    hi = float(mu) + hw
+    if floor is not None:
+        lo = min(lo, float(floor) - 1.0)
+        hi = max(hi, float(floor) + 1.0)
+    if ceiling is not None:
+        lo = min(lo, float(ceiling) - 1.0)
+        hi = max(hi, float(ceiling) + 1.0)
+    xs = np.linspace(lo, hi, 241)
     F = np.array([_cdf(x, float(mu), float(sigma), float(nu)) for x in xs])
+    if floor is not None:
+        F[xs < float(floor)] = 0.0
+    if ceiling is not None:
+        F[xs >= float(ceiling)] = 1.0
     step = (xs >= float(y)).astype(float)
     integrand = (F - step) ** 2
     # Trapezoid rule, written out to stay compatible across NumPy 1.x/2.x (np.trapz removed in 2.0).
@@ -98,7 +116,9 @@ def _mean_crps(csv_path):
         y = fetch_actual_weather(r["city"], r["target_date"], r.get("question", ""))
         if y is None:
             continue
-        c = _crps_student_t(r["forecast_mu"], r["forecast_sigma"], r["forecast_nu"], y)
+        c = _crps_student_t(r["forecast_mu"], r["forecast_sigma"], r["forecast_nu"], y,
+                            floor=r.get("forecast_floor"),
+                            ceiling=r.get("forecast_ceiling"))
         if c is not None:
             vals.append(c)
     return (sum(vals) / len(vals), len(vals)) if vals else None

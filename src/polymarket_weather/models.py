@@ -68,3 +68,7 @@ class Opportunity:
     kelly:          float = 0.0
     ev_per_dollar:  float = 0.0
     group_key:      str   = ""
+    forecast_floor: float = None   # censoring point of the predictive dist (°C):
+                                   # same-day running observed max; None otherwise
+    forecast_ceiling: float = None # ceiling censoring for Tmin markets (°C):
+                                   # same-day running observed min; None otherwise

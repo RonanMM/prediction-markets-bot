@@ -145,4 +145,72 @@ def fetch_forecast(city: str) -> dict:
     }
 
 
+# The deterministic model chains behind the multi-model calibration input. Must stay a
+# SUPERSET of train_calibrator.py's MM model sets — training uses these models' previous
+# runs, serving uses their live forecasts, so train and serve see the same input.
+MULTIMODEL_MODELS = {
+    "ecmwf_ifs025": "ecmwf",
+    "gfs_seamless": "gfs",
+    "icon_seamless": "icon",
+    "jma_seamless": "jma",
+    "gem_seamless": "gem",
+    "meteofrance_seamless": "mf",
+    # Live AIFS is served as `..._single`; the previous-runs archive (training) calls the
+    # same model `ecmwf_aifs025`. Same model, different run naming.
+    "ecmwf_aifs025_single": "aifs",
+}
+
+
+def fetch_forecast_multimodel(city: str) -> dict:
+    """
+    Fetch the per-model deterministic daily Tmax forecasts used as the calibrated
+    predictor's multi-model mean input ({slug}_daily_mm.csv).
+
+    Returns dict with keys: city, fetched_at_utc, daily (one record per forecast day
+    with tmax_ecmwf / tmax_gfs / tmax_icon / tmax_jma). Empty dict on API failure.
+    """
+    cfg = CITIES.get(city)
+    if cfg is None:
+        logger.error("Unknown city: %s", city)
+        return {}
+
+    params = {
+        "latitude":      cfg["lat"],
+        "longitude":     cfg["lon"],
+        "daily":         "temperature_2m_max,temperature_2m_min",
+        "models":        ",".join(MULTIMODEL_MODELS),
+        "forecast_days": 8,
+        "timezone":      "auto",
+    }
+    logger.info("Fetching multi-model forecast for %s", city)
+    raw = _get(OPEN_METEO_BASE, params)
+    if not raw:
+        return {}
+
+    fetched_at = datetime.now(timezone.utc).isoformat()
+    daily = raw.get("daily", {})
+    dates = daily.get("time", [])
+
+    records = []
+    for i, date_str in enumerate(dates):
+        rec = {
+            "city":           city,
+            "fetched_at_utc": fetched_at,
+            "date_local":     date_str,
+            "date_utc":       _local_date_str_to_utc(date_str, cfg["timezone"]),
+        }
+        for api_model, short in MULTIMODEL_MODELS.items():
+            col = daily.get(f"temperature_2m_max_{api_model}", [])
+            rec[f"tmax_{short}"] = col[i] if i < len(col) else None
+            mcol = daily.get(f"temperature_2m_min_{api_model}", [])
+            rec[f"tmin_{short}"] = mcol[i] if i < len(mcol) else None
+        records.append(rec)
+
+    return {
+        "city":           city,
+        "fetched_at_utc": fetched_at,
+        "daily":          records,
+    }
+
+
 

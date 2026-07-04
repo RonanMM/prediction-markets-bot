@@ -49,6 +49,57 @@ def load_hourly(data_dir: Path, city: str) -> Optional[pd.DataFrame]:
     return df
 
 
+def load_daily_mm(data_dir: Path, city: str) -> Optional[pd.DataFrame]:
+    """Load per-model deterministic daily Tmax forecasts ({slug}_daily_mm.csv) if
+    collected. This is the exact serving input for multi-model-mean calibrations;
+    older snapshots without it fall back to the ensemble-mean proxy."""
+    import re as _re
+    slug = _re.sub(r"[^a-z0-9]+", "_", city.lower()).strip("_")
+    p = data_dir / "weather" / f"{slug}_daily_mm.csv"
+    if not p.exists():
+        return None
+    df = pd.read_csv(p)
+    df["fetched_at_utc"] = pd.to_datetime(df["fetched_at_utc"], utc=True)
+    df["date_local"]     = pd.to_datetime(df["date_local"]).dt.normalize()
+    for col in df.columns:
+        if col.startswith("tmax_"):
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
+
+
+def load_nbm(data_dir: Path, city: str) -> Optional[pd.DataFrame]:
+    """Load NBM station guidance ({slug}_nbm.csv, US cities only). Rows are runtime-
+    stamped with avail_utc, so callers can as-of join against any snapshot fetch time —
+    a backtest only ever sees runs that were genuinely available."""
+    import re as _re
+    slug = _re.sub(r"[^a-z0-9]+", "_", city.lower()).strip("_")
+    p = data_dir / "weather" / f"{slug}_nbm.csv"
+    if not p.exists():
+        return None
+    df = pd.read_csv(p)
+    df["avail_utc"] = pd.to_datetime(df["avail_utc"], utc=True)
+    df["date_local"] = df["date_local"].astype(str)
+    for col in ("nbm_tmax_txn_c", "nbm_tmax_tmp_c"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
+
+
+def load_obs_hourly(data_dir: Path, city: str) -> Optional[pd.DataFrame]:
+    """Load hourly station observations ({slug}_obs_hourly.csv) for intraday
+    conditioning of same-day bets. None if not collected (e.g. Hong Kong)."""
+    import re as _re
+    slug = _re.sub(r"[^a-z0-9]+", "_", city.lower()).strip("_")
+    p = data_dir / "weather" / f"{slug}_obs_hourly.csv"
+    if not p.exists():
+        return None
+    df = pd.read_csv(p)
+    df["valid_local"] = pd.to_datetime(df["valid_local"])
+    df["date_local"] = df["valid_local"].dt.strftime("%Y-%m-%d")
+    df["temp_c"] = pd.to_numeric(df["temp_c"], errors="coerce")
+    return df.dropna(subset=["temp_c"])
+
+
 def load_ensemble(data_dir: Path, city: str) -> Optional[pd.DataFrame]:
     """Load ensemble CSV if available. Returns None if not yet fetched."""
     import re as _re
@@ -60,7 +111,8 @@ def load_ensemble(data_dir: Path, city: str) -> Optional[pd.DataFrame]:
     df["fetched_at_utc"] = pd.to_datetime(df["fetched_at_utc"], utc=True)
     df["date_local"]     = pd.to_datetime(df["date_local"]).dt.normalize()
     for col in ["ens_mean", "ens_std", "ens_p10", "ens_p25",
-                "ens_median", "ens_p75", "ens_p90", "ens_spread"]:
+                "ens_median", "ens_p75", "ens_p90", "ens_spread",
+                "ens_min_mean", "ens_min_std"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
     return df

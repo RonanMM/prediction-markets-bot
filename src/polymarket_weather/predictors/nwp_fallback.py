@@ -58,7 +58,10 @@ class NWPFallbackPredictor(BasePredictor):
         fetch_time: pd.Timestamp,
         days_ahead: float,
         daily_df: pd.DataFrame,
-        ens_df: pd.DataFrame = None
+        ens_df: pd.DataFrame = None,
+        mm_df: pd.DataFrame = None,   # unused; part of the shared predictor interface
+        obs_df: pd.DataFrame = None,  # unused; part of the shared predictor interface
+        nbm_df: pd.DataFrame = None,  # unused; part of the shared predictor interface
     ) -> TemperatureDistribution:
         # Get target date row in daily_df for the deterministic temperature forecast
         td = pd.Timestamp(target_date).normalize()

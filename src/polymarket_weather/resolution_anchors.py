@@ -12,9 +12,13 @@ This file separates the distinct anchors for each city:
    station — usually the station's own location, but NOT always: where a station's own
    grid cell is unreliable (e.g. a coastal/reclaimed-land cell like Incheon), a nearby
    land cell with higher validated predictive skill is used instead (`forecast_lat/lon`).
-3. The Truth Anchor: the Meteostat station id (`meteostat_id`) used to fetch the
-   historical *actuals* that label/calibrate our ML models. This must point at the
-   same physical sensor the market resolves from.
+3. The Truth Anchor: the source `fetch_historical_truth.py` reads the historical
+   *actuals* from. Since 2026-07 this is a resolution-faithful feed per city (NWS CLI
+   for KLGA/KORD, IEM METAR daily for EGLC/RKSI, the HKO open-data API for HKO) — the
+   same sensor/series the market's resolution page publishes. The `meteostat_id` kept
+   below is legacy/reference only: a 2026-07-03 audit found Meteostat corrupted for
+   recent weeks (KLGA June daily maxes off by up to ~9 °C vs the NWS CLI report) and
+   its Hong Kong station 45007 disagreeing with HKO >1.5 °C on ~66 days/yr.
 
 DO NOT modify this file unless Polymarket explicitly changes their market rules.
 """
@@ -26,8 +30,9 @@ RESOLUTION_ANCHORS = {
         "forecast_lat": 51.5053,
         "forecast_lon": 0.0553,
         "station_code": "EGLC",
-        # ⚠️ VERIFY: Meteostat labels EGLC0 "London / Abbey Wood" (~5 km from EGLC) though it carries ICAO EGLC.
-        "meteostat_id": "EGLC0",
+        # Truth = IEM METAR daily for EGLC itself (whole °C, matching the market unit);
+        # resolves the old concern that Meteostat EGLC0 was labelled "Abbey Wood" ~5 km away.
+        "meteostat_id": "EGLC0",   # legacy/reference only
     },
     "Seoul": {
         "resolution_url": "https://www.wunderground.com/history/daily/kr/incheon/RKSI",
@@ -66,10 +71,10 @@ RESOLUTION_ANCHORS = {
         "forecast_lat": 22.3019,
         "forecast_lon": 114.1743,
         "station_code": "HKO",
-        # ⚠️ VERIFY: Meteostat 45007 is labelled "Hong Kong Int'l Airport / VHHH", but its
-        # coords (22.33, 114.18) sit near the Observatory (HKO), not the airport (113.91).
-        # Market resolves off HKO — confirm this station's data tracks HKO before trusting it.
-        "meteostat_id": "45007",
+        # Truth = the HKO open-data API (CLMMAXT/CLMMINT, 0.1 °C) — the exact series the
+        # resolution page publishes. The old ⚠️ was justified: Meteostat 45007 disagreed
+        # with HKO by >1.5 °C on ~66 days/yr (2024 audit), so it must NOT grade HK bets.
+        "meteostat_id": "45007",   # legacy/reference only — do not grade from this
         "aliases": ["HongKong"]
     },
 }

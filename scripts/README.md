@@ -7,7 +7,7 @@ All data is append-only and deduped on read, so every job is idempotent and safe
 
 | Agent (`~/Library/LaunchAgents/`)   | Script                          | Schedule            | Does |
 |-------------------------------------|---------------------------------|---------------------|------|
-| `com.raincheck.collect.plist`       | `scripts/raincheck_collect.sh`  | 06:00 & 18:00 daily | `main.py` — append one market+forecast snapshot |
+| `com.raincheck.collect.plist`       | `scripts/raincheck_collect.sh`  | every 2 hours       | `main.py` — append a market+forecast snapshot. 2-hourly so same-day (intraday-conditioned) bets get snapshots during each city's local trading window: London 10–16 direct, US cities 15–22 machine-local, Seoul/HK 02–09. |
 | `com.raincheck.truth-eval.plist`    | `scripts/raincheck_truth_eval.sh` | 07:00 daily       | `fetch_historical_truth.py` → `polymarket_weather_analysis.py` → append a gate-progress line |
 
 Logs: `logs/collect.log`, `logs/truth_eval.log` (and `*.launchd.log` for launchd's own stdout/stderr).

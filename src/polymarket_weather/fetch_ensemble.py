@@ -88,7 +88,7 @@ def fetch_ensemble(city: str) -> dict:
     params = {
         "latitude":      lat,
         "longitude":     lon,
-        "daily":         "temperature_2m_max",
+        "daily":         "temperature_2m_max,temperature_2m_min",
         "models":        ENSEMBLE_MODEL,
         "forecast_days": ENSEMBLE_FORECAST_DAYS,
         "timezone":      "auto",
@@ -113,6 +113,9 @@ def fetch_ensemble(city: str) -> dict:
     member_keys = sorted(
         k for k in daily_raw if k.startswith("temperature_2m_max") and "_member" in k
     )
+    min_member_keys = sorted(
+        k for k in daily_raw if k.startswith("temperature_2m_min") and "_member" in k
+    )
     if not member_keys:
         logger.warning("No ensemble member columns found for %s (got keys: %s)",
                        city, list(daily_raw.keys())[:10])
@@ -135,7 +138,7 @@ def fetch_ensemble(city: str) -> dict:
         arr = np.array(vals)
         utc_iso = _local_date_to_utc(date_str, tz)
 
-        records.append({
+        rec = {
             "city":           city,
             "fetched_at_utc": fetched_at,
             "date_local":     date_str,
@@ -149,7 +152,20 @@ def fetch_ensemble(city: str) -> dict:
             "ens_p90":        round(float(np.percentile(arr, 90)), 3),
             "ens_spread":     round(float(np.percentile(arr, 90) - np.percentile(arr, 10)), 3),
             "n_members":      len(vals),
-        })
+        }
+
+        # Daily-MIN member statistics (Tmin markets).
+        min_vals = []
+        for mk in min_member_keys:
+            col = daily_raw[mk]
+            v   = col[i] if i < len(col) else None
+            if v is not None:
+                min_vals.append(float(v))
+        if len(min_vals) >= 3:
+            marr = np.array(min_vals)
+            rec["ens_min_mean"] = round(float(np.mean(marr)), 3)
+            rec["ens_min_std"]  = round(float(np.std(marr, ddof=1)), 3)
+        records.append(rec)
 
     return {
         "city":           city,
