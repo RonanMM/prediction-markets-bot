@@ -46,7 +46,10 @@ MARKET_KEYWORDS = [
 # ── Open-Meteo API ───────────────────────────────────────────────────────────
 OPEN_METEO_BASE          = "https://api.open-meteo.com/v1/forecast"
 OPEN_METEO_ENSEMBLE_BASE = "https://ensemble-api.open-meteo.com/v1/ensemble"
-ENSEMBLE_MODEL           = "icon_seamless,gfs_seamless,ecmwf_ifs04"   # 122 members total (ICON + GFS + ECMWF)
+# ~119 members (ICON 40 + GFS 31 + ECMWF 50). NOTE: ecmwf_ifs04 was retired upstream and
+# silently returned zero members (audit 2026-07-04 found only 69 = ICON+GFS); ifs025 is
+# the live ECMWF ensemble id.
+ENSEMBLE_MODEL           = "icon_seamless,gfs_seamless,ecmwf_ifs025"
 OPEN_METEO_PARAMS = {
     "daily": "temperature_2m_max,temperature_2m_min",
     "hourly": "temperature_2m",

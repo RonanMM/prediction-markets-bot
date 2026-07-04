@@ -1,0 +1,64 @@
+# Scheduled market + forecast snapshot collection — laptop-independent.
+#
+# Every 2 hours: run main.py --collect-only (Polymarket snapshots + price history,
+# deterministic/multi-model/ensemble forecasts) and commit the appended CSVs. Market
+# snapshots are PERISHABLE — a price you didn't record is gone forever — which is why
+# this runs in CI rather than depending on a laptop being awake (see scripts/README.md
+# for the launchd agents, which remain as a local complement).
+#
+# Cost: ~2-3 min/run × 12 runs/day ≈ 700-1100 Actions minutes/month — inside the
+# 2,000-minute free tier for private repos.
+#
+# All data files are append-only and deduped on read, so re-runs and overlaps with the
+# laptop collector are safe; the rebase-with-retry push handles concurrent commits.
+
+name: collect
+
+on:
+  schedule:
+    - cron: "13 */2 * * *"   # every 2h; offset from :00 to dodge GitHub's cron rush
+  workflow_dispatch: {}
+
+concurrency:
+  group: collect
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: src/polymarket_weather/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r src/polymarket_weather/requirements.txt
+
+      - name: Collect snapshot
+        working-directory: src/polymarket_weather
+        run: python main.py --collect-only
+
+      - name: Commit appended data
+        run: |
+          git config user.name "raincheck-collector"
+          git config user.email "actions@users.noreply.github.com"
+          git add src/polymarket_weather/data/polymarket src/polymarket_weather/data/weather
+          if git diff --cached --quiet; then
+            echo "No new data rows — nothing to commit."
+            exit 0
+          fi
+          git commit -m "data: scheduled snapshot $(date -u '+%Y-%m-%d %H:%M UTC')"
+          # Rebase-retry push: tolerate racing commits from the laptop collector.
+          for i in 1 2 3; do
+            git push && exit 0
+            git pull --rebase && continue
+          done
+          git push

@@ -231,6 +231,9 @@ def parse_args() -> argparse.Namespace:
                    help="Re-generate plots from stored data only")
     p.add_argument("--summary-only", action="store_true",
                    help="Print summary only (no fetching, no plots)")
+    p.add_argument("--collect-only", action="store_true",
+                   help="Fetch + append data only (no summary, no plots) — for "
+                        "scheduled collection (launchd/CI) where plot churn is waste")
     p.add_argument("--verbose", "-v", action="store_true",
                    help="Debug-level logging")
     return p.parse_args()
@@ -271,6 +274,10 @@ def main() -> None:
     if not args.skip_weather:
         step_fetch_weather(cities)
         step_fetch_ensemble(cities)
+
+    if args.collect_only:
+        logger.info("Collect-only run complete.")
+        return
 
     summaries = step_print_summary(cities)
     step_generate_plots(cities, summaries)

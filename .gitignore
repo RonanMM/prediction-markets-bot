@@ -58,5 +58,14 @@ src/polymarket_weather/logs/
 src/polymarket_weather/plots/
 src/polymarket_weather/__pycache__/
 src/polymarket_weather/polymarket/
-data/
+# Data policy: live-collected, NON-reproducible series are committed (market snapshots,
+# price history, forecast/ensemble/multi-model snapshots — the track record depends on
+# them; a missed snapshot can never be refetched). Archives that CAN be refetched from
+# their sources at any time stay untracked:
+#   *_historical_*.csv  — previous-runs leads / station truth / ERA5 features
+#   *_obs_hourly.csv    — hourly METARs (IEM)
+#   *_nbm.csv           — NBM guidance (IEM archive)
+src/polymarket_weather/data/weather/*_historical_*.csv
+src/polymarket_weather/data/weather/*_obs_hourly.csv
+src/polymarket_weather/data/weather/*_nbm.csv
 output/logs/

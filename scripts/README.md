@@ -1,5 +1,18 @@
 # Raincheck scheduled collection (Handoff Step 1)
 
+## Primary collector: GitHub Actions (laptop-independent)
+
+`.github/workflows/collect.yml` runs `main.py --collect-only` **every 2 hours in CI** and
+commits the appended data. Market snapshots are perishable (a price you didn't record is
+gone forever), so collection must not depend on a laptop being awake/online. Cost: ~2-3
+min/run ≈ 700-1,100 Actions minutes/month — inside the 2,000-min free tier for private
+repos (bills to the repo owner's account). Activate by pushing the workflow; check the
+Actions tab is enabled. `git pull --rebase` locally before analysis to pick up CI data.
+
+The launchd agents below remain as a local complement (overlaps are safe — all data is
+append-only and deduped on read; the workflow push uses rebase-with-retry).
+
+
 Forward-accumulates the out-of-sample track record by running the pipeline on a schedule.
 All data is append-only and deduped on read, so every job is idempotent and safe to re-run.
 
