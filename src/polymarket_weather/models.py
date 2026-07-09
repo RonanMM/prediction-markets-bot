@@ -76,3 +76,5 @@ class Opportunity:
                                    # same-day running observed min; None otherwise
     temp_lo_c:      float = None   # range markets ('between X-Y°F'): °C endpoints, so the
     temp_hi_c:      float = None   # eval CSV can grade them without re-parsing the question
+    model_prob_side:float = None   # our-side PRE-shrink model probability; lets live re-verify
+    shrink_weight:  float = 1.0    # re-shrink toward the FRESH price (E3) instead of the stale one

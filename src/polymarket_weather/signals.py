@@ -16,10 +16,14 @@ INFORMED_RECENCY      = 0.8
 STALE_HOURS           = 4
 STALE_MOVE_THRESHOLD  = 0.02
 
-def compute_momentum(daily_df: pd.DataFrame, target_date, fetch_time) -> dict:
+def compute_momentum(daily_df: pd.DataFrame, target_date, fetch_time,
+                     col: str = "temp_max_c") -> dict:
     """
     Returns momentum metrics for forecast of target_date as seen up to fetch_time.
     Keys: ema_momentum, total_drift, last_delta, n_snaps, forecast_variance
+
+    F4: `col` selects the forecast series — 'temp_min_c' for 'lowest temperature' (Tmin)
+    markets, so their α1 momentum tracks the MIN drift, not the daily-max drift.
     """
     td = pd.Timestamp(target_date).normalize()
     if td.tzinfo is not None:
@@ -30,11 +34,11 @@ def compute_momentum(daily_df: pd.DataFrame, target_date, fetch_time) -> dict:
         (daily_df["fetched_at_utc"] <= fetch_time)
     ].sort_values("fetched_at_utc")
 
-    if len(sub) < 2:
+    temps = (sub[col].dropna().values.astype(float)
+             if col in sub.columns else np.array([], dtype=float))
+    if len(temps) < 2:
         return {"ema_momentum": 0.0, "total_drift": 0.0,
-                "last_delta": 0.0, "n_snaps": len(sub), "forecast_variance": 0.0}
-
-    temps = sub["temp_max_c"].values.astype(float)
+                "last_delta": 0.0, "n_snaps": int(len(temps)), "forecast_variance": 0.0}
     deltas = np.diff(temps)
     ema = pd.Series(deltas).ewm(span=MOMENTUM_EMA_SPAN, adjust=False).mean().iloc[-1]
 
@@ -56,20 +60,24 @@ def volume_recency_signal(row: pd.Series) -> float:
     return min(vol_24h / vol_total, 1.0)
 
 
-def forecast_convergence(daily_df: pd.DataFrame, target_date, fetch_time) -> float:
+def forecast_convergence(daily_df: pd.DataFrame, target_date, fetch_time,
+                         col: str = "temp_max_c") -> float:
     """
     Variance of forecast snapshots for this target date.
     High variance = model disagreement = market likely stale or about to reprice.
+    F4: `col` selects the series ('temp_min_c' for Tmin markets).
     """
     td = pd.Timestamp(target_date).normalize()
     if td.tzinfo is not None:
         td = td.tz_localize(None)
 
-    sub = daily_df[
+    rows = daily_df[
         (daily_df["date_local"].dt.normalize() == td) &
         (daily_df["fetched_at_utc"] <= fetch_time)
-    ]["temp_max_c"].dropna()
-
+    ]
+    if col not in rows.columns:
+        return 0.0
+    sub = rows[col].dropna()
     return float(sub.var()) if len(sub) >= 2 else 0.0
 
 

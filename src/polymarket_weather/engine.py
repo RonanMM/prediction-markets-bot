@@ -1,3 +1,5 @@
+import re
+import logging
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -14,6 +16,12 @@ from pmf import parse_question, _bin_prob, _condition_prob, reconstruct_pmf
 from data_loader import (load_snapshots, load_daily, load_daily_mm, load_ensemble,
                          load_nbm, load_obs_hourly, fetch_live_prices, check_orderbook_vwap)
 
+logger = logging.getLogger(__name__)
+
+# A digit immediately before an optional degree sign then a word-boundary F — matches
+# "62°F"/"63 F"/"48F" but NOT month names ("February") or "of" (E6 unit sniff).
+_F_UNIT_RE = re.compile(r"[0-9]\s*°?\s*F\b")
+
 def _days_from_now(o: Opportunity) -> float:
     from datetime import datetime, timezone
     td = pd.to_datetime(o.target_date).replace(tzinfo=timezone.utc)
@@ -29,6 +37,8 @@ def _kelly_size(opp: Opportunity, kelly_fraction: float = KELLY_FRACTION, fee: f
     So net odds b = ((1 - their_prob) / their_prob) * (1 - fee).
     """
     p = opp.their_prob
+    if not (np.isfinite(p) and np.isfinite(opp.our_prob)):   # E4: never size a NaN opportunity
+        return 0.0
     if p <= 1e-4 or p >= (1.0 - 1e-4):
         return 0.0
     b = ((1.0 - p) / p) * (1.0 - fee)
@@ -64,9 +74,14 @@ def apply_group_kelly_cap(opps: list[Opportunity],
         # Key on actual bin temperature, using correct Celsius or Fahrenheit threshold.
         filtered = []
         for o in group:
-            is_f = "F" in o.question or "f" in o.question
-            threshold = 1.0 if not is_f else (5.0 / 9.0)
-            if any(prev.bet_side == o.bet_side and abs(prev.bin_temp_c - o.bin_temp_c) < threshold for prev in filtered):
+            # E6: sniff the unit with a digit-anchored regex (the old `"f" in question` matched
+            # "February"/"of"), and use `<= spacing` (the old strict `< spacing` never fired,
+            # since adjacent bins are exactly one unit apart: 1.0°C or 5/9°C for a 1°F step).
+            is_f = bool(_F_UNIT_RE.search(o.question))
+            threshold = (5.0 / 9.0) if is_f else 1.0
+            if any(prev.bet_side == o.bet_side
+                   and abs(prev.bin_temp_c - o.bin_temp_c) <= threshold + 1e-9
+                   for prev in filtered):
                 continue
             filtered.append(o)
 
@@ -105,6 +120,7 @@ def _create_opportunity(
     exact_bins: list, market_mode_c: float, kelly_fraction: float,
     floor: float = None, ceiling: float = None,
     temp_lo_c: float = None, temp_hi_c: float = None,
+    model_prob_side: float = None, shrink_weight: float = 1.0,
 ) -> Opportunity:
     opp = Opportunity(
         city           = CITY_NAMES.get(city, city),
@@ -148,6 +164,8 @@ def _create_opportunity(
         forecast_ceiling = None if ceiling is None else round(float(ceiling), 2),
         temp_lo_c      = None if temp_lo_c is None else round(float(temp_lo_c), 3),
         temp_hi_c      = None if temp_hi_c is None else round(float(temp_hi_c), 3),
+        model_prob_side= None if model_prob_side is None else round(float(model_prob_side), 4),
+        shrink_weight  = round(float(shrink_weight), 4),
     )
     opp.alpha_score = score_opportunity(opp)
     opp.kelly       = _kelly_size(opp, kelly_fraction=kelly_fraction)
@@ -233,7 +251,12 @@ def analyse_city(data_dir: Path, city: str,
             sigma_ml = dist_ml.sigma
             nu_ml = dist_ml.nu
             sigma_source = dist_ml.source
-        except Exception:
+        except Exception as exc:
+            # E5: don't silently swallow — a systematic predictor failure (renamed column,
+            # corrupt models/{slug}_emos.json, schema drift) would otherwise be indistinguishable
+            # from a genuine no-edge day. Log/count it, then skip this (date × snapshot) group.
+            logger.warning("%s: predictor failed for target %s (%s: %s) — skipping group",
+                           city, target_date_ts, type(exc).__name__, exc)
             continue
 
         try:
@@ -313,6 +336,9 @@ def analyse_city(data_dir: Path, city: str,
         # averaging or conflict gating — there is no ensemble Tmin baseline), with
         # ceiling censoring on same-day bets (Tmin cannot end above the running min).
         if min_bins and dist_min is not None:
+            # F4: Tmin markets score α1 momentum / α7 convergence off the MIN forecast series.
+            mom_min = compute_momentum(daily_df, target_date_ts, fetch_time, col="temp_min_c")
+            fc_var_min = forecast_convergence(daily_df, target_date_ts, fetch_time, col="temp_min_c")
             mu_mn, sg_mn, nu_mn = dist_min.mu, dist_min.sigma, dist_min.nu
             _, _, consistency_mn = reconstruct_pmf(
                 min_bins, mu_mn, sg_mn, nu_mn, ceiling=dist_min.ceiling)
@@ -345,7 +371,7 @@ def analyse_city(data_dir: Path, city: str,
                 our_prob = shrink_weight * our_prob_model + (1.0 - shrink_weight) * their_prob
                 f_prob_raw = our_prob if bet_side == "Yes" else (1.0 - our_prob)
                 edge = our_prob - their_prob
-                if abs(edge) < min_edge:
+                if not np.isfinite(edge) or abs(edge) < min_edge:
                     continue
 
                 vol_rec = volume_recency_signal(
@@ -357,10 +383,11 @@ def analyse_city(data_dir: Path, city: str,
                     b, city, target_date_ts, fetch_time, days_fwd,
                     mu_mn, sg_mn, nu_mn, 0.0, dist_min.source,
                     f_prob_raw, m_prob_raw, m_prob_raw, edge, bet_side,
-                    our_prob, their_prob, mom, fc_var, vol_rec, stale,
+                    our_prob, their_prob, mom_min, fc_var_min, vol_rec, stale,
                     consistency_mn, pmf_dev_mn, exact_mn, mode_mn, kelly_fraction,
                     ceiling=dist_min.ceiling,
                     temp_lo_c=b.temp_lo, temp_hi_c=b.temp_hi,
+                    model_prob_side=our_prob_model, shrink_weight=shrink_weight,
                 )
                 results.append(opp)
 
@@ -435,7 +462,7 @@ def analyse_city(data_dir: Path, city: str,
             edge = our_prob - their_prob
 
             # Minimum edge check on the (averaged, shrunk) probability
-            if abs(edge) < min_edge:
+            if not np.isfinite(edge) or abs(edge) < min_edge:
                 continue
 
             # PMF-normalized values kept for reporting/consistency signal
@@ -454,7 +481,8 @@ def analyse_city(data_dir: Path, city: str,
                 f_prob_raw, b.yes_prob, m_prob, edge, bet_side,
                 our_prob, their_prob, mom, fc_var, vol_rec, stale,
                 consistency, pmf_dev, exact_bins, market_mode_c, kelly_fraction,
-                floor=dist_ml.floor
+                floor=dist_ml.floor,
+                model_prob_side=our_prob_model, shrink_weight=shrink_weight,
             )
             results.append(opp)
 
@@ -504,7 +532,7 @@ def analyse_city(data_dir: Path, city: str,
             edge = our_prob - their_prob
 
             # Minimum edge check
-            if abs(edge) < min_edge:
+            if not np.isfinite(edge) or abs(edge) < min_edge:
                 continue
 
             vol_rec = volume_recency_signal(
@@ -520,6 +548,7 @@ def analyse_city(data_dir: Path, city: str,
                 consistency, pmf_dev, exact_bins, market_mode_c, kelly_fraction,
                 floor=dist_ml.floor,
                 temp_lo_c=b.temp_lo, temp_hi_c=b.temp_hi,
+                model_prob_side=our_prob_model, shrink_weight=shrink_weight,
             )
             results.append(opp)
 
@@ -582,8 +611,11 @@ class WeatherBettingBot:
         # days_ahead stored in each Opportunity was computed from the snapshot
         # fetch_time, which may be hours or days old. Recalculate from NOW.
         def _days_from_now(o: Opportunity) -> float:
+            # E1: clamp at 0 like the module-level helper. WITHOUT the clamp a same-day market
+            # (target = midnight UTC) goes negative after 00:00 UTC and is dropped by the
+            # `>= min_days` filter below, so same-day intraday bets never execute (live or dry).
             target = pd.Timestamp(o.target_date, tz="UTC")
-            return (target - pd.Timestamp(now)).total_seconds() / 86400
+            return max(0.0, (target - pd.Timestamp(now)).total_seconds() / 86400)
 
         candidate = [
             o for o in opps
@@ -613,18 +645,24 @@ class WeatherBettingBot:
                 if live_p < MIN_MARKET_PRICE or live_p > (1.0 - MIN_MARKET_PRICE):
                     print(f"  [SKIP] {o.question[:50]} — near-settled ({live_p:.2%})")
                     continue
-                # Recompute edge with live price
-                live_edge = o.forecast_prob - live_p
-                if o.bet_side == "No":
-                    live_edge = (1.0 - o.forecast_prob) - (1.0 - live_p)
+                # E3: RE-SHRINK toward the fresh live price. The stored forecast_prob/our_prob
+                # blended the model with the STALE snapshot price (w·model + (1-w)·snapshot), so
+                # at shrink_weight<1 the live edge/Kelly must be recomputed from the pre-shrink
+                # model probability against the current price — not read off the stale blend.
+                their_live = live_p if o.bet_side == "Yes" else (1.0 - live_p)
+                w  = o.shrink_weight if o.shrink_weight is not None else 1.0
+                mp = o.model_prob_side if o.model_prob_side is not None else o.our_prob
+                our_live  = w * mp + (1.0 - w) * their_live
+                live_edge = our_live - their_live
                 if abs(live_edge) < min_edge:
                     print(f"  [SKIP] {o.question[:50]} — edge closed "
                           f"(was {o.abs_edge:.1%}, now {abs(live_edge):.1%})")
                     continue
-                # Update the opportunity with the fresh price and edge
+                # Update the opportunity with the fresh price and re-shrunk probability.
                 o.market_prob_raw = round(live_p, 4)
-                o.their_prob      = round(live_p if o.bet_side == "Yes"
-                                          else 1.0 - live_p, 4)
+                o.our_prob        = round(our_live, 4)
+                o.their_prob      = round(their_live, 4)
+                o.forecast_prob   = round(our_live if o.bet_side == "Yes" else 1.0 - our_live, 4)
                 o.edge            = round(live_edge, 4)
                 o.abs_edge        = round(abs(live_edge), 4)
                 o.kelly           = _kelly_size(o, kelly_fraction=self.kelly_fraction)

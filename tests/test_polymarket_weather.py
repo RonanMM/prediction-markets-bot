@@ -665,3 +665,71 @@ def test_all_tracker_questions_parse():
                 unparsed += 1
     assert unparsed == 0
 
+
+# ── Phase 5 regression guards (engine / live path) ───────────────────────────
+
+def test_days_from_now_clamps_past_targets():
+    """E1: days-from-now is clamped at 0 so a same-day/past target is never negative (which
+    would drop it from the `>= min_days` filter — the same-day intraday-bet bug)."""
+    from engine import _days_from_now
+    from types import SimpleNamespace
+    assert _days_from_now(SimpleNamespace(target_date="2000-01-01")) == 0.0
+
+
+def test_kelly_size_nonfinite_returns_zero():
+    """E4: a NaN our_prob must never produce a NaN Kelly (np.clip(nan)=nan) — size 0 instead."""
+    from engine import _kelly_size
+    from types import SimpleNamespace
+    assert _kelly_size(SimpleNamespace(their_prob=0.5, our_prob=float("nan"))) == 0.0
+
+
+def test_f_unit_sniff_ignores_month_names():
+    """E6: the °F unit sniff is digit-anchored, so 'February'/'of' in a °C question are not
+    misread as Fahrenheit (which shrank the adjacency threshold)."""
+    from engine import _F_UNIT_RE
+    assert _F_UNIT_RE.search("be between 62-63°F on March 20?")
+    assert not _F_UNIT_RE.search("be 15°C on February 5?")
+    assert not _F_UNIT_RE.search("forecast of 15°C tomorrow")
+
+
+def test_adjacent_bin_filter_collapses_same_side_neighbours():
+    """E6: same-side adjacent °C bins (exactly 1.0 apart) are collapsed (old strict `<` never
+    fired); non-adjacent bins are kept."""
+    from engine import apply_group_kelly_cap
+    from types import SimpleNamespace
+
+    def opp(temp, q, score):
+        return SimpleNamespace(group_key="g", alpha_score=score, bet_side="Yes",
+                               bin_temp_c=temp, question=q, kelly=0.05)
+    adj = apply_group_kelly_cap([opp(14.0, "be 14°C on Feb 5?", 0.9),
+                                 opp(15.0, "be 15°C on Feb 5?", 0.8)], bankroll=1000)
+    assert len(adj) == 1
+    far = apply_group_kelly_cap([opp(14.0, "be 14°C on Feb 5?", 0.9),
+                                 opp(17.0, "be 17°C on Feb 5?", 0.8)], bankroll=1000)
+    assert len(far) == 2
+
+
+def test_momentum_uses_selected_column():
+    """F4: momentum tracks the requested series — Tmin markets must use temp_min_c drift, not
+    the daily-max drift; a missing column degrades to neutral without crashing."""
+    from signals import compute_momentum
+    df = pd.DataFrame([
+        {"date_local": pd.Timestamp("2026-07-05"), "fetched_at_utc": pd.Timestamp("2026-07-01", tz="UTC"),
+         "temp_max_c": 30.0, "temp_min_c": 20.0},
+        {"date_local": pd.Timestamp("2026-07-05"), "fetched_at_utc": pd.Timestamp("2026-07-02", tz="UTC"),
+         "temp_max_c": 33.0, "temp_min_c": 20.5},
+    ])
+    ft = pd.Timestamp("2026-07-03", tz="UTC")
+    td = pd.Timestamp("2026-07-05")
+    assert abs(compute_momentum(df, td, ft, col="temp_max_c")["total_drift"] - 3.0) < 1e-9
+    assert abs(compute_momentum(df, td, ft, col="temp_min_c")["total_drift"] - 0.5) < 1e-9
+    assert compute_momentum(df, td, ft, col="nope")["n_snaps"] == 0
+
+
+def test_opportunity_carries_model_prob_for_live_reshrink():
+    """E3: the pre-shrink model probability and shrink weight are stored on the Opportunity so
+    live re-verification can re-shrink toward the fresh price instead of the stale snapshot."""
+    from models import Opportunity
+    assert "model_prob_side" in Opportunity.__dataclass_fields__
+    assert "shrink_weight" in Opportunity.__dataclass_fields__
+
