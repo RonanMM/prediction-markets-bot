@@ -161,13 +161,15 @@ MULTIMODEL_MODELS = {
 }
 
 
-def fetch_forecast_multimodel(city: str) -> dict:
+def fetch_forecast_multimodel(city: str, past_days: int = 0) -> dict:
     """
-    Fetch the per-model deterministic daily Tmax forecasts used as the calibrated
-    predictor's multi-model mean input ({slug}_daily_mm.csv).
+    Fetch the per-model deterministic daily Tmax/Tmin forecasts used as the calibrated
+    predictor's multi-model mean input ({slug}_daily_mm.csv), one record per forecast day
+    with tmax_{short}/tmin_{short} for each model in MULTIMODEL_MODELS (ecmwf/gfs/icon/jma/
+    gem/mf/aifs). Empty dict on API failure.
 
-    Returns dict with keys: city, fetched_at_utc, daily (one record per forecast day
-    with tmax_ecmwf / tmax_gfs / tmax_icon / tmax_jma). Empty dict on API failure.
+    *past_days* (0-92) also pulls that many recent past dates — used by the schema-repair
+    backfill to re-populate the columns the append-freeze bug dropped on disk.
     """
     cfg = CITIES.get(city)
     if cfg is None:
@@ -182,6 +184,8 @@ def fetch_forecast_multimodel(city: str) -> dict:
         "forecast_days": 8,
         "timezone":      "auto",
     }
+    if past_days:
+        params["past_days"] = min(int(past_days), 92)
     logger.info("Fetching multi-model forecast for %s", city)
     raw = _get(OPEN_METEO_BASE, params)
     if not raw:

@@ -79,7 +79,25 @@ def _append_csv(path: Path, records: list[dict], dedup_cols: list[str]) -> int:
             logger.debug("No new rows to append to %s.", path.name)
             return 0
 
-        # Align columns to prevent misalignment corruption
+        # B1: UNION columns rather than freezing to the existing header. Columns a
+        # fetcher started emitting AFTER the CSV first existed (e.g. tmax_gem / tmin_* /
+        # ens_min_*) must PERSIST, not be silently reindex-dropped. If the new rows
+        # introduce columns the file lacks, widen the file atomically (old rows
+        # NA-backfilled, existing order preserved, new columns appended first-seen);
+        # otherwise align to the existing header and append cheaply.
+        added_cols = [c for c in new_df.columns if c not in existing.columns]
+        if added_cols:
+            union_cols = list(existing.columns) + added_cols
+            widened = pd.concat(
+                [existing.reindex(columns=union_cols),
+                 new_df.reindex(columns=union_cols)],
+                ignore_index=True,
+            )
+            _atomic_write_csv(path, widened)
+            logger.info("Widened %s with new columns %s; wrote %d new rows",
+                        path.name, added_cols, len(new_df))
+            return len(new_df)
+
         new_df = new_df.reindex(columns=existing.columns)
         new_df.to_csv(path, mode="a", header=False, index=False)
     else:
@@ -87,6 +105,32 @@ def _append_csv(path: Path, records: list[dict], dedup_cols: list[str]) -> int:
 
     logger.info("Wrote %d new rows → %s", len(new_df), path.name)
     return len(new_df)
+
+
+def _atomic_write_csv(path: Path, df: "pd.DataFrame") -> None:
+    """Write *df* to *path* atomically (tmp file + os.replace) so a crash mid-write can
+    never truncate or half-write an existing CSV."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    df.to_csv(tmp, index=False)
+    os.replace(tmp, path)
+
+
+def ensure_schema(path: Path, expected_cols: list[str]) -> bool:
+    """Widen an existing CSV in place so its header includes every column in
+    *expected_cols* (missing cells NA-backfilled), preserving existing column order and
+    appending first-seen new columns. No-op (returns False) if the file is already wide
+    or absent. Returns True if it widened. Used by the schema-repair backfill to undo the
+    append-freeze corruption on daily_mm / ensemble CSVs before re-fetching."""
+    if not path.exists():
+        return False
+    existing = pd.read_csv(path, dtype=str)
+    missing = [c for c in expected_cols if c not in existing.columns]
+    if not missing:
+        return False
+    widened = existing.reindex(columns=list(existing.columns) + missing)
+    _atomic_write_csv(path, widened)
+    logger.info("ensure_schema widened %s with %s", path.name, missing)
+    return True
 
 
 # ── Market snapshot persistence ───────────────────────────────────────────────

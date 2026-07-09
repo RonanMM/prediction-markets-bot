@@ -32,6 +32,7 @@ Fallback: no params, or no usable mean input → the pure EnsemblePredictor
 """
 
 import json
+import logging
 from functools import lru_cache
 from pathlib import Path
 
@@ -45,6 +46,18 @@ from .nwp_fallback import spread_sigma_boost, get_nwp_params
 _MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 
 _MIN_LEAD, _MAX_LEAD = 1, 7
+
+logger = logging.getLogger(__name__)
+
+_WARNED: set = set()
+
+
+def _warn_once(key: str, msg: str) -> None:
+    """Log *msg* at WARNING once per distinct *key* (per process) — surfaces silent
+    serving degradation (B4) without spamming every prediction."""
+    if key not in _WARNED:
+        _WARNED.add(key)
+        logger.warning(msg)
 
 
 @lru_cache(maxsize=None)
@@ -264,11 +277,29 @@ class EMOSPredictor(BasePredictor):
                 candidates.append((input_kind, value, fit))
         if not candidates:
             if kind == "min":
+                _warn_once(
+                    f"{city}:min:no_input",
+                    f"EMOS {city} (min): no usable Tmin mean input "
+                    f"(mm_mean/mm_proxy/best_match all unavailable) — Tmin bins skipped. "
+                    f"Check tmin_*/ens_min_* columns on disk (append-freeze?).",
+                )
                 return None
+            _warn_once(
+                f"{city}:max:ensemble_fallback",
+                f"EMOS {city} (max): no usable calibrated input — falling back to the raw "
+                f"EnsemblePredictor. Check daily_mm/ensemble schema.",
+            )
             return self._ensemble_predictor.predict_distribution(
                 city, target_date, fetch_time, days_ahead, daily_df, ens_df
             )
-        _, mu_raw, fit = candidates[0]
+        selected_kind, mu_raw, fit = candidates[0]
+        if selected_kind != params["input"]:
+            _warn_once(
+                f"{city}:{kind}:degraded:{selected_kind}",
+                f"EMOS {city} ({kind}): preferred input '{params['input']}' unavailable at "
+                f"serve time — degraded to '{selected_kind}' (blunter). Check the "
+                f"daily_mm/ensemble columns for this city (append-freeze?).",
+            )
 
         day_of_year = pd.Timestamp(target_date).dayofyear
         mu = emos_mean(fit, mu_raw, day_of_year)

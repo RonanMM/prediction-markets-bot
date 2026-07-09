@@ -64,7 +64,7 @@ def _local_date_to_utc(date_str: str, tz) -> str:
 
 # ── Fetch ─────────────────────────────────────────────────────────────────────
 
-def fetch_ensemble(city: str) -> dict:
+def fetch_ensemble(city: str, past_days: int = 0) -> dict:
     """
     Fetch ICON-Seamless ensemble forecast for *city*.
 
@@ -72,7 +72,11 @@ def fetch_ensemble(city: str) -> dict:
       city, fetched_at_utc,
       daily: list[dict] — one record per forecast day with ensemble stats:
         ens_mean, ens_std, ens_p10, ens_p25, ens_median, ens_p75, ens_p90,
-        ens_spread (p90-p10), n_members
+        ens_spread (p90-p10), n_members, and the Tmin counterparts (ens_min_mean,
+        ens_min_std).
+
+    *past_days* (0-92) also pulls that many recent past dates — used by the schema-repair
+    backfill to re-populate the ens_min_* columns the append-freeze bug dropped on disk.
 
     Falls back to empty dict on any API error.
     """
@@ -93,6 +97,8 @@ def fetch_ensemble(city: str) -> dict:
         "forecast_days": ENSEMBLE_FORECAST_DAYS,
         "timezone":      "auto",
     }
+    if past_days:
+        params["past_days"] = min(int(past_days), 92)
 
     logger.info("Fetching ensemble for %s (model=%s)", city, ENSEMBLE_MODEL)
     raw = _get(OPEN_METEO_ENSEMBLE_BASE, params)

@@ -62,7 +62,7 @@ def load_daily_mm(data_dir: Path, city: str) -> Optional[pd.DataFrame]:
     df["fetched_at_utc"] = pd.to_datetime(df["fetched_at_utc"], utc=True)
     df["date_local"]     = pd.to_datetime(df["date_local"]).dt.normalize()
     for col in df.columns:
-        if col.startswith("tmax_"):
+        if col.startswith("tmax_") or col.startswith("tmin_"):
             df[col] = pd.to_numeric(df[col], errors="coerce")
     return df
 

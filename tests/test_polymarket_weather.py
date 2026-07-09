@@ -451,3 +451,52 @@ def test_no_meteostat_in_active_grading_docstring():
     import grading
     assert "meteostat" not in (grading.__doc__ or "").lower()
 
+
+# ── Phase 1 regression guards (append-freeze) ────────────────────────────────
+
+def test_append_csv_unions_new_columns(tmp_path):
+    """B1: a fetcher that starts emitting a new column must NOT have it silently dropped;
+    _append_csv widens the file (old rows NA-backfilled) and the new column persists."""
+    from processing import _append_csv
+    path = tmp_path / "mm.csv"
+    _append_csv(path, [{"city": "london", "date_local": "2026-07-01",
+                        "fetched_at_utc": "t0", "tmax_ecmwf": "20"}],
+                dedup_cols=["city", "date_local", "fetched_at_utc"])
+    # Later fetch adds tmax_gem (the exact class of column the freeze dropped).
+    _append_csv(path, [{"city": "london", "date_local": "2026-07-02",
+                        "fetched_at_utc": "t1", "tmax_ecmwf": "21", "tmax_gem": "22"}],
+                dedup_cols=["city", "date_local", "fetched_at_utc"])
+    df = pd.read_csv(path)
+    assert "tmax_gem" in df.columns                     # new column survived
+    assert set(df["date_local"].astype(str)) == {"2026-07-01", "2026-07-02"}
+    # Old row NA for the new column; new row carries its value.
+    assert pd.isna(df.loc[df["date_local"] == "2026-07-01", "tmax_gem"]).all()
+    assert float(df.loc[df["date_local"] == "2026-07-02", "tmax_gem"].iloc[0]) == 22.0
+
+
+def test_append_csv_preserves_old_columns_when_new_row_lacks_them(tmp_path):
+    """B1: a new row missing an existing column must not drop that column from the file."""
+    from processing import _append_csv
+    path = tmp_path / "mm.csv"
+    _append_csv(path, [{"city": "london", "date_local": "2026-07-01",
+                        "fetched_at_utc": "t0", "tmax_ecmwf": "20", "tmax_gem": "22"}],
+                dedup_cols=["city", "date_local", "fetched_at_utc"])
+    _append_csv(path, [{"city": "london", "date_local": "2026-07-02",
+                        "fetched_at_utc": "t1", "tmax_ecmwf": "21"}],
+                dedup_cols=["city", "date_local", "fetched_at_utc"])
+    df = pd.read_csv(path)
+    assert "tmax_gem" in df.columns
+
+
+def test_ensure_schema_widens_and_is_idempotent(tmp_path):
+    """B2: ensure_schema adds missing columns (NA) once, then is a no-op."""
+    from processing import ensure_schema
+    path = tmp_path / "ens.csv"
+    pd.DataFrame([{"city": "london", "date_local": "2026-07-01", "ens_mean": "20"}]).to_csv(
+        path, index=False)
+    assert ensure_schema(path, ["ens_min_mean", "ens_min_std"]) is True
+    cols = set(pd.read_csv(path, nrows=0).columns)
+    assert {"ens_min_mean", "ens_min_std"} <= cols
+    assert "ens_mean" in cols                            # existing column preserved
+    assert ensure_schema(path, ["ens_min_mean", "ens_min_std"]) is False  # idempotent
+
