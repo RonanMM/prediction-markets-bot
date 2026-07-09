@@ -500,3 +500,28 @@ def test_ensure_schema_widens_and_is_idempotent(tmp_path):
     assert "ens_mean" in cols                            # existing column preserved
     assert ensure_schema(path, ["ens_min_mean", "ens_min_std"]) is False  # idempotent
 
+
+# ── Phase 2 regression guards (truth-feed integrity, F2) ─────────────────────
+
+def test_truth_sanitize_keeps_min_only_rows():
+    """F2: a day with valid Tmin but missing Tmax is KEPT (Tmin markets grade off it),
+    not dropped as the old temp_max_c-only dropna did."""
+    from fetch_historical_truth import _sanitize_truth
+    df = pd.DataFrame([
+        {"date_local": "2026-07-01", "temp_max_c": 30.0, "temp_min_c": 20.0, "source": "x"},
+        {"date_local": "2026-07-02", "temp_max_c": None, "temp_min_c": 21.0, "source": "x"},
+    ])
+    out = _sanitize_truth(df, min_expected_rows=1)
+    assert out is not None
+    assert set(out["date_local"]) == {"2026-07-01", "2026-07-02"}
+    assert float(out.loc[out["date_local"] == "2026-07-02", "temp_min_c"].iloc[0]) == 21.0
+
+
+def test_truth_sanity_rejects_bad_min():
+    """F2: an implausible temp_min_c fails the sanity gate (old gate checked max only)."""
+    from fetch_historical_truth import _sanitize_truth
+    df = pd.DataFrame([
+        {"date_local": "2026-07-01", "temp_max_c": 30.0, "temp_min_c": -999.0, "source": "x"},
+    ])
+    assert _sanitize_truth(df, min_expected_rows=1) is None
+

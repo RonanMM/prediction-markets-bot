@@ -126,6 +126,31 @@ def _fetch_hko(station: str) -> pd.DataFrame:
     return df
 
 
+def _sanitize_truth(df: "pd.DataFrame", min_expected_rows: int):
+    """Clean a fetched truth frame and gate it before it may overwrite the existing CSV.
+
+    F2: keep a day if EITHER temp_max_c OR temp_min_c is present — dropping on temp_max_c
+    alone silently lost valid Tmin truth (worst for Hong Kong, whose max/min come from two
+    separately-fetched, outer-merged series). Range-check both series INDEPENDENTLY on
+    their non-null values (the old max-only gate let a corrupt min through, and would now
+    spuriously reject legitimately max-less days because NaN.between(...) is False).
+
+    Returns the cleaned frame, or None if it fails the sanity gate (short/implausible),
+    in which case the caller keeps the existing CSV.
+    """
+    df = df.dropna(subset=["temp_max_c", "temp_min_c"], how="all").copy()
+    df["date_local"] = pd.to_datetime(df["date_local"]).dt.strftime("%Y-%m-%d")
+    df = df.sort_values("date_local").drop_duplicates("date_local", keep="last")
+    df = df[["date_local", "temp_max_c", "temp_min_c", "source"]]
+    if len(df) < min_expected_rows:
+        return None
+    max_vals = df["temp_max_c"].dropna()
+    min_vals = df["temp_min_c"].dropna()
+    if not max_vals.between(-60, 60).all() or not min_vals.between(-60, 60).all():
+        return None
+    return df
+
+
 def fetch_historical_truth():
     os.makedirs(OUT_DIR, exist_ok=True)
 
@@ -142,17 +167,11 @@ def fetch_historical_truth():
             logger.error(f"{slug}: fetch failed ({e}) — keeping the existing CSV")
             continue
 
-        df = df.dropna(subset=["temp_max_c"]).copy()
-        df["date_local"] = pd.to_datetime(df["date_local"]).dt.strftime("%Y-%m-%d")
-        df = df.sort_values("date_local").drop_duplicates("date_local", keep="last")
-        df = df[["date_local", "temp_max_c", "temp_min_c", "source"]]
-
-        # Sanity gate: never overwrite good truth with a short or implausible fetch.
-        if len(df) < MIN_EXPECTED_ROWS:
-            logger.error(f"{slug}: only {len(df)} rows (<{MIN_EXPECTED_ROWS}) — keeping existing CSV")
-            continue
-        if not df["temp_max_c"].between(-60, 60).all():
-            logger.error(f"{slug}: implausible temperatures in fetch — keeping existing CSV")
+        # Clean + sanity-gate (F2: keep max-OR-min days; validate both series). Never
+        # overwrite good truth with a short or implausible fetch.
+        df = _sanitize_truth(df, MIN_EXPECTED_ROWS)
+        if df is None:
+            logger.error(f"{slug}: fetch failed sanity (too short or implausible) — keeping existing CSV")
             continue
 
         out = os.path.join(OUT_DIR, f"{slug}_historical_actuals.csv")
