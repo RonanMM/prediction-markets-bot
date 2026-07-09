@@ -60,6 +60,23 @@ def _warn_once(key: str, msg: str) -> None:
         logger.warning(msg)
 
 
+def _apply_censor(dist, city_slug, target_date, fetch_time, obs_df, kind):
+    """Apply same-day censoring (floor for max / ceiling for min) to ANY distribution, so a
+    fallback distribution (raw EnsemblePredictor / NWP) honors the running observed extreme
+    too. The EMOS path already floors/ceilings; the fallback path silently did not, so it
+    could price bins the observed running max/min has already made impossible (C3)."""
+    if dist is None:
+        return dist
+    state = _intraday_state(city_slug, target_date, fetch_time, obs_df, kind=kind)
+    if state is not None:
+        _, run_val = state
+        if kind == "max":
+            dist.floor = run_val
+        else:
+            dist.ceiling = run_val
+    return dist
+
+
 @lru_cache(maxsize=None)
 def _load_params(city_slug: str, kind: str = "max"):
     """Per-city EMOS v2 params dict for the daily MAX or MIN, or None if not trained."""
@@ -234,9 +251,10 @@ class EMOSPredictor(BasePredictor):
         if params is None:
             if kind == "min":
                 return None
-            return self._ensemble_predictor.predict_distribution(
-                city, target_date, fetch_time, days_ahead, daily_df, ens_df
-            )
+            return _apply_censor(
+                self._ensemble_predictor.predict_distribution(
+                    city, target_date, fetch_time, days_ahead, daily_df, ens_df),
+                city_slug, target_date, fetch_time, obs_df, kind)
 
         entry = _lead_entry(params, days_ahead)
         ens_params = get_ensemble_params(ens_df, target_date, fetch_time)
@@ -289,9 +307,10 @@ class EMOSPredictor(BasePredictor):
                 f"EMOS {city} (max): no usable calibrated input — falling back to the raw "
                 f"EnsemblePredictor. Check daily_mm/ensemble schema.",
             )
-            return self._ensemble_predictor.predict_distribution(
-                city, target_date, fetch_time, days_ahead, daily_df, ens_df
-            )
+            return _apply_censor(
+                self._ensemble_predictor.predict_distribution(
+                    city, target_date, fetch_time, days_ahead, daily_df, ens_df),
+                city_slug, target_date, fetch_time, obs_df, kind)
         selected_kind, mu_raw, fit = candidates[0]
         if selected_kind != params["input"]:
             _warn_once(

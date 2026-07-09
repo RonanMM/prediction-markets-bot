@@ -61,11 +61,23 @@ def fit_nu_from_ensemble(ens_params: dict) -> float:
             return nu
     return 30.0   # effectively Gaussian
 
+def _num(v) -> float:
+    """Coerce a possibly-missing cell to float, NaN when absent/blank."""
+    return np.nan if pd.isna(v) else float(v)
+
+
 def get_ensemble_params(ens_df: Optional[pd.DataFrame], target_date, fetch_time) -> Optional[dict]:
     """
-    Look up the best ensemble snapshot for target_date.
-    Prefers the latest row fetched at or before fetch_time.
-    If none exist, falls back to the latest available row for that date.
+    Look up the ensemble snapshot for target_date as of fetch_time.
+
+    D1: STRICT as-of — only rows fetched at or before fetch_time are eligible; if none
+    exist, return None (never fall back to a later run, which would leak look-ahead data
+    into a backtest, the exact artifact the pre-committed gate exists to prevent).
+
+    C6/E4: the Tmax and Tmin member stats are validated INDEPENDENTLY. A bad/missing Tmax
+    std no longer discards a valid Tmin (so Tmin serving keeps its flow sigma and proxy),
+    and a NaN mean no longer propagates downstream; None is returned only when BOTH the
+    max and min stats are unusable. Invalid fields are set to None so callers can tell.
     """
     if ens_df is None or ens_df.empty:
         return None
@@ -78,29 +90,33 @@ def get_ensemble_params(ens_df: Optional[pd.DataFrame], target_date, fetch_time)
     if date_rows.empty:
         return None
 
-    # Prefer rows fetched at or before the snapshot's fetch_time
     sub = date_rows[date_rows["fetched_at_utc"] <= fetch_time]
     if sub.empty:
-        sub = date_rows
-
-    row = sub.sort_values("fetched_at_utc").iloc[-1]
-    std = float(row.get("ens_std", np.nan))
-    if np.isnan(std) or std <= 0:
         return None
 
-    out = {
-        "ens_mean":   float(row.get("ens_mean",   np.nan)),
-        "ens_std":    std,
-        "ens_p10":    float(row.get("ens_p10",    np.nan)),
-        "ens_p90":    float(row.get("ens_p90",    np.nan)),
-        "ens_spread": float(row.get("ens_spread", np.nan)),
-        "n_members":  int(row.get("n_members", 0)),
+    row = sub.sort_values("fetched_at_utc").iloc[-1]
+
+    def _usable(mean, std) -> bool:
+        return not np.isnan(mean) and not np.isnan(std) and std > 0
+
+    mean,     std     = _num(row.get("ens_mean")),     _num(row.get("ens_std"))
+    min_mean, min_std = _num(row.get("ens_min_mean")), _num(row.get("ens_min_std"))
+    max_ok = _usable(mean, std)
+    min_ok = _usable(min_mean, min_std)
+    if not max_ok and not min_ok:
+        return None
+
+    n_members = row.get("n_members", 0)
+    return {
+        "ens_mean":     mean if max_ok else None,
+        "ens_std":      std if max_ok else None,
+        "ens_p10":      _num(row.get("ens_p10")),
+        "ens_p90":      _num(row.get("ens_p90")),
+        "ens_spread":   _num(row.get("ens_spread")),
+        "n_members":    0 if pd.isna(n_members) else int(n_members),
+        "ens_min_mean": min_mean if min_ok else None,
+        "ens_min_std":  min_std if min_ok else None,
     }
-    # Daily-MIN member stats (Tmin markets) — present once fetch_ensemble collects them.
-    for key in ("ens_min_mean", "ens_min_std"):
-        val = row.get(key, np.nan)
-        out[key] = None if pd.isna(val) else float(val)
-    return out
 
 class EnsemblePredictor(BasePredictor):
     def __init__(self):
@@ -119,8 +135,12 @@ class EnsemblePredictor(BasePredictor):
         nbm_df: pd.DataFrame = None,  # unused; part of the shared predictor interface
     ) -> TemperatureDistribution:
         ens_params = get_ensemble_params(ens_df, target_date, fetch_time)
-        if ens_params is None:
-            # Fall back to NWP if ensemble is not available
+        # EnsemblePredictor builds a Tmax distribution; fall back to NWP if the Tmax mean/std
+        # are unusable. get_ensemble_params may now return a dict with ONLY the Tmin stats
+        # valid (C6) or a None mean (E4) — those must not flow into mu_ens/sigma_ens.
+        if (ens_params is None
+                or ens_params.get("ens_mean") is None
+                or ens_params.get("ens_std") is None):
             return self._fallback_predictor.predict_distribution(
                 city, target_date, fetch_time, days_ahead, daily_df, ens_df
             )

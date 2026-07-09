@@ -525,3 +525,54 @@ def test_truth_sanity_rejects_bad_min():
     ])
     assert _sanitize_truth(df, min_expected_rows=1) is None
 
+
+# ── Phase 3 regression guards (calibration) ──────────────────────────────────
+
+def test_student_t_scale_is_std():
+    """C1: sigma is a standard DEVIATION; _t_scale converts it to the t-scale so the served
+    distribution's std equals sigma (the old code passed sigma straight in as the scale,
+    over-dispersing by sqrt(nu/(nu-2)))."""
+    import numpy as np
+    from pmf import _t_scale
+    for nu in (4.0, 5.0, 8.0, 15.0):
+        scale = _t_scale(1.3, nu)
+        realized_std = scale * np.sqrt(nu / (nu - 2.0))
+        assert abs(realized_std - 1.3) < 1e-9
+    assert _t_scale(1.3, 2.0) == 1.3          # nu<=2: undefined variance → sigma-as-scale, no crash
+
+
+def _ens_row(**over):
+    row = {"date_local": pd.Timestamp("2026-07-05"),
+           "fetched_at_utc": pd.Timestamp("2026-07-05 06:00", tz="UTC"),
+           "ens_mean": 25.0, "ens_std": 1.5, "ens_p10": 23.0, "ens_p90": 27.0,
+           "ens_spread": 4.0, "n_members": 30, "ens_min_mean": 15.0, "ens_min_std": 1.0}
+    row.update(over)
+    return pd.DataFrame([row])
+
+
+def test_get_ensemble_params_is_as_of_only():
+    """D1: a row fetched AFTER fetch_time must never be selected (no look-ahead leak)."""
+    from predictors.ensemble import get_ensemble_params
+    ens = _ens_row(fetched_at_utc=pd.Timestamp("2026-07-05 22:00", tz="UTC"))
+    assert get_ensemble_params(ens, pd.Timestamp("2026-07-05"),
+                               pd.Timestamp("2026-07-03 12:00", tz="UTC")) is None
+
+
+def test_get_ensemble_params_min_survives_bad_max():
+    """C6: a bad Tmax std no longer discards a valid Tmin (Tmin serving keeps its stats)."""
+    from predictors.ensemble import get_ensemble_params
+    ens = _ens_row(ens_std=float("nan"))
+    p = get_ensemble_params(ens, pd.Timestamp("2026-07-05"),
+                            pd.Timestamp("2026-07-05 12:00", tz="UTC"))
+    assert p is not None
+    assert p["ens_mean"] is None and p["ens_std"] is None
+    assert p["ens_min_mean"] == 15.0 and p["ens_min_std"] == 1.0
+
+
+def test_get_ensemble_params_rejects_nan_mean():
+    """E4: a NaN mean must not propagate; with both max and min unusable, return None."""
+    from predictors.ensemble import get_ensemble_params
+    ens = _ens_row(ens_mean=float("nan"), ens_min_mean=float("nan"))
+    assert get_ensemble_params(ens, pd.Timestamp("2026-07-05"),
+                               pd.Timestamp("2026-07-05 12:00", tz="UTC")) is None
+

@@ -1,8 +1,11 @@
 import re
+import logging
 import numpy as np
 from typing import Optional
 from scipy.stats import t as student_t
 from models import MarketBin
+
+logger = logging.getLogger(__name__)
 
 # QUESTION PARSER
 # ══════════════════════════════════════════════════════════════════════════════
@@ -105,9 +108,34 @@ def parse_question(q: str) -> Optional[dict]:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+_WARNED_NU: set = set()
+
+
+def _t_scale(sigma: float, nu: float) -> float:
+    """Convert a standard DEVIATION to the Student-t SCALE so the served distribution's std
+    equals sigma. For nu>2, std = scale·sqrt(nu/(nu-2)) ⇒ scale = sigma·sqrt((nu-2)/nu).
+    This is the exact inverse of the std→scale conversion the ensemble applies when FITTING
+    nu (predictors/ensemble.py) — which serving previously omitted, passing sigma straight in
+    as the scale and over-dispersing every distribution by sqrt(nu/(nu-2)) (+41% at nu=4).
+    For nu<=2 (variance undefined) fall back to sigma-as-scale and warn once, rather than
+    silently mis-serve (C1)."""
+    if nu > 2:
+        return sigma * np.sqrt((nu - 2.0) / nu)
+    key = f"nu_le_2:{round(float(nu), 3)}"
+    if key not in _WARNED_NU:
+        _WARNED_NU.add(key)
+        logger.warning("pmf._t_scale: nu=%s <= 2 (undefined variance); treating sigma as the "
+                       "t-scale. Trained nu should be >= 4 — check the params.", nu)
+    return sigma
+
+
 def _cdf(x: float, mu: float, sigma: float, nu: float,
          floor: float = None, ceiling: float = None) -> float:
-    """Student-t CDF; falls back to Gaussian when nu>30.
+    """Student-t CDF. `sigma` is a standard DEVIATION, converted to the t-scale via _t_scale
+    so the served std is exactly sigma. A single Student-t branch is used for all nu (scipy's
+    t → Gaussian as nu grows, and _t_scale → sigma), removing the old nu>30 Gaussian special
+    case that both mis-scaled (sigma-as-std vs sigma-as-scale) and introduced a ~0.4-3.5% CDF
+    discontinuity at nu=30 (C1).
 
     Censoring (same-day bets):
       * `floor` f (Tmax markets: the running observed daily max) — T = max(f, Z):
@@ -115,14 +143,11 @@ def _cdf(x: float, mu: float, sigma: float, nu: float,
       * `ceiling` c (Tmin markets: the running observed daily min) — T = min(c, Z):
         F_T(x) = 1 at/above the ceiling; the point mass P(Z >= c) sits AT the ceiling.
     """
-    import scipy.stats
     if floor is not None and x < floor:
         return 0.0
     if ceiling is not None and x >= ceiling:
         return 1.0
-    if nu > 30:
-        return float(scipy.stats.norm.cdf(x, loc=mu, scale=sigma))
-    return float(student_t.cdf((x - mu) / sigma, df=nu))
+    return float(student_t.cdf((x - mu) / _t_scale(sigma, nu), df=nu))
 
 
 def _bin_prob(temp_c: float, mu: float, sigma: float, nu: float,

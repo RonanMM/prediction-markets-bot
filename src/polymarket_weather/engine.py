@@ -381,10 +381,13 @@ def analyse_city(data_dir: Path, city: str,
             if b.liquidity < min_liq:
                 continue
 
-            # Compute raw probabilities from both models
+            # Compute raw probabilities from both models. C2: the ensemble side honors the
+            # SAME same-day floor as the ML side — the running observed max is a model-free
+            # fact, so an uncensored ensemble must not veto a bet the floor already settled.
             f_prob_ml = _bin_prob(b.temp_c, mu_ml, sigma_ml, nu_ml, b.half_width,
                                   floor=dist_ml.floor)
-            f_prob_ens = _bin_prob(b.temp_c, mu_ens, sigma_ens, nu_ens, b.half_width)
+            f_prob_ens = _bin_prob(b.temp_c, mu_ens, sigma_ens, nu_ens, b.half_width,
+                                   floor=dist_ml.floor)
 
             m_prob_raw = b.yes_prob   # actual market price you pay
 
@@ -457,7 +460,7 @@ def analyse_city(data_dir: Path, city: str,
 
             parsed  = {"condition": b.condition, "temp_c": b.temp_c, "half_width": b.half_width}
             f_prob_ml = _condition_prob(parsed, mu_ml, sigma_ml, nu_ml, floor=dist_ml.floor)
-            f_prob_ens = _condition_prob(parsed, mu_ens, sigma_ens, nu_ens)
+            f_prob_ens = _condition_prob(parsed, mu_ens, sigma_ens, nu_ens, floor=dist_ml.floor)  # C2
 
             m_prob_raw = b.yes_prob
 
