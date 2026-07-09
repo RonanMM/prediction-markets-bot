@@ -576,3 +576,92 @@ def test_get_ensemble_params_rejects_nan_mean():
     assert get_ensemble_params(ens, pd.Timestamp("2026-07-05"),
                                pd.Timestamp("2026-07-05 12:00", tz="UTC")) is None
 
+
+# ── Phase 4 regression guards (range-bin coverage) ───────────────────────────
+
+_RANGE_Q = "Will the highest temperature in NYC be between 62-63°F on March 20?"
+
+
+def test_marketbin_carries_range_endpoints():
+    """A1: parse_question emits range endpoints and MarketBin must retain them (they were
+    dropped at construction, losing the info needed to price/grade the range)."""
+    from models import MarketBin
+    from pmf import parse_question, _f2c
+    p = parse_question(_RANGE_Q)
+    assert p["condition"] == "range"
+    b = MarketBin("c", _RANGE_Q, p["condition"], p["temp_c"], p["half_width"], 0.5,
+                  1000, 0, 0, temp_lo=p.get("temp_lo"), temp_hi=p.get("temp_hi"))
+    assert abs(b.temp_lo - _f2c(62)) < 1e-9 and abs(b.temp_hi - _f2c(63)) < 1e-9
+    pe = parse_question("Will the temperature be 30°C on June 1?")
+    be = MarketBin("c", "q", pe["condition"], pe["temp_c"], pe["half_width"], 0.5, 1000, 0, 0)
+    assert be.temp_lo is None and be.temp_hi is None      # non-range bins have no endpoints
+
+
+def test_condition_prob_range_honors_rounding():
+    """A3: range prob widens by ±half_width to match the whole-°F rounding set; the old
+    _cdf(hi)-_cdf(lo) (a 1°F window) understated it by ~2x."""
+    from pmf import parse_question, _condition_prob, _cdf
+    p = parse_question(_RANGE_Q)
+    mu = p["temp_c"]
+    widened = _condition_prob(p, mu, 1.0, 8.0)
+    naive = _cdf(p["temp_hi"], mu, 1.0, 8.0) - _cdf(p["temp_lo"], mu, 1.0, 8.0)
+    assert widened > naive and widened > 0.4
+
+
+def test_resolves_yes_range_landmine():
+    """A5: a 63°F reading resolves YES for 'between 62-63°F' — the old exact== of the
+    banker's-rounded midpoint (round(62.5)=62) graded it NO."""
+    from pmf import parse_question, resolves_yes_temp, _f2c
+    from grading import native_round
+    p = parse_question(_RANGE_Q)
+    assert resolves_yes_temp(p, native_round(_f2c(63), "whole °F"), "whole °F", native_round) is True
+    assert resolves_yes_temp(p, native_round(_f2c(64), "whole °F"), "whole °F", native_round) is False
+    assert resolves_yes_temp(p, native_round(_f2c(61), "whole °F"), "whole °F", native_round) is False
+
+
+def test_resolves_yes_direction_no_more_than_and_exceed():
+    """A5: grading direction matches pmf.parse_question — 'no more than' is lte and 'exceed'
+    is gte (the old substring scan flipped 'no more than' to gte and mis-graded 'exceed')."""
+    from pmf import parse_question, resolves_yes_temp, _f2c
+    from grading import native_round
+    lo = parse_question("Will the temperature be no more than 20°C on May 1?")
+    assert lo["condition"] == "lte"
+    assert resolves_yes_temp(lo, 20, "whole °C", native_round) is True
+    assert resolves_yes_temp(lo, 21, "whole °C", native_round) is False
+    hi = parse_question("Will the temperature exceed 75°F on May 1?")
+    assert hi["condition"] == "gte"
+    assert resolves_yes_temp(hi, native_round(_f2c(76), "whole °F"), "whole °F", native_round) is True
+    assert resolves_yes_temp(hi, native_round(_f2c(74), "whole °F"), "whole °F", native_round) is False
+
+
+def test_reconstruct_pmf_range_only():
+    """A4: a range-only market (US cities) now builds a non-empty PMF backbone instead of
+    returning {} (which silently zeroed the coherence signal)."""
+    from models import MarketBin
+    from pmf import parse_question, reconstruct_pmf
+
+    def mk(qtext, yp):
+        p = parse_question(qtext)
+        return MarketBin("c", qtext, p["condition"], p["temp_c"], p["half_width"], yp,
+                         1000, 0, 0, temp_lo=p.get("temp_lo"), temp_hi=p.get("temp_hi"))
+    bins = [mk("be between 60-61°F on May 1?", 0.5), mk("be between 62-63°F on May 1?", 0.5)]
+    mkt, fc, cons = reconstruct_pmf(bins, mu=16.5, sigma=1.5, nu=8.0)
+    assert len(mkt) == 2 and len(fc) == 2
+
+
+def test_all_tracker_questions_parse():
+    """A5 audit: every distinct question in the committed snapshots must parse, so grading's
+    parse-based path applies and never silently falls back to exact==. Skips if no snapshots."""
+    import glob
+    from pmf import parse_question
+    files = glob.glob(str(Path(__file__).resolve().parents[1] /
+                          "src/polymarket_weather/data/polymarket/*_snapshots.csv"))
+    if not files:
+        pytest.skip("no snapshot CSVs present")
+    unparsed = 0
+    for f in files:
+        for q in pd.read_csv(f, usecols=["question"])["question"].dropna().astype(str).unique():
+            if parse_question(q) is None:
+                unparsed += 1
+    assert unparsed == 0
+

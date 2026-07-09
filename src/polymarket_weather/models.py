@@ -12,6 +12,8 @@ class MarketBin:
     liquidity: float
     volume_24h: float
     volume_total: float
+    temp_lo: float = None   # range markets only ('between X-Y°F'): low endpoint °C
+    temp_hi: float = None   # range markets only ('between X-Y°F'): high endpoint °C
 
 @dataclass
 class Opportunity:
@@ -72,3 +74,5 @@ class Opportunity:
                                    # same-day running observed max; None otherwise
     forecast_ceiling: float = None # ceiling censoring for Tmin markets (°C):
                                    # same-day running observed min; None otherwise
+    temp_lo_c:      float = None   # range markets ('between X-Y°F'): °C endpoints, so the
+    temp_hi_c:      float = None   # eval CSV can grade them without re-parsing the question

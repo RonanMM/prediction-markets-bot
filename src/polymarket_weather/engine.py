@@ -103,7 +103,8 @@ def _create_opportunity(
     our_prob: float, their_prob: float, mom: dict, fc_var: float,
     vol_rec: float, stale: dict, consistency: float, pmf_dev: float,
     exact_bins: list, market_mode_c: float, kelly_fraction: float,
-    floor: float = None, ceiling: float = None
+    floor: float = None, ceiling: float = None,
+    temp_lo_c: float = None, temp_hi_c: float = None,
 ) -> Opportunity:
     opp = Opportunity(
         city           = CITY_NAMES.get(city, city),
@@ -145,6 +146,8 @@ def _create_opportunity(
         group_key      = f"{city}|{target_date_ts.date()}",
         forecast_floor = None if floor is None else round(float(floor), 2),
         forecast_ceiling = None if ceiling is None else round(float(ceiling), 2),
+        temp_lo_c      = None if temp_lo_c is None else round(float(temp_lo_c), 3),
+        temp_hi_c      = None if temp_hi_c is None else round(float(temp_hi_c), 3),
     )
     opp.alpha_score = score_opportunity(opp)
     opp.kelly       = _kelly_size(opp, kelly_fraction=kelly_fraction)
@@ -294,6 +297,8 @@ def analyse_city(data_dir: Path, city: str,
                 liquidity    = float(row.get("liquidity_usdc", 0) or 0),
                 volume_24h   = float(row.get("volume_24h_usdc", 0) or 0),
                 volume_total = float(row.get("volume_usdc", 0) or 0),
+                temp_lo      = parsed.get("temp_lo"),   # None unless condition=='range'
+                temp_hi      = parsed.get("temp_hi"),
             )
             if "lowest" in question.lower():
                 min_bins.append(bin_)
@@ -321,9 +326,10 @@ def analyse_city(data_dir: Path, city: str,
                 if b.condition == "exact":
                     f_prob = _bin_prob(b.temp_c, mu_mn, sg_mn, nu_mn, b.half_width,
                                        ceiling=dist_min.ceiling)
-                elif b.condition in ("gte", "lte"):
+                elif b.condition in ("gte", "lte", "range"):
                     parsed = {"condition": b.condition, "temp_c": b.temp_c,
-                              "half_width": b.half_width}
+                              "half_width": b.half_width,
+                              "temp_lo": b.temp_lo, "temp_hi": b.temp_hi}
                     f_prob = _condition_prob(parsed, mu_mn, sg_mn, nu_mn,
                                              ceiling=dist_min.ceiling)
                 else:
@@ -353,7 +359,8 @@ def analyse_city(data_dir: Path, city: str,
                     f_prob_raw, m_prob_raw, m_prob_raw, edge, bet_side,
                     our_prob, their_prob, mom, fc_var, vol_rec, stale,
                     consistency_mn, pmf_dev_mn, exact_mn, mode_mn, kelly_fraction,
-                    ceiling=dist_min.ceiling
+                    ceiling=dist_min.ceiling,
+                    temp_lo_c=b.temp_lo, temp_hi_c=b.temp_hi,
                 )
                 results.append(opp)
 
@@ -451,14 +458,17 @@ def analyse_city(data_dir: Path, city: str,
             )
             results.append(opp)
 
-        # ── Boundary bins (gte / lte) — direct CDF comparison ─────────────
+        # ── Boundary + range bins (gte / lte / range) — direct CDF comparison ──
+        # 'range' ("between X-Y°F") is the dominant US-city format; it was previously dropped
+        # by both pricing loops, silently voiding ~83% of NYC/Chicago markets (A2).
         for b in market_bins:
-            if b.condition not in ("gte", "lte"):
+            if b.condition not in ("gte", "lte", "range"):
                 continue
             if b.liquidity < min_liq:
                 continue
 
-            parsed  = {"condition": b.condition, "temp_c": b.temp_c, "half_width": b.half_width}
+            parsed  = {"condition": b.condition, "temp_c": b.temp_c, "half_width": b.half_width,
+                       "temp_lo": b.temp_lo, "temp_hi": b.temp_hi}
             f_prob_ml = _condition_prob(parsed, mu_ml, sigma_ml, nu_ml, floor=dist_ml.floor)
             f_prob_ens = _condition_prob(parsed, mu_ens, sigma_ens, nu_ens, floor=dist_ml.floor)  # C2
 
@@ -508,7 +518,8 @@ def analyse_city(data_dir: Path, city: str,
                 f_prob_raw, m_prob_raw, m_prob_raw, edge, bet_side,
                 our_prob, their_prob, mom, fc_var, vol_rec, stale,
                 consistency, pmf_dev, exact_bins, market_mode_c, kelly_fraction,
-                floor=dist_ml.floor
+                floor=dist_ml.floor,
+                temp_lo_c=b.temp_lo, temp_hi_c=b.temp_hi,
             )
             results.append(opp)
 

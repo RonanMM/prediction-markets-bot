@@ -39,6 +39,12 @@ _RE_GTE_F_2 = re.compile(
     r"(-?\d+(?:\.\d+)?)\s*°?\s*F\s+or\s+(?:above|higher|more)",        re.I)
 _RE_LTE_F_2 = re.compile(
     r"(-?\d+(?:\.\d+)?)\s*°?\s*F\s+or\s+(?:below|lower|less)",         re.I)
+# "at least X°F", "exceed/reach X°F" (gte); "at most / no more than X°F" (lte). Mirrors the
+# Celsius _2 patterns so grading and pricing share one parser for °F threshold wordings too.
+_RE_GTE_F_3 = re.compile(
+    r"(?:at\s+least|exceed[s]?|reach(?:es)?)\s+(-?\d+(?:\.\d+)?)\s*°?\s*F", re.I)
+_RE_LTE_F_3 = re.compile(
+    r"(?:at\s+most|no\s+more\s+than)\s+(-?\d+(?:\.\d+)?)\s*°?\s*F",   re.I)
 
 # 0.5°F converted to °C — used as bin half-width for Fahrenheit markets
 _HALF_WIDTH_F_IN_C = 0.5 * 5.0 / 9.0   # ≈ 0.2778°C
@@ -84,13 +90,13 @@ def parse_question(q: str) -> Optional[dict]:
         return {"condition": "range", "temp_c": (lo + hi) / 2,
                 "temp_lo": lo, "temp_hi": hi, "half_width": _HALF_WIDTH_F_IN_C}
     # ── Fahrenheit gte ────────────────────────────────────────────────────────
-    for pat in (_RE_GTE_F, _RE_GTE_F_2):
+    for pat in (_RE_GTE_F, _RE_GTE_F_2, _RE_GTE_F_3):
         m = pat.search(q)
         if m:
             return {"condition": "gte", "temp_c": _f2c(float(m.group(1))),
                     "half_width": _HALF_WIDTH_F_IN_C}
     # ── Fahrenheit lte ────────────────────────────────────────────────────────
-    for pat in (_RE_LTE_F, _RE_LTE_F_2):
+    for pat in (_RE_LTE_F, _RE_LTE_F_2, _RE_LTE_F_3):
         m = pat.search(q)
         if m:
             return {"condition": "lte", "temp_c": _f2c(float(m.group(1))),
@@ -101,6 +107,29 @@ def parse_question(q: str) -> Optional[dict]:
         return {"condition": "exact", "temp_c": _f2c(float(m.group(1))),
                 "half_width": _HALF_WIDTH_F_IN_C}
     return None
+
+
+def resolves_yes_temp(parsed: dict, actual_native, unit, native_round) -> bool:
+    """The single 'what does this question ask?' outcome rule, keyed on the SAME parsed
+    condition used for pricing — so grading and pricing can never diverge (A5).
+
+    `actual_native` is the station observation already rounded to the market's native unit;
+    `native_round` (passed in to avoid a grading→pmf import cycle) rounds each °C threshold to
+    the same unit before comparison.
+      exact: actual == round(temp_c)
+      gte:   actual >= round(temp_c)
+      lte:   actual <= round(temp_c)
+      range: round(temp_lo) <= actual <= round(temp_hi)   (inclusive integer-set membership)
+    """
+    c = parsed["condition"]
+    if c == "gte":
+        return actual_native >= native_round(parsed["temp_c"], unit)
+    if c == "lte":
+        return actual_native <= native_round(parsed["temp_c"], unit)
+    if c == "range":
+        return (native_round(parsed["temp_lo"], unit) <= actual_native
+                <= native_round(parsed["temp_hi"], unit))
+    return actual_native == native_round(parsed["temp_c"], unit)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -169,8 +198,11 @@ def _condition_prob(parsed: dict, mu: float, sigma: float, nu: float,
     if c == "exact":  return _bin_prob(t, mu, sigma, nu, hw, floor, ceiling)
     if c == "gte":    return 1.0 - _cdf(t - hw, mu, sigma, nu, floor, ceiling)
     if c == "lte":    return _cdf(t + hw, mu, sigma, nu, floor, ceiling)
-    if c == "range":  return (_cdf(parsed["temp_hi"], mu, sigma, nu, floor, ceiling) -
-                              _cdf(parsed["temp_lo"], mu, sigma, nu, floor, ceiling))
+    # A3: a 'between X-Y°F' market resolves on the whole-°F ROUNDED max, so it is YES for any
+    # true temp in [lo-hw, hi+hw) (hw = 0.5°F in °C) — widen by the rounding half-width, matching
+    # the exact-bin convention. _cdf(hi) - _cdf(lo) (a 1°F-wide window) understated P by ~2x.
+    if c == "range":  return (_cdf(parsed["temp_hi"] + hw, mu, sigma, nu, floor, ceiling) -
+                              _cdf(parsed["temp_lo"] - hw, mu, sigma, nu, floor, ceiling))
     return np.nan
 
 
@@ -192,14 +224,19 @@ def reconstruct_pmf(bins: list[MarketBin],
         consistency : how well bins sum to 1.0 (1.0 = perfect)
     """
     exact = [b for b in bins if b.condition == "exact"]
+    rng   = [b for b in bins if b.condition == "range"]
     gte   = [b for b in bins if b.condition == "gte"]
     lte   = [b for b in bins if b.condition == "lte"]
 
-    # ── Step 1: exact bins → raw market PMF backbone ──────────────────────
-    if not exact:
+    # ── Step 1: exact + range bins → raw market PMF backbone ───────────────
+    # A4: 'between X-Y°F' range bins tile the integer line DISJOINTLY, so they act as the
+    # market backbone exactly like exact bins (US-city markets have only range bins) — without
+    # this a range-only market returned an empty PMF and consistency 0.
+    backbone = exact + rng
+    if not backbone:
         return {}, {}, 0.0
 
-    raw_mkt  = {b.temp_c: b.yes_prob for b in exact}
+    raw_mkt  = {b.temp_c: b.yes_prob for b in backbone}
     raw_sum  = sum(raw_mkt.values())
     if raw_sum < 0.05:
         return {}, {}, 0.0
@@ -252,7 +289,18 @@ def reconstruct_pmf(bins: list[MarketBin],
     market_pmf = {k: v / total_prob for k, v in raw_mkt.items()}
 
     # ── Step 5: forecast PMF over same support ────────────────────────────
-    fc_raw = {t: _bin_prob(t, mu, sigma, nu, floor=floor, ceiling=ceiling) for t in obs_temps}
+    # A4: build the forecast mass PER BIN honoring each bin's own window — range bins use the
+    # ±half_width range integral (REPLACING, not augmenting, a midpoint _bin_prob, whose ±0.5°C
+    # windows would overlap and double-count for the ~0.56°C-spaced °F midpoints).
+    fc_raw = {}
+    for b in backbone:
+        if b.condition == "range":
+            fc_raw[b.temp_c] = _condition_prob(
+                {"condition": "range", "temp_c": b.temp_c, "half_width": b.half_width,
+                 "temp_lo": b.temp_lo, "temp_hi": b.temp_hi},
+                mu, sigma, nu, floor, ceiling)
+        else:
+            fc_raw[b.temp_c] = _bin_prob(b.temp_c, mu, sigma, nu, b.half_width, floor, ceiling)
     fc_sum = sum(fc_raw.values()) + upper_residual + lower_residual
     fc_sum = max(fc_sum, sum(fc_raw.values()))
     forecast_pmf = {t: v / fc_sum for t, v in fc_raw.items()}

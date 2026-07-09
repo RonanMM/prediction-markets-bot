@@ -14,6 +14,7 @@ from pathlib import Path
 import pandas as pd
 
 from resolution_anchors import RESOLUTION_ANCHORS
+from pmf import parse_question, resolves_yes_temp
 
 _TRUTH_DIR = Path(__file__).resolve().parent / "data" / "weather"
 
@@ -48,15 +49,24 @@ def native_round(temp_c, unit):
 def resolves_yes(city, target_date, question, bin_temp_c):
     """Did the market resolve YES? True / False, or None if station truth is unavailable.
 
-    Grades the resolution-station observation against the question's threshold, both rounded to
-    the market's NATIVE unit (see `native_round`). Direction is read from the question text:
-    'higher/above/more/at least' => >=, 'lower/below/less/at most' => <=, else exact ==.
+    A5: direction/outcome is derived from pmf.parse_question — the SAME parser the engine
+    prices from — so grading and pricing can never diverge (this fixes 'between X-Y°F' range
+    grading and the 'no more than'/'exceed'/'reach' direction bugs the old substring scan had).
+    Observation and threshold are both rounded to the market's NATIVE unit (see `native_round`).
+    If parse_question cannot classify the question, fall back to the legacy substring scan on
+    bin_temp_c (NOT exact ==) so already-graded rows keep their outcome.
     """
     actual_c = fetch_actual_weather(city, target_date, question)
     if actual_c is None:
         return None
     unit = _UNIT.get(city, "whole °C")
     actual_n = native_round(actual_c, unit)
+
+    parsed = parse_question(str(question))
+    if parsed is not None:
+        return resolves_yes_temp(parsed, actual_n, unit, native_round)
+
+    # Legacy fallback for questions parse_question cannot classify.
     thresh_n = native_round(float(bin_temp_c), unit)
     q = str(question).lower()
     if "higher" in q or "above" in q or "more" in q or "at least" in q:
