@@ -1,5 +1,29 @@
 # Raincheck Bug-Fix Mega-Plan
 
+> ## Execution status (branch `megaplan-execution`)
+> Phases 0–6 implemented and committed, one commit per phase, suite green after each
+> (**50 tests pass**, `pytest tests/ -v` runs clean with no `-o addopts=""` override). All 20
+> package modules import cleanly and root scripts compile.
+>
+> | Phase | Fixes landed | Deferred (why) |
+> |---|---|---|
+> | 0 | F1, F3, F9, F10, B3 | — |
+> | 1 | B1, B2 (code+script), B4 | on-disk backfill = **networked run-step** (`backfill_schema.py`) |
+> | 2 | F2 | truth re-fetch = **networked run-step** (`fetch_historical_truth.py`) |
+> | 3 | C1, C2, C3, C6, E4, D1 | **C4/C5** (intraday) — need an offline holdout RMSE re-validation + lead-1 availability measurement before shipping (plan guardrail) |
+> | 4 | A1, A2, A3, A4, A5 (+°F regex, min-range, parse audit: 0/1372 unparsed) | — |
+> | 5 | E1, E3, E4, E5, E6, F4 | **E2** (question-date) — needs a date parser w/ year-wrap + the per-city no-op audit; lowest-N bug |
+> | 6 | D1(✓P3), D2, D3, D6, D7 | **D8, D9, D11, D10** — mechanical rewires of simulate_strategies / historical_backtester / optimizer_full / tests-helper onto `backtest_common` |
+> | 7 | — | **entire phase = networked**: `scripts/raincheck_validate.sh` (re-fetch → re-train → regenerate both trackers → evaluate_oos EDGE CHECK → data_status gate). A6 regeneration lives here. |
+> | 8 | — | de-risking refactors (F5–F8) + optional efficiency (F11–F14); land after Phase 7 |
+>
+> **To finish (networked env, collector paused, data tagged first):** run Phase 1's
+> `backfill_schema.py`, Phase 2's `fetch_historical_truth.py`, then Phase 7's
+> `raincheck_validate.sh`, and read the EDGE CHECK / gate — **no ROI claim until the gate is met**.
+> The deferred code items (C4/C5, E2, D8/D9/D10/D11, Phase 8) are each scoped in their phase above.
+
+
+
 Remediation plan for the ~37 fixes (across the ~25 verified bugs) found in the whole-repo
 `/code-review` run. Each bug was confirmed against the actual code and, where relevant, the
 on-disk CSVs. The plan is a **9-phase, dependency-ordered sequence** (one PR per phase) plus a
