@@ -416,3 +416,38 @@ def test_coherence_bonus_requires_liquidity():
     assert score_opportunity(_opp_for_scoring(500, 0.5)) == \
            score_opportunity(_opp_for_scoring(500, 0.0))
 
+
+# ── Phase 0 regression guards (quick wins & safety) ──────────────────────────
+
+def test_fetch_polymarket_get_verifies_tls():
+    """F1: the Polymarket price feed must not disable TLS verification (verify=False) nor
+    suppress InsecureRequestWarning — it drives real-money bet sizing."""
+    src = (Path(__file__).resolve().parents[1] /
+           "src/polymarket_weather/fetch_polymarket.py").read_text()
+    assert "verify=False" not in src
+    assert "disable_warnings" not in src
+
+
+def test_dedup_uses_full_key_even_when_col_missing(tmp_path):
+    """B3: a dedup column missing on one side must NOT silently disable dedup. A second
+    append of the same logical rows appends zero new rows."""
+    from processing import _append_csv
+    path = tmp_path / "d.csv"
+    recs = [{"city": "london", "date_local": "2026-07-01", "fetched_at_utc": "2026-07-01T00:00Z"}]
+    n1 = _append_csv(path, recs, dedup_cols=["city", "date_local", "fetched_at_utc"])
+    n2 = _append_csv(path, recs, dedup_cols=["city", "date_local", "fetched_at_utc"])
+    assert n1 == 1 and n2 == 0
+
+
+def test_processing_has_no_dead_load_ensemble():
+    """F9: processing.load_ensemble was dead (engine uses data_loader.load_ensemble); removed."""
+    import processing
+    assert not hasattr(processing, "load_ensemble")
+
+
+def test_no_meteostat_in_active_grading_docstring():
+    """F10: grading truth is NWS CLI / IEM METAR / HKO — the module docstring must not
+    still attribute it to the retired/corrupted Meteostat feed."""
+    import grading
+    assert "meteostat" not in (grading.__doc__ or "").lower()
+

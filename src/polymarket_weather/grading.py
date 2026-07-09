@@ -2,7 +2,8 @@
 
 A market settles on its named station's daily reading (e.g. Incheon RKSI for Seoul),
 NOT a forecast grid cell. This grades backtests against that station truth, read from
-`data/weather/<slug>_historical_actuals.csv` (the Meteostat resolution station named in
+`data/weather/<slug>_historical_actuals.csv` (resolution-faithful station truth from
+NWS CLI / IEM METAR / HKO, written by `fetch_historical_truth.py`; stations named in
 `resolution_anchors.py`). It replaces the old per-script grid-based `fetch_actual_weather`,
 which fetched a forecast cell — wrong in general, and especially for Seoul whose forecast
 point (Bucheon) is deliberately offset from the resolution station (Incheon).

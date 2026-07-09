@@ -65,7 +65,7 @@ def main():
     print(f"  Resolved (target date passed): {resolved_bets:>5}   over {resolved_markets} markets")
     print(f"  GRADABLE by station truth    : {gradable_bets:>5}   over {gradable_markets} markets")
 
-    # The binding constraint is usually Meteostat's publishing lag, not market resolution.
+    # The binding constraint is truth-feed lag (NWS CLI / IEM METAR ~1 day, HKO ~1 month), not resolution.
     ungradable_resolved = int((df["resolved"] & ~df["gradable"]).sum())
     print(f"  Resolved but NOT yet gradable: {ungradable_resolved:>5}   (awaiting station obs)")
     print()

@@ -63,12 +63,15 @@ def _append_csv(path: Path, records: list[dict], dedup_cols: list[str]) -> int:
 
     if path.exists():
         existing = pd.read_csv(path, dtype=str)
-        # Build a set of existing key tuples for fast lookup
+        # Build a set of existing key tuples for fast lookup. Use ONE fixed key-column
+        # list on both sides (and stringify both) so a column missing on one side can no
+        # longer produce length-mismatched tuples that silently never match → duplicates.
+        key_cols = [c for c in dedup_cols if c in existing.columns]
         existing_keys = set(
-            zip(*[existing[c].tolist() for c in dedup_cols if c in existing.columns])
+            zip(*[existing[c].astype(str).tolist() for c in key_cols])
         )
         def _is_new(row) -> bool:
-            key = tuple(str(row[c]) for c in dedup_cols if c in row)
+            key = tuple(str(row[c]) if c in row else "" for c in key_cols)
             return key not in existing_keys
 
         new_df = new_df[new_df.apply(_is_new, axis=1)]
@@ -159,22 +162,6 @@ def save_ensemble_forecast(forecast: dict) -> None:
         forecast.get("daily", []),
         dedup_cols=["city", "date_local", "fetched_at_utc"],
     )
-
-
-def load_ensemble(city: str) -> "pd.DataFrame":
-    """Load ensemble CSV. Returns empty DataFrame if not available."""
-    import pandas as pd
-    path = _ensemble_path(city)
-    if not path.exists():
-        return pd.DataFrame()
-    df = pd.read_csv(path)
-    df["fetched_at_utc"] = pd.to_datetime(df["fetched_at_utc"], utc=True, errors="coerce")
-    df["date_local"]     = pd.to_datetime(df["date_local"]).dt.normalize()
-    for col in ["ens_mean", "ens_std", "ens_p10", "ens_p25",
-                "ens_median", "ens_p75", "ens_p90", "ens_spread"]:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-    return df
 
 
 # ── Implied temperature ───────────────────────────────────────────────────────

@@ -14,8 +14,6 @@ from datetime import datetime, timezone
 from typing import Any
 
 import requests
-import urllib3
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 from config import (
     CLOB_API_BASE,
@@ -36,7 +34,7 @@ def _get(url: str, params: dict | None = None) -> dict | list | None:
     """GET with exponential-backoff retry.  Returns None on failure."""
     for attempt in range(RETRY_ATTEMPTS):
         try:
-            resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT, verify=False)
+            resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
             resp.raise_for_status()
             return resp.json()
         except requests.exceptions.HTTPError as exc:
