@@ -25,16 +25,10 @@ WEATHER_CACHE = {}
 
 from grading import resolves_yes  # resolution-station truth grader, native-unit rounding
 
-def _cdf(x: float, mu: float, sigma: float, nu: float) -> float:
-    from scipy.stats import norm
-    if nu > 30:
-        return float(norm.cdf(x, loc=mu, scale=sigma))
-    return float(student_t.cdf((x - mu) / sigma, df=nu))
-
-def _bin_prob(temp_c: float, mu: float, sigma: float, nu: float, half_width: float = 0.5) -> float:
-    upper_bound = temp_c + half_width
-    lower_bound = temp_c - half_width
-    return _cdf(upper_bound, mu, sigma, nu) - _cdf(lower_bound, mu, sigma, nu)
+# D6/D7: price with the engine's censored distribution and settle with honest costs, instead of
+# the forked floor/ceiling-blind _cdf/_bin_prob and the retired (payout-size)*0.98 settlement that
+# tuned parameters under economics production never uses (the grid-graded artifact).
+from backtest_common import _bin_prob, settle_bet
 
 def apply_group_portfolio_caps(df, max_kelly_per_group, max_total_kelly):
     df['group_key'] = df['city'] + '|' + df['target_date']
@@ -93,7 +87,8 @@ def simulate_parameters(df_raw, strategy, params):
         our_prob_ml = row["our_prob"]
         
         f_prob_ml = our_prob_ml if bet_side_ml == "Yes" else (1.0 - our_prob_ml)
-        f_prob_ens = _bin_prob(bin_temp, raw_mu, row["forecast_sigma"], raw_nu)
+        f_prob_ens = _bin_prob(bin_temp, raw_mu, row["forecast_sigma"], raw_nu,
+                               floor=row.get("forecast_floor"), ceiling=row.get("forecast_ceiling"))
         their_prob_yes = row["their_prob"] if bet_side_ml == "Yes" else (1.0 - row["their_prob"])
         
         edge_ens = f_prob_ens - their_prob_yes
@@ -181,12 +176,11 @@ def simulate_parameters(df_raw, strategy, params):
         if bet_size < 1.0:
             continue
             
+        # Honest settlement (D7): cross config.HALF_SPREAD on entry and pay config.FEE_RATE on
+        # the winning payout — shared with evaluate_oos / historical_backtester via settle_bet.
+        profit = settle_bet(their_prob, we_won, bet_size)
         if we_won:
-            payout = bet_size / their_prob
-            profit = (payout - bet_size) * 0.98
             wins += 1
-        else:
-            profit = -bet_size
             
         total_profit += profit
         total_staked += bet_size

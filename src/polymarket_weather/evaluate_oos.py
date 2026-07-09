@@ -98,20 +98,27 @@ def _crps_student_t(mu, sigma, nu, y, floor=None, ceiling=None):
     return float(np.sum((integrand[:-1] + integrand[1:]) / 2.0 * np.diff(xs)))
 
 
-def _mean_crps(csv_path):
-    """Mean temperature-level CRPS for one predictor's eval tracker, or None if ungradable.
+def _crps_by_key(csv_path):
+    """{(city, target_date, kind): temperature-CRPS} for one predictor's tracker, or {}.
 
-    One predictive distribution per (city, target_date) (last snapshot), scored against the
-    resolution-station observation. Uses the daily MIN for 'lowest' markets (via fetch_actual_weather).
+    D2: kind ('min'/'max') is derived from the question ('lowest' → min) — the SAME routing the
+    engine uses — so a Tmax and a Tmin market on the same city-date are scored as SEPARATE keys,
+    and the LAST ROW per key is taken via .tail(1) (the old groupby.last() returned the last
+    non-null value PER COLUMN, splicing a Tmax row's floor onto a Tmin row's mu/sigma → a garbage
+    point-mass CRPS).
     """
     if not csv_path.exists():
-        return None
+        return {}
     df = pd.read_csv(csv_path)
     need = {"forecast_mu", "forecast_sigma", "forecast_nu", "city", "target_date"}
     if not need.issubset(df.columns):
-        return None
-    df = df.sort_values("fetched_at").groupby(["city", "target_date"]).last().reset_index()
-    vals = []
+        return {}
+    q = (df["question"].astype(str).str.lower() if "question" in df.columns
+         else pd.Series([""] * len(df), index=df.index))
+    df["_kind"] = np.where(q.str.contains("lowest"), "min", "max")
+    df = df.sort_values("fetched_at").groupby(
+        ["city", "target_date", "_kind"], as_index=False).tail(1)
+    out = {}
     for _, r in df.iterrows():
         y = fetch_actual_weather(r["city"], r["target_date"], r.get("question", ""))
         if y is None:
@@ -120,8 +127,14 @@ def _mean_crps(csv_path):
                             floor=r.get("forecast_floor"),
                             ceiling=r.get("forecast_ceiling"))
         if c is not None:
-            vals.append(c)
-    return (sum(vals) / len(vals), len(vals)) if vals else None
+            out[(r["city"], r["target_date"], r["_kind"])] = c
+    return out
+
+
+def _mean_crps(csv_path):
+    """Mean temperature-level CRPS over all gradable (city, target_date, kind) keys, or None."""
+    by = _crps_by_key(csv_path)
+    return (sum(by.values()) / len(by), len(by)) if by else None
 
 
 def _best_shrink_weight(ml):
@@ -257,14 +270,26 @@ def main():
 
     # Distribution-level CRPS (MODEL vs ENSEMBLE) — scores the whole temperature forecast, so it
     # rewards correct *calibration*, not just per-bin direction. Lower = better.
-    crps_m = _mean_crps(_OUT / "opportunities_evaluation_calibrated.csv")
-    crps_e = _mean_crps(_OUT / "opportunities_evaluation_ensemble.csv")
+    crps_m_by = _crps_by_key(_OUT / "opportunities_evaluation_calibrated.csv")
+    crps_e_by = _crps_by_key(_OUT / "opportunities_evaluation_ensemble.csv")
+    crps_m = (sum(crps_m_by.values()) / len(crps_m_by), len(crps_m_by)) if crps_m_by else None
+    crps_e = (sum(crps_e_by.values()) / len(crps_e_by), len(crps_e_by)) if crps_e_by else None
     if crps_m or crps_e:
         print("\n  Temperature CRPS (lower = better):")
         if crps_m:
-            print(f"    {'MODEL':<10} {crps_m[0]:>8.4f}   (over {crps_m[1]} city-dates)")
+            print(f"    {'MODEL':<10} {crps_m[0]:>8.4f}   (over {crps_m[1]} city-date-kinds)")
         if crps_e:
-            print(f"    {'ENSEMBLE':<10} {crps_e[0]:>8.4f}   (over {crps_e[1]} city-dates)")
+            print(f"    {'ENSEMBLE':<10} {crps_e[0]:>8.4f}   (over {crps_e[1]} city-date-kinds)")
+        # D3: PAIRED over the identical (city, target_date, kind) support — the only
+        # apples-to-apples 'does the calibrator beat the ensemble' number. The unpaired means
+        # above average over different days AND different market types (Tmin rows exist only in
+        # the calibrated tracker), so they are not directly comparable.
+        common = set(crps_m_by) & set(crps_e_by)
+        if common:
+            pm = sum(crps_m_by[k] for k in common) / len(common)
+            pe = sum(crps_e_by[k] for k in common) / len(common)
+            print(f"    {'PAIRED':<10} MODEL {pm:>7.4f}  vs  ENSEMBLE {pe:>7.4f}   "
+                  f"(n={len(common)}, → {'MODEL' if pm < pe else 'ENSEMBLE'} better)")
 
     # Shrink-to-market recommendation: the w that would have minimized Brier on this graded set.
     sw = _best_shrink_weight(ml)

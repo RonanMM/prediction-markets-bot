@@ -733,3 +733,53 @@ def test_opportunity_carries_model_prob_for_live_reshrink():
     assert "model_prob_side" in Opportunity.__dataclass_fields__
     assert "shrink_weight" in Opportunity.__dataclass_fields__
 
+
+# ── Phase 6 regression guards (backtest economics + arbiter) ─────────────────
+
+def test_settle_bet_crosses_spread_and_fee():
+    """D6/D7: honest settlement crosses HALF_SPREAD on entry and pays FEE_RATE on the win, so
+    a winning bet nets strictly LESS than the retired (payout-size)*0.98 economics."""
+    from backtest_common import settle_bet
+    win = settle_bet(0.5, True, 100.0)
+    retired = (100.0 / 0.5 - 100.0) * 0.98
+    assert win < retired
+    assert settle_bet(0.5, False, 100.0) == -100.0
+
+
+def test_single_kelly_matches_engine():
+    """D6: the shared Kelly is byte-for-byte engine._kelly_size (so all tools size identically)."""
+    from backtest_common import single_kelly
+    from engine import _kelly_size
+    from types import SimpleNamespace
+    for our, their in [(0.6, 0.4), (0.3, 0.5), (0.9, 0.85), (0.5, 0.5)]:
+        a = single_kelly(our, their)
+        b = _kelly_size(SimpleNamespace(our_prob=our, their_prob=their))
+        assert abs(a - b) < 1e-12
+
+
+def test_apply_caps_group_then_portfolio():
+    """D6: per-group cap (MAX_KELLY_PER_GROUP) then portfolio cap (MAX_TOTAL_KELLY)."""
+    from backtest_common import apply_caps
+    k = apply_caps([0.15, 0.15], ["g", "g"])           # 0.30 in one group -> 0.20
+    assert abs(k.sum() - 0.20) < 1e-9 and abs(k[0] - 0.10) < 1e-9
+    k2 = apply_caps([0.30, 0.30, 0.30], ["a", "b", "c"])  # 3×0.20=0.60 -> portfolio 0.40
+    assert abs(k2.sum() - 0.40) < 1e-9
+
+
+def test_crps_by_key_separates_max_and_min(tmp_path, monkeypatch):
+    """D2: a Tmax and a Tmin market on the same city-date are scored as SEPARATE keys (the old
+    groupby.last() spliced one row's floor onto the other → a chimera)."""
+    import evaluate_oos
+    monkeypatch.setattr(evaluate_oos, "fetch_actual_weather", lambda c, d, q="": 25.0)
+    df = pd.DataFrame([
+        {"city": "London", "target_date": "2026-07-05", "fetched_at": "2",
+         "question": "Will the highest temperature be 26°C on July 5?",
+         "forecast_mu": 26.0, "forecast_sigma": 1.5, "forecast_nu": 8.0},
+        {"city": "London", "target_date": "2026-07-05", "fetched_at": "2",
+         "question": "Will the lowest temperature be 18°C on July 5?",
+         "forecast_mu": 18.0, "forecast_sigma": 1.0, "forecast_nu": 8.0},
+    ])
+    p = tmp_path / "cal.csv"
+    df.to_csv(p, index=False)
+    assert {k[2] for k in evaluate_oos._crps_by_key(p)} == {"max", "min"}
+
