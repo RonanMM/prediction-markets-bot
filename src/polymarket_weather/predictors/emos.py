@@ -134,8 +134,19 @@ def _intraday_state(city_slug: str, target_date, fetch_time, obs_df, kind: str =
     ]
     if day.empty:
         return None
-    run_val = day["temp_c"].max() if kind == "max" else day["temp_c"].min()
-    return int(local.hour), float(run_val)
+    # Censoring uses the running value through fetch_time (a physical fact).
+    floor_run_val = float(day["temp_c"].max() if kind == "max" else day["temp_c"].min())
+    # C4: the per-hour fit for hour h was trained on the running value through the END of hour h,
+    # so serving must apply it to the LAST COMPLETED hour (< the current partial hour, whose
+    # running value is biased low for Tmax / high for Tmin). fit_hour=None until an hour completes.
+    completed = day[day["valid_local"].dt.hour <= local.hour - 1]
+    if completed.empty:
+        fit_hour, fit_run_val = None, None
+    else:
+        fit_hour = int(local.hour - 1)
+        fit_run_val = float(completed["temp_c"].max() if kind == "max"
+                            else completed["temp_c"].min())
+    return fit_hour, fit_run_val, floor_run_val
 
 
 def _lead_entry(params: dict, days_ahead: float):
@@ -353,17 +364,25 @@ class EMOSPredictor(BasePredictor):
         # pure forecast.
         state = _intraday_state(city_slug, target_date, fetch_time, obs_df, kind=kind)
         if state is not None:
-            hour, run_val = state
+            fit_hour, fit_run_val, floor_run_val = state
             if kind == "max":
-                floor = run_val
+                floor = floor_run_val
             else:
-                ceiling = run_val
+                ceiling = floor_run_val
             intr = _load_intraday(city_slug, kind)
-            fit_h = None if intr is None else intr["hours"].get(str(hour))
+            fit_h = None if (intr is None or fit_hour is None) else intr["hours"].get(str(fit_hour))
             if fit_h is not None:
-                fcst_in = det_mu if det_mu is not None else mu_raw
+                # C5: feed the DAY-AHEAD (lead-1) deterministic forecast the fit was trained on —
+                # the newest run issued >=1 day before the target's UTC midnight — not the latest
+                # (~lead-0) det_mu. Fall back to det_mu / mu_raw when that run is unavailable.
+                lead1_cutoff = pd.Timestamp(target_date).normalize()
+                lead1_cutoff = (lead1_cutoff.tz_localize("UTC") if lead1_cutoff.tzinfo is None
+                                else lead1_cutoff) - pd.Timedelta(days=1)
+                fcst_in = _latest_deterministic_mu(daily_df, target_date, lead1_cutoff, col=det_col)
+                if fcst_in is None:
+                    fcst_in = det_mu if det_mu is not None else mu_raw
                 mu = (float(fit_h["a"]) + float(fit_h["b"]) * fcst_in
-                      + float(fit_h["c"]) * run_val)
+                      + float(fit_h["c"]) * fit_run_val)
                 sigma = float(fit_h["sigma"])
                 nu = float(intr.get("nu", nu))
                 source += "_intraday" if not source.endswith("intraday") else ""

@@ -249,13 +249,14 @@ def _obs_frame(date_str, temps_by_hour):
 
 def test_emos_v2_intraday_conditioning(monkeypatch):
     """Same-station-local-day bet with obs: the per-hour fit replaces mu/sigma and the
-    distribution is floored at the running max; next-day bets are untouched."""
+    distribution is floored at the running max; next-day bets are untouched.
+    C4: at 13:30 local the last COMPLETED hour is 12, so the hour-12 fit is the one applied."""
     from predictors import emos as emos_mod
     daily, ens = _tiny_frames()
     monkeypatch.setattr(emos_mod, "_load_params", lambda slug, kind="max": _v2_params("mm_mean"))
     monkeypatch.setattr(emos_mod, "_load_intraday",
                         lambda slug, kind="max": {"version": 1, "nu": 6.0,
-                                      "hours": {"13": {"a": 0.5, "b": 0.4, "c": 0.6,
+                                      "hours": {"12": {"a": 0.5, "b": 0.4, "c": 0.6,
                                                        "sigma": 0.7}}})
     obs = _obs_frame("2026-07-02", {9: 17.0, 11: 18.5, 12: 19.2})
     # fetch at 13:30 local London (UTC+1 in July) on the target day itself
@@ -263,10 +264,35 @@ def test_emos_v2_intraday_conditioning(monkeypatch):
         "London", pd.Timestamp("2026-07-02"), pd.Timestamp("2026-07-02T12:30:00Z"),
         0.0, daily, ens, obs_df=obs)
     assert dist.source == "emos_v2_intraday"
-    assert pytest.approx(dist.floor) == 19.2                      # running max
-    assert pytest.approx(dist.mu) == 0.5 + 0.4 * 20.0 + 0.6 * 19.2  # a + b·det + c·M
+    assert pytest.approx(dist.floor) == 19.2                      # running max through 13:30
+    # a + b·(lead-1 forecast) + c·(running max through the completed hour 12)
+    assert pytest.approx(dist.mu) == 0.5 + 0.4 * 20.0 + 0.6 * 19.2
     assert pytest.approx(dist.sigma) == 0.7
     assert pytest.approx(dist.nu) == 6.0
+
+
+def test_intraday_uses_last_completed_hour(monkeypatch):
+    """C4: a fit for the CURRENT partial hour is not applied mid-hour (its M was trained through
+    the hour's end); it applies only once that hour completes — while the floor still binds."""
+    from predictors import emos as emos_mod
+    daily, ens = _tiny_frames()
+    monkeypatch.setattr(emos_mod, "_load_params", lambda slug, kind="max": _v2_params("mm_mean"))
+    monkeypatch.setattr(emos_mod, "_load_intraday",
+                        lambda slug, kind="max": {"version": 1, "nu": 6.0,
+                                      "hours": {"13": {"a": 0.5, "b": 0.4, "c": 0.6, "sigma": 0.7}}})
+    obs = _obs_frame("2026-07-02", {9: 17.0, 11: 18.5, 12: 19.2, 13: 19.8})
+    # 13:30 local — hour 13 is still in progress, so the hour-13 fit must NOT be applied yet…
+    d_partial = emos_mod.EMOSPredictor().predict_distribution(
+        "London", pd.Timestamp("2026-07-02"), pd.Timestamp("2026-07-02T12:30:00Z"),
+        0.0, daily, ens, obs_df=obs)
+    assert d_partial.source == "emos_v2"                 # no intraday fit applied
+    assert pytest.approx(d_partial.floor) == 19.2        # …but the floor still binds (obs through 13:30)
+    # 14:30 local — hour 13 is now complete, so its fit applies with M through hour 13 (19.8).
+    d_done = emos_mod.EMOSPredictor().predict_distribution(
+        "London", pd.Timestamp("2026-07-02"), pd.Timestamp("2026-07-02T13:30:00Z"),
+        0.0, daily, ens, obs_df=obs)
+    assert d_done.source == "emos_v2_intraday"
+    assert pytest.approx(d_done.mu) == 0.5 + 0.4 * 20.0 + 0.6 * 19.8
     # same obs, but a NEXT-day target: no conditioning, no floor
     daily2 = daily.copy(); daily2["date_local"] = pd.to_datetime(["2026-07-03"])
     ens2 = ens.copy(); ens2["date_local"] = pd.to_datetime(["2026-07-03"])
