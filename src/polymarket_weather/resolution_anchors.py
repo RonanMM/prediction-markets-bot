@@ -23,6 +23,17 @@ This file separates the distinct anchors for each city:
 DO NOT modify this file unless Polymarket explicitly changes their market rules.
 """
 
+import re
+
+
+def slug(city: str) -> str:
+    """Canonical data-file slug for a city name or alias: lowercase, with each run of
+    non-alphanumeric characters collapsed to a single '_'. THE single slug definition — every
+    fetcher / trainer / loader / grader must use it so a punctuated city name (e.g.
+    'Washington, D.C.') can never split its data across two different spellings (F7)."""
+    return re.sub(r"[^a-z0-9]+", "_", city.lower()).strip("_")
+
+
 RESOLUTION_ANCHORS = {
     "London": {
         "resolution_url": "https://www.wunderground.com/history/daily/gb/london/EGLC",

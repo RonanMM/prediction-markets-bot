@@ -45,7 +45,10 @@ def _weather_daily_mm_path(city: str) -> Path:
     return Path(WEATHER_DIR) / f"{_slug(city)}_daily_mm.csv"
 
 def _slug(city: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "_", city.lower()).strip("_")
+    # F7: delegate to the single canonical slug in resolution_anchors (the source of truth), so
+    # the read/write path can never disagree with a fetcher's slug on a punctuated city name.
+    from resolution_anchors import slug
+    return slug(city)
 
 
 # ── Generic CSV append-with-dedup ────────────────────────────────────────────
