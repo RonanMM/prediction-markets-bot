@@ -28,26 +28,8 @@ logger = logging.getLogger(__name__)
 # ── HTTP helper ──────────────────────────────────────────────────────────────
 
 def _get(url: str, params: dict) -> dict | None:
-    for attempt in range(RETRY_ATTEMPTS):
-        try:
-            resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
-            resp.raise_for_status()
-            return resp.json()
-        except requests.exceptions.HTTPError as exc:
-            status = exc.response.status_code if exc.response else "?"
-            if status == 429:
-                wait = RETRY_BACKOFF ** (attempt + 2)
-                logger.warning("Open-Meteo rate-limit. Waiting %.1fs …", wait)
-                time.sleep(wait)
-            else:
-                logger.error("HTTP %s from Open-Meteo: %s", status, exc)
-                return None
-        except requests.exceptions.RequestException as exc:
-            wait = RETRY_BACKOFF ** attempt
-            logger.warning("Request error (%s). Retry in %.1fs …", exc, wait)
-            time.sleep(wait)
-    logger.error("All %d attempts failed for Open-Meteo", RETRY_ATTEMPTS)
-    return None
+    from http_util import get_json          # F5: shared retry client
+    return get_json(url, params, "Open-Meteo")
 
 
 # ── Timezone helpers ─────────────────────────────────────────────────────────
