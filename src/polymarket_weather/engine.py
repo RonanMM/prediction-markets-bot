@@ -12,7 +12,7 @@ from signals import score_opportunity, compute_momentum, forecast_convergence, v
 from predictors.emos import EMOSPredictor
 from predictors.ensemble import EnsemblePredictor
 from predictors.nwp_fallback import spread_sigma_boost
-from pmf import parse_question, _bin_prob, _condition_prob, reconstruct_pmf
+from pmf import parse_question, parse_question_date, _bin_prob, _condition_prob, reconstruct_pmf
 from data_loader import (load_snapshots, load_daily, load_daily_mm, load_ensemble,
                          load_nbm, load_obs_hourly, fetch_live_prices, check_orderbook_vwap)
 
@@ -208,8 +208,20 @@ def analyse_city(data_dir: Path, city: str,
 
     results: list[Opportunity] = []
 
-    # Group by (target_date, fetch_bucket) to process each snapshot window chronologically
-    snap_df["end_date_norm"] = snap_df["end_date_iso"].dt.normalize()
+    # Group by (target_date, fetch_bucket) to process each snapshot window chronologically.
+    # E2: the market resolves on the day NAMED in the question, which endDateIso can be a day off
+    # from (audited: only the 32 Hong Kong rows in the collected data — every other city is a
+    # no-op). Derive the target from the question, falling back to endDateIso when unparseable.
+    end_norm = snap_df["end_date_iso"].dt.normalize()
+    if getattr(end_norm.dt, "tz", None) is not None:
+        end_norm = end_norm.dt.tz_localize(None)
+    if "question" in snap_df.columns:
+        snap_df["end_date_norm"] = pd.to_datetime([
+            (parse_question_date(q, en) or en)
+            for q, en in zip(snap_df["question"], end_norm)
+        ])
+    else:
+        snap_df["end_date_norm"] = end_norm
     snap_df = snap_df.sort_values("fetched_at_utc")
     groups = snap_df.groupby(["end_date_norm", "fetch_bucket"], sort=False)
     print(f"  {city}: {len(groups)} (date × snapshot) groups, "

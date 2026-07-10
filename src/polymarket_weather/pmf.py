@@ -1,5 +1,6 @@
 import re
 import logging
+from datetime import date, datetime
 import numpy as np
 from typing import Optional
 from scipy.stats import t as student_t
@@ -107,6 +108,49 @@ def parse_question(q: str) -> Optional[dict]:
         return {"condition": "exact", "temp_c": _f2c(float(m.group(1))),
                 "half_width": _HALF_WIDTH_F_IN_C}
     return None
+
+
+_MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August",
+                "September", "October", "November", "December"]
+_MONTHS = {}
+for _i, _m in enumerate(_MONTH_NAMES, start=1):
+    _MONTHS[_m.lower()] = _i
+    _MONTHS[_m[:3].lower()] = _i
+_RE_ON_DATE = re.compile(r"\bon\s+([A-Za-z]+)\.?\s+(\d{1,2})(?:st|nd|rd|th)?", re.I)
+
+
+def parse_question_date(question, ref_date=None):
+    """Extract the target date NAMED in the question ('… on March 20?') as a tz-naive
+    normalized Timestamp, or None if no date phrase is present.
+
+    E2: a market resolves on the day in its question text — Polymarket's endDateIso can be a day
+    off (32/516 Hong Kong rows). The year isn't in the question, so it is inferred from *ref_date*
+    (the market's endDateIso): the year that puts the parsed month/day CLOSEST to ref_date, which
+    resolves a December/January wrap correctly. With no ref_date, the current-century year of a
+    fixed anchor is used (callers should pass endDateIso).
+    """
+    m = _RE_ON_DATE.search(str(question))
+    if m is None:
+        return None
+    mon = _MONTHS.get(m.group(1).lower())
+    if mon is None:
+        return None
+    day = int(m.group(2))
+    if ref_date is None:
+        ref = date(2000, 1, 1)
+    elif hasattr(ref_date, "year") and hasattr(ref_date, "month") and hasattr(ref_date, "day"):
+        ref = date(int(ref_date.year), int(ref_date.month), int(ref_date.day))
+    else:
+        ref = datetime.fromisoformat(str(ref_date)[:10]).date()
+    best = None
+    for yr in (ref.year - 1, ref.year, ref.year + 1):
+        try:
+            cand = date(yr, mon, day)
+        except ValueError:
+            continue                      # e.g. Feb 30 — skip impossible dates
+        if best is None or abs((cand - ref).days) < abs((best - ref).days):
+            best = cand
+    return best                           # datetime.date, or None
 
 
 def resolves_yes_temp(parsed: dict, actual_native, unit, native_round) -> bool:

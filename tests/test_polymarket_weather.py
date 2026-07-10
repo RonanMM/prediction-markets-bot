@@ -809,3 +809,38 @@ def test_crps_by_key_separates_max_and_min(tmp_path, monkeypatch):
     df.to_csv(p, index=False)
     assert {k[2] for k in evaluate_oos._crps_by_key(p)} == {"max", "min"}
 
+
+# ── E2 regression guards (question-date target) ──────────────────────────────
+
+def test_parse_question_date_basic_and_year_wrap():
+    """E2: the target date is read from the question, with the year inferred from the reference
+    (endDateIso) so a December/January wrap resolves correctly."""
+    from datetime import date
+    from pmf import parse_question_date
+    assert parse_question_date("… be 21°C on March 18?", date(2026, 3, 19)) == date(2026, 3, 18)
+    assert parse_question_date("… be 5°C on January 2?", date(2025, 12, 30)) == date(2026, 1, 2)
+    assert parse_question_date("… highest on Mar 3rd?", date(2026, 3, 1)) == date(2026, 3, 3)
+    assert parse_question_date("Will it be hot tomorrow?", date(2026, 3, 1)) is None
+
+
+def test_question_date_is_noop_outside_hong_kong():
+    """E2 audit guard: for the collected snapshots, the question date must equal endDateIso for
+    every city EXCEPT Hong Kong (whose endDateIso is a day off). Skips if no snapshots present."""
+    import glob
+    from pmf import parse_question_date
+    files = glob.glob(str(Path(__file__).resolve().parents[1] /
+                          "src/polymarket_weather/data/polymarket/*_snapshots.csv"))
+    if not files:
+        pytest.skip("no snapshot CSVs present")
+    for f in files:
+        if "hong_kong" in f:
+            continue
+        df = pd.read_csv(f, usecols=["question", "end_date_iso"]).dropna(subset=["end_date_iso"])
+        end = pd.to_datetime(df["end_date_iso"], utc=True, errors="coerce").dt.tz_localize(None).dt.normalize()
+        disagree = sum(
+            1 for q, en in zip(df["question"], end)
+            if not pd.isna(en) and parse_question_date(q, en) is not None
+            and pd.Timestamp(parse_question_date(q, en)) != en
+        )
+        assert disagree == 0, f"{f}: {disagree} question/endDateIso disagreements (expected 0)"
+
