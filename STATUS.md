@@ -39,33 +39,50 @@ was claiming near-certainty on outcomes that missed ~15% of the time. The calibr
 on **real archived forecasts at each lead time** (4.5 years of them) against the corrected truth,
 per city and per days-ahead, using a multi-model forecast blend (ECMWF+GFS+ICON, +JMA for Seoul).
 
-## What the honest evaluation shows right now
-`evaluate_oos.py` asks the real question: is the model's guess more accurate than just trusting
-the market price? Accuracy is scored by **Brier score** — lower = better.
+## The third broken ruler: ~25 code bugs (found & fixed 2026-07)
+A whole-repo code review found ~25 bugs, several of which were *hiding the real answer*. The
+biggest: **"between X-Y°F" markets — about 83% of the US-city markets — were silently never
+priced or graded** (a parsing/routing gap), so the graded set was small and skewed. Others that
+distorted the numbers: a **look-ahead leak** in the backtest (it could read a forecast run from
+*after* the bet was placed), predictive probabilities that were **over-dispersed** (a standard
+deviation was used as a Student-t scale, ~40% too wide), a **grading↔pricing mismatch** on the
+same markets, and **dishonest cost accounting** in the optimizer. These are now fixed and the
+whole evaluation was regenerated from clean inputs. Full detail: `docs/BUGFIX_EXECUTION_REPORT.md`.
+
+## What the honest evaluation shows now — the gate is MET
+Fixing the voided range markets pulled ~140 previously-invisible markets into the graded set, so
+the pre-committed sample gate is finally satisfied:
+
+    gradable markets   211 / 150   [MET]
+    gradable bets      302 / 100   [MET]
+
+There is now a real verdict. `evaluate_oos.py` asks: is the model's guess more accurate than just
+trusting the market price? Accuracy is Brier score — lower = better.
 
 | Predictor | Brier (lower is better) |
 |---|---|
-| The market price | **0.110** |
-| **Our model (rebuilt)** | 0.143 |
-| A simpler weather method (ensemble) | 0.156 |
+| The market price | **0.128** |
+| Our model (rebuilt + fixed) | 0.163 |
+| A simpler weather method (ensemble) | 0.166 |
 
-The rebuilt model now clearly beats the simple ensemble (it used to lose to it) and is the best
-temperature forecaster we have — but **the market still beats the model on the bets the model
-flags**. When our model strongly disagrees with the market, the market is usually the one that's
-right. So: still no proof of an edge; the gap is closing but not closed.
+Two things are true at once:
+- **The model beats its own baseline.** Against the raw ensemble it wins on Brier (0.163 vs 0.166)
+  and on the paired temperature-calibration score (CRPS 1.28 vs 1.33). The multi-model blend, the
+  per-lead calibration, and the dispersion fix make a genuinely better *forecaster* than the ensemble.
+- **The model does NOT beat the market.** Market Brier 0.128 is clearly below model Brier 0.163.
+  The "how much to trust the model" sweep lands on **zero** (pure market beats pure model), and
+  betting the model at production sizing returns **−20% ROI over 199 graded bets**. When the model
+  strongly disagrees with the price, the price is usually right.
 
-## Why there's no final verdict yet
-The pre-committed rule stands: no conclusion until **>=150 graded markets and >=100 bets**. The
-bets half of the gate is now met (~106 graded); markets are at ~78/150 and filling fast now that
-truth publishes daily instead of every 3 weeks.
-
-## Bottom line
-1. Two broken rulers found and fixed: self-graded outcomes (2026-06) and a corrupted truth feed
-   (2026-07). Every number before these fixes was unreliable.
-2. The model itself is now honestly calibrated and beats its own baseline — but **not yet the
-   market**. No edge is proven.
-3. The most promising next steps are written up in CLAUDE.md/memory: use the NWS "National Blend"
-   station forecasts for the US cities, and condition same-day bets on the temperature already
-   observed that day (the market prices this in; our model currently doesn't see it).
-4. When the gate is met, run `python evaluate_oos.py`. If the model's Brier drops below the
-   market's, that's a real edge. If not, the fix is the *model*, not the bet sizing.
+## Bottom line (2026-07 — gate met)
+1. Earlier numbers were unreliable for three separate reasons now fixed: self-graded outcomes,
+   a corrupted truth feed, and ~25 code bugs. The evaluation is finally trustworthy.
+2. **Verdict: no edge over the market.** The gate is met, the model is honestly calibrated and
+   beats its ensemble baseline — but it is not a better predictor than Polymarket, so it loses
+   money. This is a real go/no-go answer, not "too little data."
+3. The fixes did not create edge; they removed the bugs that were hiding the truth. As a *bettor*
+   against this market, the current model has no advantage. The place to improve is the *model's
+   accuracy* (same-day intraday conditioning, NWS National Blend for the US cities — the deferred
+   C4/C5 work), not the bet sizing.
+4. Re-check anytime with `python evaluate_oos.py` and `python data_status.py`. If model Brier ever
+   drops below market Brier on the graded set, that's a real edge; until then, don't bet it live.
