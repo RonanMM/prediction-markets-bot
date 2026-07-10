@@ -114,8 +114,34 @@ accuracy* (the deferred intraday / National-Blend work), not the bet sizing. Don
   retrained `models/*_emos.json`, and the regenerated eval trackers in `output/`
   (`opportunities_evaluation_{calibrated,ensemble}.csv`, `opportunities_v4.csv`) + plots.
 
-## 7. Remaining work
+## 7. Follow-up session — deferred code landed
 
-Deferred code items (§3) and the network follow-ups: they are one-command re-runs
-(`backfill_schema.py`, `raincheck_validate.sh`) whenever fresh data is wanted. No ROI/win-rate
-claim should be made beyond "no edge" until model Brier drops below market Brier on the graded set.
+A second pass cleared most of §3's deferrals (one commit each, suite green throughout, now
+**53 unit tests**):
+
+- **C4 / C5** — intraday train/serve consistency (apply each per-hour fit to the last *completed*
+  hour; feed the day-ahead lead-1 forecast the fit was trained on). Serving-side, no retrain.
+- **E2** — target date from the question's named date (with year-wrap inference), audited to be a
+  no-op for every city except the 32 Hong Kong rows.
+- **D8 / D9 / D11** — `simulate_strategies`, `historical_backtester` (group/portfolio caps), and
+  `optimizer_full` rewired onto `backtest_common`. No forked settlement or floor/ceiling-blind
+  pricing remains anywhere (grep-clean). **D10** did not exist (no forked settlement in tests).
+- **Phase 8 (partial)** — F7 canonical `resolution_anchors.slug()` (adopted in the read/write
+  path), F5 shared `http_util.get_json` (the three fetchers), F13 vectorized CRPS grid
+  (bit-identical), F12 lazy matplotlib import for collect-only runs.
+
+**Still open** (pure refactors — zero behaviour change, deliberately left for a focused session
+because they need heavy characterization fixtures to change safely):
+- **F8** — extract the triplicated per-bin eval block in `engine.analyse_city` into one
+  `_evaluate_bin` helper; requires a `test_analyse_city_unchanged` characterization test.
+- **F6** — collapse the 4 diverged Open-Meteo previous-runs leads fetchers into one parameterized
+  chunker (they differ in backoff/timeout/chunk-size/column naming).
+- **F7 remainder** — migrate the other ~9 ad-hoc slug call sites onto `slug()` (identical output
+  today).
+- **F11 / F14** — efficiency: reduce the Gamma full-list pagination fan-out; avoid per-bin
+  re-filtering of snapshot history in `market_staleness` (depends on F8).
+
+The network follow-ups remain one-command re-runs (`backfill_schema.py`, `raincheck_validate.sh`).
+The committed evaluation reflects the phase 0–6 fixes; C4/C5 affect live serving (not the sparse
+intraday backtest) and E2 only moves the 32 Hong Kong rows, so the verdict is unchanged. No
+ROI/win-rate claim beyond "no edge" until model Brier drops below market Brier on the graded set.
