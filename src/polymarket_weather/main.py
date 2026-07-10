@@ -37,7 +37,9 @@ from processing import (
     save_multimodel_forecast,
     compute_city_summary,
 )
-from visualization import generate_all_plots, plot_efficiency_signal
+# visualization (which imports matplotlib) is imported lazily inside step_generate_plots so that
+# --collect-only / --summary-only runs (e.g. the 2-hourly collector) don't pay the plotting-stack
+# import for zero plots (F12).
 
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
@@ -151,6 +153,7 @@ def step_fetch_ensemble(cities: list[str]) -> None:
 
 
 def step_generate_plots(cities: list[str], summaries: list[dict]) -> None:
+    from visualization import generate_all_plots, plot_efficiency_signal   # F12: lazy (matplotlib)
     logger.info("═══ Step 3: Generating visualizations ═══")
     Path(PLOTS_DIR).mkdir(parents=True, exist_ok=True)
     for city in cities:

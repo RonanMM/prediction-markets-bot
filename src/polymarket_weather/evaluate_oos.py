@@ -25,7 +25,8 @@ import numpy as np
 
 from grading import resolves_yes, fetch_actual_weather
 from data_status import GATE_RESOLVED_MARKETS, GATE_OOS_BETS
-from pmf import _cdf
+from pmf import _cdf, _t_scale
+from scipy.stats import t as student_t
 import config
 
 _OUT = Path(__file__).resolve().parent / "output"
@@ -87,7 +88,10 @@ def _crps_student_t(mu, sigma, nu, y, floor=None, ceiling=None):
         lo = min(lo, float(ceiling) - 1.0)
         hi = max(hi, float(ceiling) + 1.0)
     xs = np.linspace(lo, hi, 241)
-    F = np.array([_cdf(x, float(mu), float(sigma), float(nu)) for x in xs])
+    # F13: one vectorized Student-t CDF over the whole grid (was 241 scalar _cdf calls per row).
+    # sigma is a standard deviation → convert to the t-scale via _t_scale, exactly as _cdf does;
+    # floor/ceiling are then applied to F below (as before), so the result is identical.
+    F = student_t.cdf((xs - float(mu)) / _t_scale(float(sigma), float(nu)), df=float(nu))
     if floor is not None:
         F[xs < float(floor)] = 0.0
     if ceiling is not None:
