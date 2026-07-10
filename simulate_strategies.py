@@ -22,16 +22,10 @@ for _city, _a in RESOLUTION_ANCHORS.items():
 
 from grading import resolves_yes  # resolution-station truth grader, native-unit rounding
 
-def _cdf(x: float, mu: float, sigma: float, nu: float) -> float:
-    from scipy.stats import norm
-    if nu > 30:
-        return float(norm.cdf(x, loc=mu, scale=sigma))
-    return float(student_t.cdf((x - mu) / sigma, df=nu))
-
-def _bin_prob(temp_c: float, mu: float, sigma: float, nu: float, half_width: float = 0.5) -> float:
-    upper_bound = temp_c + half_width
-    lower_bound = temp_c - half_width
-    return _cdf(upper_bound, mu, sigma, nu) - _cdf(lower_bound, mu, sigma, nu)
+# D8: price with the engine's censored distribution and size/settle with the shared honest
+# economics — instead of forked floor/ceiling-blind _cdf/_bin_prob, a hardcoded fee/cap Kelly,
+# and the retired (payout-size)*0.98 settlement.
+from backtest_common import _bin_prob, settle_bet, single_kelly
 
 WEATHER_CACHE = {}
 
@@ -73,7 +67,8 @@ def simulate_strategy(ml_path: Path, strategy_name: str, **kwargs):
         f_prob_ml = our_prob_ml if bet_side_ml == "Yes" else (1.0 - our_prob_ml)
         
         # f_prob_ens is probability of YES predicted by Ensemble
-        f_prob_ens = _bin_prob(bin_temp, raw_mu, row["forecast_sigma"], raw_nu)
+        f_prob_ens = _bin_prob(bin_temp, raw_mu, row["forecast_sigma"], raw_nu,
+                               floor=row.get("forecast_floor"), ceiling=row.get("forecast_ceiling"))
         
         # their_prob_yes is the market price of YES
         their_prob_yes = row["their_prob"] if bet_side_ml == "Yes" else (1.0 - row["their_prob"])
@@ -135,24 +130,18 @@ def simulate_strategy(ml_path: Path, strategy_name: str, **kwargs):
 
         we_won = (bet_side_ml == "Yes" and resolved_yes) or (bet_side_ml == "No" and not resolved_yes)
         
-        # Kelly Sizing
-        fee = 0.02
-        b = ((1.0 - their_prob) / their_prob) * (1.0 - fee)
-        # Fractional Kelly sizing
+        # Kelly sizing — shared with the engine (config fee + MAX_KELLY_PER_BET cap + p/b guards),
+        # replacing the hardcoded fee=0.02 / cap=0.12 that oversized bets 1.5x vs production.
         kf = kwargs.get("kelly_fraction", 0.25)
-        kelly = kf * (b * our_prob_ml - (1.0 - our_prob_ml)) / b
-        kelly = np.clip(kelly, 0.0, 0.12) # MAX_KELLY_PER_BET
-        
+        kelly = single_kelly(our_prob_ml, their_prob, kelly_fraction=kf)
+
         bet_size = 1000.0 * kelly
         if bet_size < 1.0:
             continue
-            
+
+        profit = settle_bet(their_prob, we_won, bet_size)
         if we_won:
-            payout = bet_size / their_prob
-            profit = (payout - bet_size) * 0.98
             wins += 1
-        else:
-            profit = -bet_size
             
         total_bets += 1
         total_profit += profit

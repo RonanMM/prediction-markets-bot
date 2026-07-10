@@ -46,6 +46,14 @@ def run_backtest():
     # Only grade the final prediction the bot made for each market before the cutoff
     df = df.sort_values("fetched_at").groupby("condition_id").last().reset_index()
 
+    # D9: apply the per-(city,date) group and portfolio Kelly caps, matching the engine and
+    # evaluate_oos._roi_at_production. This backtester previously staked the raw per-bet kelly,
+    # which overstates exposure and P&L when a group/portfolio would have been scaled down.
+    if "kelly" in df.columns:
+        from backtest_common import apply_caps
+        gk = (df["city"].astype(str) + "|" + df["target_date"].astype(str)).tolist()
+        df["kelly"] = apply_caps(df["kelly"].fillna(0.0).astype(float).tolist(), gk)
+
     total_bets = 0
     wins = 0
     total_profit = 0.0

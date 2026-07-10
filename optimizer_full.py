@@ -12,6 +12,7 @@ import signals
 import predictors.nwp_fallback as nwp_fallback
 from engine import analyse_city, WeatherBettingBot
 from data_loader import discover_cities
+from backtest_common import settle_bet  # honest settlement, shared with the engine/arbiter (D11)
 
 from resolution_anchors import RESOLUTION_ANCHORS
 
@@ -52,12 +53,9 @@ def evaluate_bets(bets: list, opportunities_map: dict):
 
         we_won = (bet_side == "Yes" and resolved_yes) or (bet_side == "No" and not resolved_yes)
 
+        profit = settle_bet(their_prob, we_won, bet_size)
         if we_won:
-            payout = bet_size / their_prob
-            profit = (payout - bet_size) * 0.98
             wins += 1
-        else:
-            profit = -bet_size
 
         total_profit += profit
         total_staked += bet_size
