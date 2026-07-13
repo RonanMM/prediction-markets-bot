@@ -64,6 +64,35 @@ def refetch(past_days: int) -> None:
             processing.save_ensemble_forecast(ens)
 
 
+def repair_price_history_timestamps() -> None:
+    """Repair {slug}_price_history.csv timestamps corrupted by the seconds-as-ms bug.
+
+    fetch_polymarket used to divide the CLOB epoch (already SECONDS) by 1000, so every stored
+    timestamp collapsed onto 1970-01-21. The corruption is exactly reversible: the stored epoch
+    is real_epoch/1000, so multiply back by 1000. Only rows before 2000-01-01 are touched;
+    correctly-stamped rows (written after the fetcher fix) pass through unchanged. Offline op.
+    """
+    import pandas as pd
+    for city in CITIES:
+        path = processing._mkt_history_path(city)
+        if not path.exists():
+            continue
+        df = pd.read_csv(path)
+        if "timestamp_utc" not in df.columns or df.empty:
+            continue
+        ts = pd.to_datetime(df["timestamp_utc"], errors="coerce", utc=True, format="ISO8601")
+        bad = ts.notna() & (ts < pd.Timestamp("2000-01-01", tz="UTC"))
+        if not bad.any():
+            continue
+        epoch_s = (ts[bad] - pd.Timestamp("1970-01-01", tz="UTC")).dt.total_seconds()
+        fixed = pd.to_datetime(epoch_s * 1000.0, unit="s", utc=True)
+        df.loc[bad, "timestamp_utc"] = fixed.map(lambda t: t.isoformat())
+        processing._atomic_write_csv(path, df)
+        logger.info("repaired %d/%d timestamps in %s (span now %s → %s)",
+                    int(bad.sum()), len(df), path.name,
+                    fixed.min().date(), fixed.max().date())
+
+
 def verify() -> bool:
     import pandas as pd
     ok = True
@@ -91,6 +120,8 @@ def main() -> None:
     ap.add_argument("--past-days", type=int, default=7, help="recent days to re-fetch (0-92)")
     args = ap.parse_args()
 
+    logger.info("Repairing price-history timestamps (seconds-as-ms bug) …")
+    repair_price_history_timestamps()
     logger.info("Widening daily_mm / ensemble CSV headers …")
     widen_all()
     if args.widen_only:

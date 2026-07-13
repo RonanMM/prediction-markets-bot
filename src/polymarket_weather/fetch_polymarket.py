@@ -78,6 +78,20 @@ def search_markets_by_query(query: str, limit: int = 100) -> list[dict]:
 
 # ── CLOB price history ───────────────────────────────────────────────────────
 
+def _epoch_to_utc_iso(ts) -> str:
+    """ISO-8601 UTC timestamp from a CLOB history epoch.
+
+    The CLOB API returns `t` in epoch SECONDS. The original code assumed milliseconds and
+    divided by 1000, which collapsed every 2026 timestamp onto 1970-01-21 in the stored
+    price-history CSVs (repaired by backfill_schema.repair_price_history_timestamps).
+    Values > 1e12 can only be milliseconds, so those are still handled, defensively.
+    """
+    ts = float(ts)
+    if ts > 1e12:  # milliseconds
+        ts /= 1000.0
+    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+
+
 def fetch_price_history(token_id: str, interval: str = "1d") -> list[dict]:
     """
     Fetch CLOB price history for a token.
@@ -207,9 +221,9 @@ def fetch_price_history_for_market(snap: dict, interval: str = "1d") -> list[dic
         outcome_label = outcomes[i] if i < len(outcomes) else f"outcome_{i}"
         history = fetch_price_history(token_id, interval)
         for point in history:
-            ts_ms = point.get("t")
+            ts_raw = point.get("t")
             price = point.get("p")
-            if ts_ms is None or price is None:
+            if ts_raw is None or price is None:
                 continue
             records.append({
                 "condition_id":   snap["condition_id"],
@@ -217,7 +231,7 @@ def fetch_price_history_for_market(snap: dict, interval: str = "1d") -> list[dic
                 "question":       snap["question"],
                 "token_id":       token_id,
                 "outcome":        outcome_label,
-                "timestamp_utc":  datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).isoformat(),
+                "timestamp_utc":  _epoch_to_utc_iso(ts_raw),
                 "price":          float(price),
             })
         time.sleep(0.2)
