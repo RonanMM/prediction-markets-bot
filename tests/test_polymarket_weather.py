@@ -844,3 +844,90 @@ def test_question_date_is_noop_outside_hong_kong():
         )
         assert disagree == 0, f"{f}: {disagree} question/endDateIso disagreements (expected 0)"
 
+
+
+def test_bucket_key_bands_and_live_eligibility():
+    """E3 (edge megaplan): buckets are 'City|band' with same-day ≤0.5d, 1d ≤1.5d, else 2d+.
+    LIVE_BUCKETS holds execution-eligible buckets; membership is exact-string, so bucket_key
+    output must match the config entries verbatim."""
+    from config import bucket_key, LIVE_BUCKETS
+    assert bucket_key("NYC", 0.0) == "NYC|same-day"
+    assert bucket_key("NYC", 0.5) == "NYC|same-day"
+    assert bucket_key("Seoul", 0.51) == "Seoul|1d"
+    assert bucket_key("Seoul", 1.5) == "Seoul|1d"
+    assert bucket_key("London", 1.51) == "London|2d+"
+    assert bucket_key("Chicago", 6.0) == "Chicago|2d+"
+    # every nominated bucket must be reconstructible via bucket_key (guards against drift
+    # between the config strings and the key format, without pinning the data-driven list)
+    for bk in LIVE_BUCKETS:
+        city, band = bk.split("|")
+        d = {"same-day": 0.3, "1d": 1.0, "2d+": 3.0}[band]
+        assert bucket_key(city, d) == bk
+
+
+def test_epoch_to_utc_iso_seconds_and_ms():
+    """CLOB history `t` is epoch SECONDS (the old ÷1000 bug collapsed 2026 onto 1970-01-21);
+    millisecond inputs (>1e12) must still resolve to the same instant."""
+    from fetch_polymarket import _epoch_to_utc_iso
+    s = 1_783_000_000            # 2026-07-02T13:46:40+00:00
+    assert _epoch_to_utc_iso(s) == "2026-07-02T13:46:40+00:00"
+    assert _epoch_to_utc_iso(s * 1000) == _epoch_to_utc_iso(s)
+    assert not _epoch_to_utc_iso(s).startswith("1970")
+
+
+def test_wu_truth_matches_actual_settlements():
+    """W0 (megaplan §10a): markets resolve on Wunderground (hourly-METAR extremes over the
+    local calendar day), not the NWS CLI. These three markets settled OPPOSITE to the CLI-based
+    grade and the WU reconstruction must match the real settlement. Data comes from the
+    committed obs CSVs; skip if absent."""
+    from pathlib import Path
+    base = Path(__file__).resolve().parents[1] / "src/polymarket_weather/data/weather"
+    if not (base / "new_york_city_obs_hourly.csv").exists():
+        pytest.skip("obs CSVs not present")
+    # NYC 2026-07-03: CLI Tmin 79°F, WU/hourly 80°F -> '80-81°F' settled YES
+    assert resolves_yes("NYC", "2026-07-03",
+                        "Will the lowest temperature in New York City be between 80-81°F on July 3?",
+                        26.9) is True
+    # NYC 2026-06-27: CLI Tmin 69°F, WU/hourly 70°F -> '68-69°F' settled NO
+    assert resolves_yes("NYC", "2026-06-27",
+                        "Will the lowest temperature in New York City be between 68-69°F on June 27?",
+                        20.3) is False
+    # Chicago 2026-05-28: CLI Tmax 72°F, WU/hourly 71°F -> '72-73°F' settled NO
+    assert resolves_yes("Chicago", "2026-05-28",
+                        "Will the highest temperature in Chicago be between 72-73°F on May 28?",
+                        22.5) is False
+
+
+def test_wu_truth_fallback_and_scope():
+    """Non-validated cities return None from wu_daily_extreme (grading falls back to the
+    historical-actuals feed); unknown dates return None rather than a fabricated extreme."""
+    from wu_truth import wu_daily_extreme
+    assert wu_daily_extreme("Seoul", "2026-03-24", "max") is None      # not WU-validated
+    assert wu_daily_extreme("London", "2026-07-03", "max") is None     # not WU-validated
+    assert wu_daily_extreme("NYC", "1999-01-01", "max") is None        # before obs coverage
+
+
+def test_shoulder_band_rule():
+    """§10b/§10e pre-registered bands: shoulder full [0.05, 0.35) core [0.20, 0.35);
+    favorite [0.65, 0.85) core [0.65, 0.75), entries only >12h before local day end."""
+    from shoulder_book import (BAND_LO, BAND_HI, CORE_LO,
+                               FAV_LO, FAV_CORE_HI, FAV_HI, FAV_MIN_HOURS_TO_END)
+    assert (BAND_LO, BAND_HI, CORE_LO) == (0.05, 0.35, 0.20)
+    assert (FAV_LO, FAV_CORE_HI, FAV_HI) == (0.65, 0.75, 0.85)
+    assert FAV_MIN_HOURS_TO_END == 12.0
+    inside = [0.05, 0.19, 0.20, 0.349]
+    outside = [0.049, 0.35, 0.60, 0.01]
+    assert all(BAND_LO <= p < BAND_HI for p in inside)
+    assert not any(BAND_LO <= p < BAND_HI for p in outside)
+
+
+def test_verified_weather_taker_fee():
+    """E1 (verified 2026-07-13): weather taker fee = 0.05·p·(1−p) per share — 1.25¢ max at
+    p=0.5, symmetric, tiny at the extremes; makers pay zero."""
+    from config import taker_fee_per_share, MAKER_FEE, WEATHER_TAKER_RATE
+    assert WEATHER_TAKER_RATE == 0.05 and MAKER_FEE == 0.0
+    assert pytest.approx(taker_fee_per_share(0.5)) == 0.0125
+    assert pytest.approx(taker_fee_per_share(0.7)) == taker_fee_per_share(0.3)
+    assert pytest.approx(taker_fee_per_share(0.7)) == 0.0105
+    assert taker_fee_per_share(0.99) < 0.001
+    assert taker_fee_per_share(0.0) == 0.0 and taker_fee_per_share(1.0) == 0.0

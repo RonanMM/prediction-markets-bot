@@ -44,10 +44,24 @@ from processing import (
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
 
+_KEEP_RUN_LOGS = 30  # the 2-hourly collector writes one per run; keep ~2.5 days of them
+
+
 def _setup_logging(verbose: bool = False) -> None:
     Path(LOGS_DIR).mkdir(parents=True, exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     log_file = Path(LOGS_DIR) / f"run_{ts}.log"
+
+    # Prune old per-run logs so they can't accumulate again (they reached 123 files / 30 MB
+    # before the 2026-07-13 cleanup). Newest _KEEP_RUN_LOGS are kept; failures are ignored —
+    # logging must never block a collection run.
+    try:
+        old = sorted(Path(LOGS_DIR).glob("run_*.log"),
+                     key=lambda p: p.stat().st_mtime, reverse=True)[_KEEP_RUN_LOGS:]
+        for p in old:
+            p.unlink()
+    except OSError:
+        pass
 
     level = logging.DEBUG if verbose else logging.INFO
     fmt   = "%(asctime)s [%(levelname)s] %(name)s — %(message)s"
@@ -135,6 +149,16 @@ def step_fetch_weather(cities: list[str]) -> None:
         fetch_nbm(recent_only=True)
     except Exception as e:
         logger.warning("NBM top-up failed: %s", e)
+
+    # Shoulder-premium PAPER book (edge megaplan §10b): record pre-day shoulder bins from the
+    # snapshot that just landed. Pure price-structure paper tracking — no orders, no model.
+    try:
+        from shoulder_book import scan_and_record
+        n = scan_and_record()
+        if n:
+            logger.info("Shoulder paper book: recorded %d new pre-day entries.", n)
+    except Exception as e:
+        logger.warning("Shoulder book scan failed: %s", e)
 
 
 def step_fetch_ensemble(cities: list[str]) -> None:
