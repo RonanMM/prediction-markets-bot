@@ -272,6 +272,41 @@ def main():
               f"{_brier(grp['forecast_prob'].tolist(), yc):>8.4f} "
               f"{_brier(grp[mkt_col].tolist(), yc):>8.4f}")
 
+    # E3 per-bucket view (docs/EDGE_MEGAPLAN.md §5): buckets are derived from city+days_ahead so
+    # this works on trackers written before the bucket column existed. ON buckets are execution-
+    # eligible per config.LIVE_BUCKETS (paper until their FORWARD gate passes); every bucket keeps
+    # being tracked either way. Forward gate = bets with target_date AFTER the nomination date, so
+    # the in-sample selection that nominated the buckets cannot grade itself.
+    ml["_bucket"] = [config.bucket_key(c, d) for c, d in zip(ml["city"], ml["days_ahead"])]
+    print("\n  E3 buckets (model vs market Brier; ON = execution-eligible, paper until gate):")
+    print(f"    {'bucket':<20} {'n':>4} {'model':>8} {'market':>8}  status")
+    for bk, grp in sorted(ml.groupby("_bucket"), key=lambda kv: -len(kv[1])):
+        yb = grp["outcome"].tolist()
+        bm, bmk = _brier(grp["forecast_prob"].tolist(), yb), _brier(grp[mkt_col].tolist(), yb)
+        status = "ON (paper)" if bk in config.LIVE_BUCKETS else "off"
+        print(f"    {bk:<20} {len(grp):>4} {bm:>8.4f} {bmk:>8.4f}  {status}")
+    on = ml[ml["_bucket"].isin(config.LIVE_BUCKETS)]
+    if not on.empty:
+        yo = on["outcome"].tolist()
+        roi_on = _roi_at_production(on)
+        print(f"    ON-book: n={len(on)}  model {_brier(on['forecast_prob'].tolist(), yo):.4f} "
+              f"vs market {_brier(on[mkt_col].tolist(), yo):.4f}  "
+              f"ROI {roi_on['roi']:+.1%} on {roi_on['bets']} bets"
+              "   [in-sample until the forward gate passes]")
+        print(f"    Forward gate (target_date > {config.E3_NOMINATION_DATE}, "
+              f"need ≥{config.E3_FORWARD_MIN_BETS}/bucket AND model ≤ market Brier):")
+        for bk in sorted(config.LIVE_BUCKETS):
+            fwd = ml[(ml["_bucket"] == bk) & (ml["target_date"] > config.E3_NOMINATION_DATE)]
+            if fwd.empty:
+                print(f"      {bk:<20}    0/{config.E3_FORWARD_MIN_BETS}  (no forward bets graded yet)")
+                continue
+            yf = fwd["outcome"].tolist()
+            fm, fk = _brier(fwd["forecast_prob"].tolist(), yf), _brier(fwd[mkt_col].tolist(), yf)
+            met = len(fwd) >= config.E3_FORWARD_MIN_BETS and fm <= fk
+            print(f"      {bk:<20} {len(fwd):>4}/{config.E3_FORWARD_MIN_BETS}  "
+                  f"model {fm:.4f} vs market {fk:.4f}  → "
+                  f"{'✅ GATE PASSED — smallest real size OK' if met else 'pending'}")
+
     # Distribution-level CRPS (MODEL vs ENSEMBLE) — scores the whole temperature forecast, so it
     # rewards correct *calibration*, not just per-bin direction. Lower = better.
     crps_m_by = _crps_by_key(_OUT / "opportunities_evaluation_calibrated.csv")

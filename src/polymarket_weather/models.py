@@ -78,3 +78,6 @@ class Opportunity:
     temp_hi_c:      float = None   # eval CSV can grade them without re-parsing the question
     model_prob_side:float = None   # our-side PRE-shrink model probability; lets live re-verify
     shrink_weight:  float = 1.0    # re-shrink toward the FRESH price (E3) instead of the stale one
+    bucket:         str   = ""     # E3 selective-aggression bucket, e.g. "NYC|same-day"
+    live_eligible:  bool  = False  # bucket ∈ config.LIVE_BUCKETS — execution eligibility ONLY;
+                                   # the tracker records every flag regardless (eval needs them)

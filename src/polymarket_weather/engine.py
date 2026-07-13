@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from models import Opportunity, MarketBin
 from config import (MIN_EDGE, MIN_LIQUIDITY, MIN_MARKET_PRICE, KELLY_FRACTION,
                     FEE_RATE, MAX_KELLY_PER_BET, MAX_KELLY_PER_GROUP, MAX_TOTAL_KELLY, CITY_NAMES,
-                    SHRINK_WEIGHT)
+                    SHRINK_WEIGHT, LIVE_BUCKETS, bucket_key)
 from signals import score_opportunity, compute_momentum, forecast_convergence, volume_recency_signal, market_staleness
 from predictors.emos import EMOSPredictor
 from predictors.ensemble import EnsemblePredictor
@@ -170,6 +170,8 @@ def _create_opportunity(
     opp.alpha_score = score_opportunity(opp)
     opp.kelly       = _kelly_size(opp, kelly_fraction=kelly_fraction)
     opp.ev_per_dollar = round(our_prob / their_prob - 1.0, 4)
+    opp.bucket        = bucket_key(opp.city, opp.days_ahead)
+    opp.live_eligible = opp.bucket in LIVE_BUCKETS
     return opp
 
 def analyse_city(data_dir: Path, city: str,
@@ -216,12 +218,16 @@ def analyse_city(data_dir: Path, city: str,
     if getattr(end_norm.dt, "tz", None) is not None:
         end_norm = end_norm.dt.tz_localize(None)
     if "question" in snap_df.columns:
-        snap_df["end_date_norm"] = pd.to_datetime([
+        derived = pd.to_datetime([
             (parse_question_date(q, en) or en)
             for q, en in zip(snap_df["question"], end_norm)
         ])
     else:
-        snap_df["end_date_norm"] = end_norm
+        derived = pd.DatetimeIndex(end_norm)
+    # parse_question_date returns naive dates, but everything downstream (the days_ahead
+    # subtraction vs fetched_at_utc, the as-of joins) expects the pre-E2 tz-aware UTC midnight
+    # that end_date_iso used to provide — restore it, or naive−aware subtraction raises.
+    snap_df["end_date_norm"] = derived.tz_localize("UTC")
     snap_df = snap_df.sort_values("fetched_at_utc")
     groups = snap_df.groupby(["end_date_norm", "fetch_bucket"], sort=False)
     print(f"  {city}: {len(groups)} (date × snapshot) groups, "

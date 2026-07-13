@@ -105,7 +105,28 @@ MAX_KELLY_PER_GROUP   = 0.20      # cap across correlated (city, date) group
 MAX_TOTAL_KELLY       = 0.40      # hard cap on total portfolio exposure per run
 
 # Polymarket fee: ~2% of the trade amount (taker fee on winning side)
+# ⚠️ LEGACY BACKTEST ASSUMPTION — kept because evaluate_oos/backtest_common still settle with it
+# and it is conservative (harsher than reality) for the model book. The REAL schedule is below.
 FEE_RATE              = 0.02
+
+# ── E1 VERIFIED 2026-07-13 (Polymarket maker-taker schedule, effective 2026-07-01) ───────────
+# Weather-category taker fee, charged in USDC at trade time:
+#     fee = shares · WEATHER_TAKER_RATE · p · (1 − p)
+# → max 1.25¢/share at p=0.50, ~1.05¢ at 0.70/0.30, ~0.24¢ at 0.95. MAKERS PAY NOTHING and the
+# Maker Rebates Program pays 25% of collected weather taker fees back to makers daily — so
+# maker-first execution (megaplan E2) is decisively favored.
+# Sources: help.polymarket.com "Trading fees" (article 13364478), docs.polymarket.us/fees.
+# shoulder_book.py settles with this real formula; migrating the model-book backtesters off
+# FEE_RATE is queued (their 2% assumption overstates costs, especially near-extreme prices).
+WEATHER_TAKER_RATE    = 0.05
+MAKER_FEE             = 0.0
+MAKER_REBATE_SHARE    = 0.25
+
+
+def taker_fee_per_share(price: float) -> float:
+    """Verified Polymarket weather taker fee per share (USDC) at `price`."""
+    p = min(max(float(price), 0.0), 1.0)
+    return WEATHER_TAKER_RATE * p * (1.0 - p)
 
 # Backtest execution realism: half of the bid-ask spread paid on entry (in probability units).
 # Live fills cross the spread and eat slippage; the backtest otherwise fills at the last
@@ -120,6 +141,38 @@ HALF_SPREAD           = 0.01   # 1 cent per share on entry (tune once real order
 # a recommendation), then set it here. Default 1.0 keeps behaviour unchanged until it is validated.
 SHRINK_WEIGHT         = 1.0
 
+# W2 (adverse-selection sigma inflation, sigma·(1+γ·|model−market|)) was TESTED 2026-07-11 on the
+# frozen graded set (n=220): Brier improves (0.161→0.154 at γ=4) but ROI does NOT (−20.3% →
+# −21/−23% at every γ) — widening sigma cannot fix a wrong CENTER; the surviving flags are the
+# same bad book. NOT adopted. Do not re-try without new reason; see docs/EDGE_MEGAPLAN.md §4 W2.
+
 # Minimum raw market price on either side of the bet.
 # Prices below this are near-settled/expired markets — skip them.
 MIN_MARKET_PRICE      = 0.02   # 2% — below this the market has effectively resolved
+
+# ── E3: per-bucket selective aggression (docs/EDGE_MEGAPLAN.md §5) ───────────────────────────
+# A bucket is "City|lead-band" (see bucket_key below). Only buckets listed here are eligible for
+# EXECUTION (paper first, then live); the tracker still records EVERY flagged opportunity so the
+# evaluation keeps its full sample.
+# REVISED 2026-07-12 after the W0 settlement-truth fix: the original NYC|same-day nomination
+# (Brier 0.084 vs market 0.114 on 07-11 labels) was substantially a GRADING ARTIFACT — under
+# settlement-faithful labels it grades 0.175 vs 0.120 and is OUT. Current nominations on the
+# corrected frozen set (both marginal — treat as hypotheses, not edges):
+#   Seoul|1d    model 0.123 vs market 0.126 (n=22)
+#   Chicago|1d  model 0.106 vs market 0.124 (n=14)
+# PAPER ONLY until the forward gate passes per bucket: ≥40 bets with target_date AFTER
+# E3_NOMINATION_DATE graded, AND model Brier ≤ market Brier on those forward bets.
+# evaluate_oos.py prints per-bucket progress against this gate.
+LIVE_BUCKETS          = {"Seoul|1d", "Chicago|1d"}
+E3_NOMINATION_DATE    = "2026-07-12"
+E3_FORWARD_MIN_BETS   = 40
+
+
+def bucket_key(city: str, days_ahead: float) -> str:
+    """Canonical E3 bucket for an opportunity: 'City|same-day', 'City|1d', or 'City|2d+'.
+
+    `city` is the display name (config.CITY_NAMES value, as stored in the eval tracker).
+    Bands match the decomposition that nominated the buckets: same-day ≤0.5 d, 1d ≤1.5 d.
+    """
+    band = "same-day" if days_ahead <= 0.5 else ("1d" if days_ahead <= 1.5 else "2d+")
+    return f"{city}|{band}"
