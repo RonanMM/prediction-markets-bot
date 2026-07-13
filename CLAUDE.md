@@ -46,6 +46,12 @@ python optimizer.py
 # Run the Full-Pipeline Grid Search Optimizer (runs engine back-to-front, slow)
 # NOTE: run from the REPO ROOT, not src/polymarket_weather/ (see above)
 python optimizer_full.py
+
+# The honest-evaluation loop (all from src/polymarket_weather/)
+python evaluate_oos.py         # arbiter: model vs market vs ensemble + per-bucket forward gates
+python data_status.py          # pre-committed sample-size gate progress
+python audit_settlements.py    # grading vs ACTUAL settlements (keep >=95%)
+python shoulder_book.py --report   # structure paper book vs its pre-registered gates
 ```
 
 To run unit tests (from the repository root):
@@ -92,12 +98,16 @@ Open-Meteo Ensemble API → fetch_ensemble.py ───┘
 separates THREE anchors per city. `config.CITIES` and every aux script DERIVE their coordinates
 from it — there are no hardcoded coords anywhere.
 - **Resolution anchor** — `resolution_url` + `resolution_unit` (what the UMA oracle reads).
-- **Truth anchor** — the resolution-faithful observation feed `fetch_historical_truth.py` reads
-  (NWS CLI via IEM for KLGA/KORD, IEM METAR daily for EGLC/RKSI, the HKO open-data API for HKO).
-  Grading (`grading.py`) reads the resulting `{slug}_historical_actuals.csv`. **Meteostat is
-  legacy/reference only** — a 2026-07-03 audit found it corrupted for recent weeks (KLGA June
-  daily maxes off by up to ~9 °C vs the NWS CLI report) and its HK station 45007 off HKO by
-  >1.5 °C on ~66 days/yr. Truth lag is now ~1 day (HKO ~1 month).
+- **Truth anchor** — the SETTLEMENT-faithful reading. ⚠️ The markets resolve on
+  **wunderground.com** pages (`resolution_url`), whose daily extremes are the hourly-METAR
+  max/min over the local calendar day — NOT the NWS CLI (1-minute sensors, LST day), which can
+  differ by 1°F exactly at bin boundaries (4/60 settlements were once graded backwards; see
+  `docs/EDGE_MEGAPLAN.md` §10a). For NYC/Chicago, grading truth is therefore the WU-style
+  reconstruction (`wu_truth.py`, from `{slug}_obs_hourly.csv`) with the CLI feed
+  (`fetch_historical_truth.py` → `{slug}_historical_actuals.csv`: NWS CLI via IEM for
+  KLGA/KORD, IEM METAR daily for EGLC/RKSI, HKO API for HKO) as fallback + glitch guard.
+  `audit_settlements.py` checks grades against actual settlements (keep ≥95%). **Meteostat is
+  legacy/reference only** (2026-07-03 audit: corrupted). Truth lag ~1 day (HKO ~1 month).
 - **Forecast anchor** — `forecast_lat`/`forecast_lon` (where Open-Meteo is pointed). Usually the
   station's location, but **not always**.
 
@@ -115,7 +125,10 @@ CV RMSE ≈1.2 (Bucheon) vs ≈1.96 (airport cell). A loud comment in the file s
 |---|---|
 | `resolution_anchors.py` | **Single source of truth** for per-city resolution / truth / forecast anchors (see above). |
 | `config.py` | `CITIES` (coords DERIVED from `resolution_anchors.py`), endpoints, fees, and optimal sizing limits. |
-| `grading.py` | Grades markets against the resolution-**station** observation (station truth), not a forecast grid cell. |
+| `grading.py` | Grades markets against **settlement-faithful** truth: WU-style reconstruction for NYC/Chicago (`wu_truth.py`), station feeds elsewhere. |
+| `wu_truth.py` | **Settlement truth (W0).** Markets resolve on wunderground.com, not the NWS CLI; reconstructs WU's daily extremes (hourly-METAR max/min over the local calendar day) for NYC/Chicago. Validated: fixed 3/4 settlement-audit misses without breaking the other 56. |
+| `audit_settlements.py` | Permanent guard: compares `resolves_yes` to ACTUAL settlements (a resolved market's final pinned price). Run after any truth/grading change; exits 1 below 95% agreement. |
+| `shoulder_book.py` | Model-free **two-leg structure paper book** (megaplan §10b/§10d): Leg 1 sells pre-day 5–35¢ shoulder bins; Leg 2 buys 65–85¢ YES-favorites >12 h before day end. Auto-records each collector cycle (hook in main.py), settles with the verified 0.05·p·(1−p) taker fee, prints pre-registered forward gates. No real orders until a gate passes. |
 | `data_status.py` | Track-record progress report: collected / resolved / station-gradable counts vs the pre-committed gate. |
 | `fetch_polymarket.py` | Gamma API (market search/details) + CLOB API (price history). Parses temperature bins from market questions. |
 | `fetch_weather.py` | Open-Meteo 16-day forecast (daily + hourly) **plus `fetch_forecast_multimodel`** — per-model deterministic Tmax (ECMWF/GFS/ICON/JMA → `{slug}_daily_mm.csv`), the exact serving input for the calibrated multi-model mean. |
@@ -193,11 +206,13 @@ min distribution (own PMF group, no raw-ensemble averaging or conflict gating �
 ensemble Tmin baseline); if a city has no trained Tmin params the predictor returns None and those
 bins are skipped, never mispriced. `grading.py` grades them from `temp_min_c` as before.
 
-Status (2026-07-03, 71 gradable markets — preview, gate not met): v2+intraday beats the raw
-ensemble on Brier (0.140 vs 0.157) and temperature CRPS (1.24 vs 1.41); London (largest-n city,
-most same-day bets) now edges the market (0.146 vs 0.149, n=29). Overall the market still beats
-the model on model-flagged bets (0.111 vs 0.140) — driven mainly by Seoul at leads 2–3 — so
-**edge remains unproven**. The fast truth feed (~1-day lag) is filling the gate quickly.
+Status (2026-07-13, gate MET at 240 gradable markets, settlement-faithful labels): **no
+forecasting edge** — market Brier **0.128** < ensemble 0.160 < model 0.166 (backtest ROI −8.7%,
+but small-sample ROI swings several points/day; read the Brier), so the model book stays OFF. Under settlement labels the calibrator
+currently loses the paired check to the raw ensemble (it was trained on the old CLI-style
+truth) — **retraining EMOS/Tmin/intraday against settlement truth is the top queued model
+task** (`docs/EDGE_MEGAPLAN.md` W0.2). The live positive-EV candidates are the model-free
+structure legs in `shoulder_book.py` (see EDGE_MEGAPLAN §10b/§10d), in forward paper trials.
 
 ### Recent engine corrections (edge honesty)
 - **No more max-selection.** `engine.py` combined ML+ensemble via `our_prob = max(...)`, which
@@ -217,6 +232,22 @@ the model on model-flagged bets (0.111 vs 0.140) — driven mainly by Seoul at l
 - **α5 coherence bonus is liquidity-guarded (`config.COHERENCE_MIN_LIQ`).** Incoherent bins (sum≠1)
   only earn the α5 score bonus when the market is liquid enough to actually fill both sides;
   otherwise incoherence is just thinness, so it is no longer rewarded.
+- **E3 per-bucket selective aggression (2026-07-11, `docs/EDGE_MEGAPLAN.md`).** Every opportunity
+  carries `bucket` ("City|same-day" / "|1d" / "|2d+", `config.bucket_key`) and `live_eligible`
+  (bucket ∈ `config.LIVE_BUCKETS`); the tracker still records ALL flags so the eval keeps its full
+  sample. `evaluate_oos.py` prints the per-bucket Brier table and each nominated bucket's FORWARD
+  gate (≥40 bets graded after `E3_NOMINATION_DATE` with model ≤ market Brier) — no real size until
+  a bucket passes. W2 sigma-inflation-on-disagreement was tested the same day and REJECTED (Brier
+  improves, ROI does not — the failure is the center, not the spread); see the note above
+  `config.SHRINK_WEIGHT`.
+- **W0 settlement truth (2026-07-12) — the fourth broken ruler.** Markets resolve on
+  wunderground.com (see `resolution_anchors.resolution_url`), whose extremes can differ from the
+  NWS CLI by 1°F at bin boundaries; 4/60 settlements were graded backwards. `wu_truth.py` is now
+  primary truth for NYC/Chicago (audit 59/60 via `audit_settlements.py`). This KILLED the original
+  NYC|same-day nomination (its edge was the wrong labels); current nominations Seoul|1d +
+  Chicago|1d, forward clock restarted 2026-07-12. Queued: retrain EMOS/Tmin/intraday against
+  settlement-faithful targets (they were trained on CLI truth; under corrected labels the
+  calibrator loses the paired ensemble check 0.171 vs 0.159).
 
 ### One-command validation
 `./scripts/raincheck_validate.sh` runs the whole honest loop in a networked env: fetch station truth
@@ -274,19 +305,27 @@ threshold is committed in advance specifically so it cannot be moved post-hoc to
 These constants live in `src/polymarket_weather/data_status.py` (`GATE_RESOLVED_MARKETS`,
 `GATE_OOS_BETS`); keep the two in sync if either changes.
 
-**Why:** prior ROI numbers (e.g. the "127.5% ROI" above) were graded from the same Open-Meteo
-grid the model forecasts from, so prediction and outcome shared the grid's error → inflated ROI.
-Grading the same bets against station truth roughly halved measured ROI, and the honest
-out-of-sample sample is currently too small (a handful of held-out bets) to confirm any edge.
-Until the gate is met, every ROI figure is noise. (Full re-framing is Handoff Step 2.)
+**The gate is MET (2026-07-13: 240 markets / 354 bets) and the verdict is in:** the model does
+NOT out-predict the market (Brier 0.166 vs 0.128; ROI −8.7% and day-to-day noisy at production
+params — read the Brier, not the ROI) — see
+`STATUS.md` and `docs/EDGE_MEGAPLAN.md`. The gate machinery stays in force for everything new:
+per-bucket forward gates (`config.LIVE_BUCKETS`, `E3_NOMINATION_DATE`) and the structure book's
+pre-registered gates (`shoulder_book.py`) — nothing trades real money until its own gate passes.
+
+**Why the gate discipline exists:** prior ROI numbers (e.g. the "127.5% ROI" above) were graded
+from the same Open-Meteo grid the model forecasts from → inflated ROI. Station-truth grading
+halved it; settlement-truth grading (W0) moved it again. Every measurement change so far has
+made the model look worse and the market look better — assume the same until proven otherwise.
 
 **Check progress** (run from `src/polymarket_weather/`):
 ```bash
-python data_status.py   # prints collected / resolved / station-gradable counts vs the gate
+python data_status.py        # collected / resolved / gradable counts vs the gate
+python audit_settlements.py  # grading vs actual settlements (must stay ≥95%)
 ```
-Truth publishing lag is no longer the bottleneck: the resolution-faithful feeds (NWS CLI / IEM
-METAR) publish within ~1 day (HKO ~1 month), so a market becomes gradable almost as soon as it
-resolves. Refresh truth (`fetch_historical_truth.py`) before regenerating the eval tracker.
+Truth publishing lag is no longer the bottleneck: the settlement-faithful feeds publish within
+~1 day (HKO ~1 month), so a market becomes gradable almost as soon as it resolves. Refresh truth
+(`fetch_historical_truth.py`) before regenerating the eval tracker; `wu_truth.py` needs only the
+obs top-up that runs inside `main.py`.
 
 ---
 

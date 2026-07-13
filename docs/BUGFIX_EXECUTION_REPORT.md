@@ -1,7 +1,8 @@
 # Bug-Fix Execution Report (2026-07)
 
-What was done, why, and what it produced. Companion to `docs/BUGFIX_MEGAPLAN.md` (the plan) and
-`STATUS.md` (the plain-English verdict). All code landed on branch `megaplan-execution`, one
+What was done, why, and what it produced. Companion to `STATUS.md` (the plain-English verdict)
+and `docs/EDGE_MEGAPLAN.md` (the edge strategy built on top of this pass). The original plan
+document (`docs/BUGFIX_MEGAPLAN.md`) was removed 2026-07-13 once fully executed — see git history. All code landed on branch `megaplan-execution`, one
 commit per phase, suite green after each (**50 unit tests pass**).
 
 ---
@@ -9,7 +10,7 @@ commit per phase, suite green after each (**50 unit tests pass**).
 ## 1. How this started
 
 A whole-repo `/code-review` surfaced ~25 verified bugs. They were triaged into a 9-phase,
-dependency-ordered remediation plan (`docs/BUGFIX_MEGAPLAN.md`) with an adversarial review that
+dependency-ordered remediation plan (BUGFIX_MEGAPLAN, since removed — git history) with an adversarial review that
 added 18 corrections. This report covers executing that plan and running the honest evaluation.
 
 The central discipline: several bugs were **hiding the real answer**, so nothing downstream was
@@ -109,7 +110,7 @@ accuracy* (the deferred intraday / National-Blend work), not the bet sizing. Don
 ## 6. What was committed
 
 - **Code** (phases 0–6): 8 commits on `megaplan-execution`.
-- **Docs**: this report + updated `STATUS.md` verdict + `docs/BUGFIX_MEGAPLAN.md` status table.
+- **Docs**: this report + updated `STATUS.md` verdict (+ the since-removed plan's status table).
 - **Regenerated data**: repaired/backfilled `data/weather/*` (daily_mm, ensemble, truth, leads),
   retrained `models/*_emos.json`, and the regenerated eval trackers in `output/`
   (`opportunities_evaluation_{calibrated,ensemble}.csv`, `opportunities_v4.csv`) + plots.

@@ -1,88 +1,95 @@
 # Where things actually stand (plain English)
 
-This is the honest, no-jargon summary of what this project does and whether it works.
-For the technical detail see `CLAUDE.md`. For live numbers run
-`cd src/polymarket_weather && python data_status.py` and `python evaluate_oos.py`.
+Updated **2026-07-13**. For the full edge strategy and evidence see `docs/EDGE_MEGAPLAN.md`;
+for the technical reference see `CLAUDE.md`. Live numbers, anytime, from
+`src/polymarket_weather/`:
+
+```bash
+python data_status.py          # sample-size gate progress
+python evaluate_oos.py         # the arbiter: model vs market vs ensemble + per-bucket gates
+python audit_settlements.py    # is our grading faithful to how markets actually settled?
+python shoulder_book.py --report   # the structure paper book vs its gates
+```
 
 ## What this project does
-It bets on Polymarket "what will the temperature be?" markets. It uses weather forecasts to
-estimate the true odds, and places a bet when the market price looks wrong. The only question
-that matters: **does it predict the weather better than the betting market does?** If yes, it
-makes money. If no, it doesn't.
+It studies Polymarket "what will the temperature be?" markets in five cities (NYC, Chicago,
+London, Seoul, Hong Kong). Two possible ways to make money: (1) predict the weather better
+than the market's price does, or (2) find structural mispricings in how the market prices the
+outcome bins, no forecasting required. Everything is measured against **settlement truth** —
+what the market actually paid out on — behind pre-committed sample-size gates, because this
+project has been burned by flattering measurements four separate times.
 
-## The big correction
-An earlier version claimed **127.5% ROI**. That number was measured with a broken ruler.
+## The four broken rulers (all found, all fixed)
+1. **Self-grading (2026-06):** bets were graded against the same forecast grid that produced
+   them → the fictional "127.5% ROI". Fixed by grading against station observations.
+2. **Corrupted truth feed (2026-07-03):** Meteostat was up to 9 °C off recent official
+   readings. Replaced with NWS climate reports / METAR summaries / HKO.
+3. **~25 code bugs (2026-07):** the biggest silently voided 83% of US markets from grading;
+   others leaked future data into the backtest and over-widened the model's distributions.
+   All fixed; evaluation regenerated (`docs/BUGFIX_EXECUTION_REPORT.md`).
+4. **Wrong settlement source (2026-07-12):** the markets don't resolve on the NWS climate
+   report at all — they resolve on **wunderground.com** pages, which can differ by one degree
+   exactly at bin boundaries. 4 of 60 audited markets had been graded *backwards*. Truth for
+   NYC/Chicago is now reconstructed the way Wunderground computes it (`wu_truth.py`), and
+   `audit_settlements.py` permanently checks our grades against how markets actually settled
+   (currently 60/61; the one standing miss is a Seoul data-source subtlety).
 
-To know if a bet won you need the *real* temperature that day. The old code took that "real"
-temperature from **the same forecast it used to place the bet** — i.e. it graded its own
-homework, comparing its prediction against its own prediction. Naturally it looked accurate.
+## Verdict on the forecasting strategy: no edge — it stays OFF
+The pre-committed gate is met (240 gradable markets / 354 graded bets as of 2026-07-13), so
+this is a real verdict, not a small-sample tease. Accuracy (Brier, lower = better):
 
-The fix ("station truth" grading): grade every bet against the **actual weather-station reading**
-— the official thermometer the market pays out on. Graded honestly, the ROI roughly **halved**,
-and the old "we're winning" story no longer holds up.
-
-## The second broken ruler (found & fixed 2026-07-03)
-The "actual weather-station reading" itself turned out to be wrong. The old truth feed
-(Meteostat) was publishing values up to **9 °C off** the official station reports for recent
-weeks (e.g. LaGuardia hit 91 °F on 2026-06-05; Meteostat said ~76 °F — and still did a month
-later), and its Hong Kong feed never matched the Observatory the market actually pays out on.
-
-Truth now comes from the same sources the markets resolve against: official NWS climate reports
-for New York/Chicago, METAR station summaries for London/Seoul, and the Hong Kong Observatory's
-own data service. Two bonuses: labels are correct, and they publish within ~a day (was ~3 weeks),
-so bets grade almost immediately.
-
-## The model rebuild (2026-07-03)
-The audit also found the forecast model was **2–3× overconfident**: it was trained on "what
-happened" data (reanalysis) but used to predict 1–3 days ahead, where errors are much larger. It
-was claiming near-certainty on outcomes that missed ~15% of the time. The calibrator was retrained
-on **real archived forecasts at each lead time** (4.5 years of them) against the corrected truth,
-per city and per days-ahead, using a multi-model forecast blend (ECMWF+GFS+ICON, +JMA for Seoul).
-
-## The third broken ruler: ~25 code bugs (found & fixed 2026-07)
-A whole-repo code review found ~25 bugs, several of which were *hiding the real answer*. The
-biggest: **"between X-Y°F" markets — about 83% of the US-city markets — were silently never
-priced or graded** (a parsing/routing gap), so the graded set was small and skewed. Others that
-distorted the numbers: a **look-ahead leak** in the backtest (it could read a forecast run from
-*after* the bet was placed), predictive probabilities that were **over-dispersed** (a standard
-deviation was used as a Student-t scale, ~40% too wide), a **grading↔pricing mismatch** on the
-same markets, and **dishonest cost accounting** in the optimizer. These are now fixed and the
-whole evaluation was regenerated from clean inputs. Full detail: `docs/BUGFIX_EXECUTION_REPORT.md`.
-
-## What the honest evaluation shows now — the gate is MET
-Fixing the voided range markets pulled ~140 previously-invisible markets into the graded set, so
-the pre-committed sample gate is finally satisfied:
-
-    gradable markets   211 / 150   [MET]
-    gradable bets      302 / 100   [MET]
-
-There is now a real verdict. `evaluate_oos.py` asks: is the model's guess more accurate than just
-trusting the market price? Accuracy is Brier score — lower = better.
-
-| Predictor | Brier (lower is better) |
+| predictor | Brier |
 |---|---|
 | The market price | **0.128** |
-| Our model (rebuilt + fixed) | 0.163 |
-| A simpler weather method (ensemble) | 0.166 |
+| A plain weather ensemble | 0.160 |
+| Our calibrated model | 0.166 |
 
-Two things are true at once:
-- **The model beats its own baseline.** Against the raw ensemble it wins on Brier (0.163 vs 0.166)
-  and on the paired temperature-calibration score (CRPS 1.28 vs 1.33). The multi-model blend, the
-  per-lead calibration, and the dispersion fix make a genuinely better *forecaster* than the ensemble.
-- **The model does NOT beat the market.** Market Brier 0.128 is clearly below model Brier 0.163.
-  The "how much to trust the model" sweep lands on **zero** (pure market beats pure model), and
-  betting the model at production sizing returns **−20% ROI over 199 graded bets**. When the model
-  strongly disagrees with the price, the price is usually right.
+Backtest ROI at production parameters is **−8.7% over 213 bets** — note this number swings
+several points a day as fresh bets resolve (it was −22.5% the day before); the Brier gap above
+is the stable signal, and it says the market clearly out-predicts the model.
 
-## Bottom line (2026-07 — gate met)
-1. Earlier numbers were unreliable for three separate reasons now fixed: self-graded outcomes,
-   a corrupted truth feed, and ~25 code bugs. The evaluation is finally trustworthy.
-2. **Verdict: no edge over the market.** The gate is met, the model is honestly calibrated and
-   beats its ensemble baseline — but it is not a better predictor than Polymarket, so it loses
-   money. This is a real go/no-go answer, not "too little data."
-3. The fixes did not create edge; they removed the bugs that were hiding the truth. As a *bettor*
-   against this market, the current model has no advantage. The place to improve is the *model's
-   accuracy* (same-day intraday conditioning, NWS National Blend for the US cities — the deferred
-   C4/C5 work), not the bet sizing.
-4. Re-check anytime with `python evaluate_oos.py` and `python data_status.py`. If model Brier ever
-   drops below market Brier on the graded set, that's a real edge; until then, don't bet it live.
+**Why a ~53% win rate still loses money:** win rate only matters relative to the price paid.
+Our bets average ~51¢ per $1 of payout (stake-weighted 54¢), so break-even is ~54–55% after
+spread and fee — and the sides we buy win almost exactly as often as their prices already
+implied (market said 51.0%, realized ~50–53%): no informational edge, so costs make it
+negative. The bleed is concentrated in 70–85¢ entries (win 71% vs 78.5% needed) and cheap
+longshots (win 10.2% vs 13.7% needed); only the 85¢+ favorites beat their price. The
+market's prices are almost perfectly calibrated on exactly the bets we flag — our big
+disagreements with it are our own errors. Two earlier "pockets" of apparent model edge (NYC
+same-day especially) evaporated under corrected labels: most of that edge was the mislabeled
+boundary days. Two marginal pockets (Seoul and Chicago next-day) remain nominated, paper-only,
+and must prove themselves on ≥40 *future* graded bets each before any real size (progress as
+of 2026-07-13: Seoul 1/40 — ahead of the market on that one bet — Chicago 0/40).
+One known reason for model weakness is fixable: it was trained against the old truth feed, so
+retraining against settlement truth is the top queued model task.
+
+## The promising part: market-structure edges (no forecasting involved)
+Calibrating the market across **every** bin (not just ones our model flagged) against
+settlement truth found one robust behavioral mispricing, visible from both sides:
+
+- **Bins priced 20–35¢ the day before are overpriced** — they realize ~19% → selling collects
+  ≈ +8¢ per share (n=147).
+- **Their mirror image, 65–75¢ favorites, are underpriced** — they realize ~81% → buying
+  collects ≈ +7.7¢ per share net (n=143). High favorites (85–97¢) are priced *correctly* —
+  the edge is specifically the "boring modest favorite" band that crowds under-buy while
+  over-buying plausible-looking longshots next door.
+
+Also verified (2026-07-13): Polymarket's real fee schedule — **makers pay nothing and earn
+rebates; takers pay at most 1.25¢/share on weather** (0.05·p·(1−p)) — far kinder than the 2%
+our backtests conservatively assumed, and a strong argument for maker-first execution.
+
+A **paper book** (`shoulder_book.py`) now records both legs automatically every collection
+cycle and grades itself against settlement truth — 15 entries recorded as of 2026-07-13, first
+gradings land ~a day after each target date. Pre-registered gates before any real order:
+shoulder band ≥150 graded entries at ≥+2¢/share net (core ≥80 at ≥+3¢); favorites core ≥80 at
+≥+3¢. In-sample this book earns ~8–11% per position with 1–2 day turnover, ~4–5 entries/day —
+the nearest-term realistic path to positive ROI, if the forward numbers hold.
+
+## Bottom line
+1. The evaluation machinery is now trustworthy end-to-end: settlement-faithful labels, a
+   permanent settlement audit, honest costs, pre-committed gates.
+2. **Forecast betting: no edge, off.** Revisit after the settlement-truth retrain and the
+   same-day obs overhaul (`docs/EDGE_MEGAPLAN.md` Book A / W1).
+3. **Structure betting: genuinely promising, in forward paper trials now.** Real money only
+   when a pre-registered gate passes — roughly 3–4 weeks of automatic collection.
+4. Everything above regenerates from the four commands at the top of this file.
