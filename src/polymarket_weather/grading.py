@@ -7,6 +7,11 @@ NWS CLI / IEM METAR / HKO, written by `fetch_historical_truth.py`; stations name
 `resolution_anchors.py`). It replaces the old per-script grid-based `fetch_actual_weather`,
 which fetched a forecast cell — wrong in general, and especially for Seoul whose forecast
 point (Bucheon) is deliberately offset from the resolution station (Incheon).
+
+W0 (2026-07-12): for NYC/Chicago the primary truth is now the WUNDERGROUND-style
+reconstruction from hourly METARs (`wu_truth.py`) — the markets resolve on the WU page, whose
+extremes can differ from the CLI by 1°F at bin boundaries (4/60 settlements audited wrong
+before this fix; see docs/EDGE_MEGAPLAN.md §10a and audit_settlements.py).
 """
 from functools import lru_cache
 from pathlib import Path
@@ -15,6 +20,8 @@ import pandas as pd
 
 from resolution_anchors import RESOLUTION_ANCHORS
 from pmf import parse_question, resolves_yes_temp
+import wu_truth
+from wu_truth import wu_daily_extreme
 
 _TRUTH_DIR = Path(__file__).resolve().parent / "data" / "weather"
 
@@ -92,15 +99,24 @@ def _truth(slug, kind):
 
 
 def fetch_actual_weather(city, target_date, question=""):
-    """Resolution-station observed temperature (°C) for the date, or None if unknown.
+    """SETTLEMENT-faithful observed temperature (°C) for the date, or None if unknown.
 
     Uses the daily MIN for 'lowest temperature' markets, else the daily MAX.
-    Drop-in replacement for the old grid grader: `question` is optional (defaults to MAX).
-    Returns None beyond the truth file's coverage (unresolved date) so callers skip it.
+    W0 (edge megaplan §10a): the markets resolve on wunderground.com, whose daily extremes are
+    the hourly-METAR extremes over the local calendar day — NOT the NWS CLI's 1-minute/LST-day
+    reading our historical-actuals feed stores. For the settlement-validated US cities the
+    WU-style reconstruction (`wu_truth.wu_daily_extreme`) is primary and the CLI value is the
+    fallback plus a glitch guard (a lone bad METAR must not fabricate an extreme; if the two
+    sources diverge implausibly, keep the CLI). Other cities are unchanged.
+    Returns None beyond the truth coverage (unresolved date) so callers skip it.
     """
     slug = _SLUG.get(city)
     if slug is None:
         return None
     kind = "min" if "lowest" in str(question).lower() else "max"
-    val = _truth(slug, kind).get(str(target_date))
-    return None if val is None else float(val)
+    cli = _truth(slug, kind).get(str(target_date))
+    cli = None if cli is None else float(cli)
+    wu = wu_daily_extreme(city, str(target_date), kind)
+    if wu is not None and (cli is None or abs(wu - cli) <= wu_truth.SANITY_MAX_DIVERGENCE_C):
+        return wu
+    return cli
