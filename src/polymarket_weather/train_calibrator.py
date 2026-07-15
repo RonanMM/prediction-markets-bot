@@ -102,7 +102,16 @@ def _design(f: np.ndarray, doy: np.ndarray) -> np.ndarray:
 
 
 def _fit_nu(residuals: np.ndarray) -> float:
-    """Student-t dof from residual excess kurtosis (excess = 6/(nu-4) for nu>4)."""
+    """Student-t dof from residual excess kurtosis (excess = 6/(nu-4) for nu>4).
+
+    NOTE (b, tested & REJECTED 2026-07-15): a conditional-MLE dof (best nu given the honest
+    empirical std) was tried in place of this moment match to fatten the tails behind the
+    [0,0.1) probability bucket (predicted 0.04, realized 0.19). It did NOT help — that bucket
+    is ADVERSE SELECTION, not thin tails: on those bins the market prices 0.17 and they realize
+    0.19 (the market is right; the model flags them only because it disagreed by ≥6pp). The MLE
+    dof left Brier flat and cost the calibrator its paired-CRPS win over the ensemble, so it was
+    reverted. Widening dispersion cannot fix a wrong center on an adversely-selected sample.
+    """
     try:
         from scipy.stats import kurtosis
         ex = float(kurtosis(residuals, fisher=True, bias=False))
@@ -147,8 +156,9 @@ def _fit_lead(df: pd.DataFrame, fcst_col: str, target_col: str,
 def _train_city_target(city: str, slug: str, spec: dict) -> None:
     target = spec["target_col"]
     try:
+        from settlement_truth import load_training_truth
         leads_df = pd.read_csv(spec["bm_file"].format(slug=slug))
-        truth = pd.read_csv(f"data/weather/{slug}_historical_actuals.csv")
+        truth = load_training_truth(slug)   # settlement-faithful target (W0.2); CLI fallback
     except Exception as e:
         logger.error(f"{city} [{target}]: missing archive data ({e})")
         return

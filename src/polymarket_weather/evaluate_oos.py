@@ -168,6 +168,26 @@ def _best_shrink_weight(ml):
     return best[0], best[1], b_w1, b_w0
 
 
+def _paired_brier_test(p_a, p_b, y, n_boot=20000):
+    """Paired test on the per-market Brier difference (A − B). Positive ⇒ A worse.
+
+    Both predictors are scored on the SAME markets, so market-difficulty variance differences
+    out — the paired test is far tighter than comparing two pooled Brier means. Returns
+    (mean_diff, se, t, ci_lo, ci_hi, frac_A_better).
+    """
+    d = np.array([(pa - yi) ** 2 - (pb - yi) ** 2 for pa, pb, yi in zip(p_a, p_b, y)], float)
+    n = len(d)
+    if n < 2:
+        return None
+    mean_d = float(d.mean())
+    se = float(d.std(ddof=1) / np.sqrt(n))
+    t = mean_d / se if se else float("nan")
+    rng = np.random.default_rng(0)
+    boot = np.array([rng.choice(d, n, replace=True).mean() for _ in range(n_boot)])
+    lo, hi = np.percentile(boot, [2.5, 97.5])
+    return mean_d, se, t, float(lo), float(hi), float((boot < 0).mean())
+
+
 def _calibration(p, y, bins=10):
     """Reliability table: (range, n, mean predicted, realized frequency) per probability bin."""
     rows = []
@@ -358,6 +378,11 @@ def main():
     print(f"    model Brier {brier_model:.4f}  {'<' if beats_market else '>='}  "
           f"market Brier {brier_mkt:.4f}   → "
           f"{'PASS' if beats_market else 'FAIL — no forecasting edge over the market'}")
+    pt = _paired_brier_test(p_model, p_mkt, y)
+    if pt is not None:
+        md, se, t, lo, hi, frac = pt
+        print(f"    paired Δ(model−market) Brier {md:+.4f}  SE {se:.4f}  t {t:+.2f}  "
+              f"95% CI [{lo:+.4f}, {hi:+.4f}]  P(model better) {frac:.1%}")
     if brier_ens is not None:
         print(f"    model Brier {brier_model:.4f}  {'<=' if beats_ens else '>'}  "
               f"ensemble Brier {brier_ens:.4f}   → "

@@ -68,8 +68,9 @@ def train_intraday():
 
 def _train_one(slug: str, kind: str, spec: dict):
         try:
+            from settlement_truth import load_training_truth
             obs = pd.read_csv(f"data/weather/{slug}_obs_hourly.csv")
-            truth = pd.read_csv(f"data/weather/{slug}_historical_actuals.csv")
+            truth = load_training_truth(slug)   # settlement-faithful target (W0.2); CLI fallback
             leads = pd.read_csv(spec["fcst_file"].format(slug=slug))
         except Exception as e:
             logger.error(f"{slug} [{kind}]: missing inputs ({e})")

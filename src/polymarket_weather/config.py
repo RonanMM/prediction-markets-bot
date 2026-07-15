@@ -94,7 +94,6 @@ CITY_NAMES = {
 # Based on ECMWF verification statistics for 2m Tmax
 MIN_EDGE              = 0.06      # 6 pp raw probability
 MIN_LIQUIDITY         = 1000      # USDC
-MIN_BINS_FOR_PMF      = 3         # need >=3 exact bins to reconstruct distribution
 # α5 coherence bonus only applies to markets this liquid. Incoherent bins (sum != 1) are only a
 # tradeable mispricing when there is real two-sided liquidity; otherwise incoherence just means the
 # market is thin and won't fill — so we do NOT reward it. Set above MIN_LIQUIDITY on purpose.

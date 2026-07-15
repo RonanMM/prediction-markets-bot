@@ -65,6 +65,17 @@ FAV_LO, FAV_CORE_HI, FAV_HI = 0.65, 0.75, 0.85   # buy YES priced in [FAV_LO, FA
 FAV_MIN_HOURS_TO_END = 12.0                       # only while >12h to local day end
 GATE_FAV_CORE = (80, 0.03)
 
+# Leg 1 MAKER gate — pre-registered 2026-07-15 (a NEW instrument; the taker gates above are
+# UNCHANGED — not moved to fit a result). The maker backtest (`shoulder_book.py --backtest`) showed
+# the conservative maker fill is itself adversely selected: a resting SELL-YES fills only when the
+# price ticks back UP, i.e. on bins more likely to resolve YES — the losing side for a seller. That
+# flips the FULL band [5,35)¢ NEGATIVE, but the CORE [20,35)¢ overpricing is large enough to survive
+# it (in-sample reconstruction +7.6¢/share at ~31% fill). So the maker book is gated on the CORE
+# ONLY; the full band carries no maker gate. Threshold shape mirrors the taker core gate (chosen by
+# analogy, NOT tuned to the observed number). Leg 2 (favorite) has NO pre-day maker entries — it is
+# a same-day phenomenon, deferred to a future same-day entry window (megaplan §10e follow-up).
+GATE_CORE_MAKER = (80, 0.03)   # (min FILLED core entries, min mean maker net $/share)
+
 _SNAP_WINDOW_MIN = 60             # a "run" = rows within this window of the newest row
 
 _COLS = ["entered_at_utc", "city", "condition_id", "question", "target_date",
@@ -101,6 +112,32 @@ def _net_edge(side_won: pd.Series, side_price: pd.Series) -> pd.Series:
     exec_price = side_price + config.HALF_SPREAD
     fee = exec_price.map(config.taker_fee_per_share)
     return side_won.astype(float) - (exec_price + fee)
+
+
+def _maker_net(side_won, side_price):
+    """Per-share MAKER P&L for a FILLED resting order: no spread crossed (you set the price) and
+    no taker fee (Polymarket makers pay zero on weather). The 25% maker rebate is left OUT — it is
+    real upside, funded by the taker on the other side, but attributing it per-fill needs taker
+    volume, so booking it to 0 keeps the number conservative. Only filled entries reach here."""
+    return float(side_won) - float(side_price)
+
+
+def maker_filled(side: str, entry_yes: float, later_yes) -> bool:
+    """Conservative maker fill from 2-hourly snapshots: a resting order at the entry yes-price
+    fills ONLY if a LATER snapshot trades THROUGH it from the taker side —
+      SELL YES (Leg 1, side='No'):  a later yes-price ≥ entry  (a buyer lifts your ask)
+      BUY  YES (Leg 2, side='Yes'): a later yes-price ≤ entry  (a seller hits your bid)
+    Snapshots are sparse, so this UNDERstates fills (same-price touches between snapshots are
+    missed) — deliberately, so every booked fill is one a later trade demonstrably supports. It
+    also excludes the runaway winners (a shoulder that only ever falls, a favorite that only ever
+    rises), biasing booked maker P&L DOWNWARD. Unfilled orders earn nothing."""
+    later = pd.Series(list(later_yes), dtype=float)
+    later = later[later.notna()]
+    if later.empty:
+        return False
+    if side == "No":                          # short YES: filled only if price ticks back up
+        return bool((later >= entry_yes - 1e-9).any())
+    return bool((later <= entry_yes + 1e-9).any())   # long YES: filled only if price ticks down
 
 
 def scan_and_record() -> int:
@@ -158,6 +195,16 @@ def scan_and_record() -> int:
     return len(added)
 
 
+def _price_paths(cids: set) -> dict:
+    """condition_id -> forward yes-price path (t, yes), for conservative maker-fill checks."""
+    snaps = _all_snapshots()
+    if snaps.empty:
+        return {}
+    snaps = snaps[snaps["condition_id"].isin(cids)]
+    return {cid: g.sort_values("t")[["t", "yes"]].reset_index(drop=True)
+            for cid, g in snaps.groupby("condition_id")}
+
+
 def report() -> None:
     book = _load_book()
     if book.empty:
@@ -178,37 +225,144 @@ def report() -> None:
         return
     graded["side_won"] = (graded["outcome"] == 1) == (graded["side"] == "Yes")
     graded["net_edge"] = _net_edge(graded["side_won"], graded["entry_side_price"].astype(float))
-    views = [
-        ("Leg1 shoulder full [5,35)¢", graded[graded["leg"] == "shoulder"], GATE_FULL),
-        ("Leg1 shoulder core [20,35)¢",
-         graded[(graded["leg"] == "shoulder") & (graded["band"] == "core")], GATE_CORE),
-        ("Leg2 favorite core [65,75)¢",
-         graded[(graded["leg"] == "favorite") & (graded["band"] == "fav_core")], GATE_FAV_CORE),
-        ("Leg2 favorite outer [75,85)¢",
-         graded[(graded["leg"] == "favorite") & (graded["band"] == "fav_outer")], None),
-    ]
-    for name, sub, gate in views:
+    # Conservative maker fill per entry (needs the forward price path after the entry snapshot).
+    paths = _price_paths(set(graded["condition_id"]))
+
+    def _fill(r) -> bool:
+        path = paths.get(r["condition_id"])
+        if path is None:
+            return False
+        after = path[path["t"] > pd.to_datetime(r["entered_at_utc"], utc=True)]["yes"]
+        return maker_filled(r["side"], float(r["entry_yes_price"]), after)
+
+    graded["maker_filled"] = graded.apply(_fill, axis=1)
+
+    def _line(name, sub, taker_gate, maker_gate) -> None:
         n = len(sub)
         if n == 0:
             print(f"  {name}: 0 graded")
+            return
+        te, wr = sub["net_edge"].mean(), sub["side_won"].mean()
+        tstr = f"taker {te:+.3f}"
+        if taker_gate:
+            need_n, need_e = taker_gate
+            tstr += ("  ✅TAKER-GATE" if (n >= need_n and te >= need_e)
+                     else f" ({n}/{need_n}@{te:+.3f}v{need_e:+.3f})")
+        filled = sub[sub["maker_filled"]]
+        if len(filled):
+            me = (filled["side_won"].astype(float) - filled["entry_side_price"].astype(float)).mean()
+            mstr = f"maker {len(filled)}/{n} filled {me:+.3f}"
+            if maker_gate:
+                need_n, need_e = maker_gate
+                mstr += ("  ✅MAKER-GATE" if (len(filled) >= need_n and me >= need_e)
+                         else f" ({len(filled)}/{need_n}@{me:+.3f}v{need_e:+.3f})")
+        else:
+            mstr = "maker 0 filled"
+        print(f"  {name}: n={n} wr {wr:.0%} | {tstr} | {mstr}")
+
+    sh = graded[graded["leg"] == "shoulder"]
+    fav = graded[graded["leg"] == "favorite"]
+    # Full band: taker gate only — the maker fill is adversely selected here (see GATE_CORE_MAKER).
+    _line("Leg1 shoulder full [5,35)¢", sh, GATE_FULL, None)
+    _line("Leg1 shoulder core [20,35)¢", sh[sh["band"] == "core"], GATE_CORE, GATE_CORE_MAKER)
+    _line("Leg2 favorite core [65,75)¢", fav[fav["band"] == "fav_core"], GATE_FAV_CORE, None)
+    _line("Leg2 favorite outer [75,85)¢", fav[fav["band"] == "fav_outer"], None, None)
+    print("  (pre-registered gates; taker crosses spread + 0.05·p·(1−p) fee; maker = filled-only, "
+          "no fee/spread, rebate excluded; conservative fill; no real orders until a gate passes)")
+
+
+def _all_snapshots() -> pd.DataFrame:
+    """Every snapshot across cities with parsed yes/end, for the historical maker backtest."""
+    frames = []
+    for slug, city in _SLUGS.items():
+        p = _SNAP_DIR / f"{slug}_snapshots.csv"
+        if not p.exists():
             continue
-        e = sub["net_edge"].mean()
-        wr = sub["side_won"].mean()
-        if gate is None:
-            print(f"  {name}: n={n}  win rate {wr:.1%}  mean net edge {e:+.3f} $/share  (tracked, no gate)")
+        s = pd.read_csv(p)
+        s["t"] = pd.to_datetime(s["fetched_at_utc"], utc=True, format="mixed")
+        s["yes"] = s["outcome_probs_json"].map(_yes_prob)
+        s["end"] = pd.to_datetime(s["end_date_iso"], errors="coerce", utc=True).dt.tz_localize(None)
+        s["city"] = city
+        s = s.dropna(subset=["yes", "end"])
+        frames.append(s[["city", "condition_id", "question", "t", "yes", "end", "liquidity_usdc"]])
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def backtest_maker() -> None:
+    """Reconstruct both legs over the FULL snapshot history, apply the conservative maker fill,
+    grade vs settlement truth, and compare MAKER (filled only, no fee/spread) vs TAKER economics.
+
+    Entry = the FIRST in-band snapshot in the leg's eligibility window (shoulder: pre-day;
+    favorite: >12h to local day end), liquidity ≥ MIN_LIQUIDITY. This is the historical analogue
+    of the live paper book — it exists to size the maker edge NOW, before the forward gate."""
+    snaps = _all_snapshots()
+    if snaps.empty:
+        print("maker backtest: no snapshots."); return
+    rows = []
+    for cid, g in snaps.groupby("condition_id"):
+        g = g.sort_values("t").reset_index(drop=True)
+        city, q = g["city"].iloc[0], g["question"].iloc[0]
+        if not parse_question(q):
             continue
-        need_n, need_e = gate
-        status = ("✅ GATE PASSED" if (n >= need_n and e >= need_e)
-                  else f"pending ({n}/{need_n} @ {e:+.3f} vs {need_e:+.3f})")
-        print(f"  {name}: n={n}  win rate {wr:.1%}  mean net edge {e:+.3f} $/share  → {status}")
-    print("  (pre-registered gates; taker-costed with the verified 0.05·p·(1−p) weather fee; "
-          "no real orders until a gate passes — megaplan §10b/§10e)")
+        pq = parse_question(q)
+        tgt = parse_question_date(q, g["end"].iloc[0]) or g["end"].iloc[0].date()
+        tz = ZoneInfo(_TZ[city])
+        day_start = pd.Timestamp(tgt).tz_localize(tz).tz_convert("UTC")
+        day_end = (pd.Timestamp(tgt) + pd.Timedelta(days=1)).tz_localize(tz).tz_convert("UTC")
+        y = resolves_yes(city, str(tgt), q, pq["temp_c"])
+        if y is None:
+            continue
+        liq_ok = g["liquidity_usdc"].fillna(0.0) >= config.MIN_LIQUIDITY
+        # Leg 1 — shoulder SELL YES (side No): first pre-day in-band snapshot
+        pre = g[liq_ok & (g["t"] < day_start) & (g["yes"] >= BAND_LO) & (g["yes"] < BAND_HI)]
+        if not pre.empty:
+            e = pre.iloc[0]; p = float(e["yes"])
+            filled = maker_filled("No", p, g[g["t"] > e["t"]]["yes"])
+            rows.append({"leg": "shoulder", "band": "core" if p >= CORE_LO else "outer",
+                         "side": "No", "side_price": 1.0 - p, "side_won": (y == 0),
+                         "filled": filled})
+        # Leg 2 — favorite BUY YES (side Yes): first >12h-to-end in-band snapshot
+        h = (day_end - g["t"]).dt.total_seconds() / 3600.0
+        fav = g[liq_ok & (h > FAV_MIN_HOURS_TO_END) & (g["yes"] >= FAV_LO) & (g["yes"] < FAV_HI)]
+        if not fav.empty:
+            e = fav.iloc[0]; p = float(e["yes"])
+            filled = maker_filled("Yes", p, g[g["t"] > e["t"]]["yes"])
+            rows.append({"leg": "favorite", "band": "fav_core" if p < FAV_CORE_HI else "fav_outer",
+                         "side": "Yes", "side_price": p, "side_won": (y == 1),
+                         "filled": filled})
+    df = pd.DataFrame(rows)
+    if df.empty:
+        print("maker backtest: no gradable reconstructed entries."); return
+    df["taker_net"] = _net_edge(df["side_won"], df["side_price"])
+    print(f"\nMAKER-vs-TAKER BACKTEST (reconstructed over full history, graded vs settlement truth)")
+    print(f"  conservative fill: a resting order fills only if a later snapshot trades through it\n")
+    print(f"  {'leg / band':<26} {'n':>4} {'fill%':>6} {'taker net':>10} {'maker net(filled)':>18}")
+    views = [("Leg1 shoulder [5,35)c", df["leg"] == "shoulder"),
+             ("  core [20,35)c", (df["leg"] == "shoulder") & (df["band"] == "core")),
+             ("Leg2 favorite [65,85)c", df["leg"] == "favorite"),
+             ("  core [65,75)c", (df["leg"] == "favorite") & (df["band"] == "fav_core"))]
+    for name, mask in views:
+        sub = df[mask]
+        if sub.empty:
+            continue
+        fills = sub[sub["filled"]]
+        fill_rate = len(fills) / len(sub)
+        taker = sub["taker_net"].mean()
+        maker = (fills["side_won"].astype(float) - fills["side_price"]).mean() if len(fills) else float("nan")
+        mk = f"{maker:+.3f}" if len(fills) else "  n/a"
+        print(f"  {name:<26} {len(sub):>4} {fill_rate:>5.0%} {taker:>+10.3f} {mk:>18} (n={len(fills)})")
+    print("  maker net EXCLUDES the 25% rebate (conservative upside); taker net crosses spread + 0.05·p·(1−p) fee")
 
 
 def main():
     ap = argparse.ArgumentParser(description="Market-structure paper book (megaplan §10b/§10e).")
     ap.add_argument("--report", action="store_true", help="report only; record no new entries")
+    ap.add_argument("--backtest", action="store_true",
+                    help="historical maker-vs-taker backtest over the full snapshot history")
     args = ap.parse_args()
+    if args.backtest:
+        backtest_maker()
+        return
     if not args.report:
         n = scan_and_record()
         print(f"recorded {n} new paper entries")

@@ -28,6 +28,22 @@ def _days_from_now(o: Opportunity) -> float:
     now = datetime.now(timezone.utc)
     return max(0.0, (td - now).total_seconds() / 86400.0)
 
+def _backbone_stats(market_bins: list[MarketBin], mu_fallback: float) -> tuple[float, float]:
+    """α5 coherence deviation + market mode over the DISJOINT backbone (exact + range).
+
+    Keying these off `exact` bins alone was a bug: US-city markets ("between X-Y°F") are
+    RANGE-only, so `exact_bins` was empty, giving pmf_dev = |0 - 1| = 1.0 (maximal fake
+    incoherence → always-on α5 bonus) and market_mode_c = mu (mode_shift_c collapsed to 0)
+    on every NYC/Chicago row. "No backbone bins" is UNKNOWN coherence, not maximal → 0.0.
+    """
+    backbone = [b for b in market_bins if b.condition in ("exact", "range")]
+    if not backbone:
+        return 0.0, mu_fallback
+    pmf_dev = abs(sum(b.yes_prob for b in backbone) - 1.0)
+    market_mode_c = max(backbone, key=lambda b: b.yes_prob).temp_c
+    return pmf_dev, market_mode_c
+
+
 def _kelly_size(opp: Opportunity, kelly_fraction: float = KELLY_FRACTION, fee: float = FEE_RATE) -> float:
     """
     Fractional Kelly with fee adjustment.
@@ -417,12 +433,10 @@ def analyse_city(data_dir: Path, city: str,
             market_bins, mu, sigma, nu, floor=dist_ml.floor)
 
         exact_bins = [b for b in market_bins if b.condition == "exact"]
-        raw_sum    = sum(b.yes_prob for b in exact_bins)
-        pmf_dev    = abs(raw_sum - 1.0)
-
-        # Mode of market
-        market_mode_c = (max(exact_bins, key=lambda b: b.yes_prob).temp_c
-                         if exact_bins else mu)
+        # α5 coherence + market mode use the full disjoint backbone (exact + range), matching
+        # reconstruct_pmf. exact_bins stays exact-only below (it drives the exact-bin pricing
+        # loop and n_exact_bins, which is legitimately 0 for range-only markets).
+        pmf_dev, market_mode_c = _backbone_stats(market_bins, mu)
 
         # ── Per-bin edge computation ───────────────────────────────────────
         # Use RAW probabilities:

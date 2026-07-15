@@ -298,7 +298,10 @@ def reconstruct_pmf(bins: list[MarketBin],
         consistency_err += abs(implied - b.yes_prob)
         n_constraints   += 1
 
-    consistency = 1.0 - (consistency_err / max(n_constraints, 1))
+    # No gte/lte bins ⇒ coherence was UNCHECKED, not perfect. Return NaN so a reader can tell
+    # "no constraints available" from a genuine sum-to-1 (old code returned 1.0 = "coherent"
+    # on every range-only US market).
+    consistency = (1.0 - consistency_err / n_constraints) if n_constraints else float("nan")
 
     # ── Step 3: estimate missing bin mass ─────────────────────────────────
     # All observed exact temps
@@ -349,7 +352,9 @@ def reconstruct_pmf(bins: list[MarketBin],
     fc_sum = max(fc_sum, sum(fc_raw.values()))
     forecast_pmf = {t: v / fc_sum for t, v in fc_raw.items()}
 
-    return market_pmf, forecast_pmf, max(0.0, min(1.0, consistency))
+    if n_constraints:
+        consistency = max(0.0, min(1.0, consistency))
+    return market_pmf, forecast_pmf, consistency
 
 
 # ══════════════════════════════════════════════════════════════════════════════

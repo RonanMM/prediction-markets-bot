@@ -931,3 +931,47 @@ def test_verified_weather_taker_fee():
     assert pytest.approx(taker_fee_per_share(0.7)) == 0.0105
     assert taker_fee_per_share(0.99) < 0.001
     assert taker_fee_per_share(0.0) == 0.0 and taker_fee_per_share(1.0) == 0.0
+
+
+def test_maker_fill_is_conservative_trade_through():
+    """A resting maker order fills only if a LATER price trades through it from the taker side:
+    SELL YES fills when price ticks back UP to the ask; BUY YES fills when it ticks DOWN to the bid."""
+    from shoulder_book import maker_filled
+    # SELL YES (side='No') posted at 0.27 — fills if a later snapshot >= 0.27, not if it only falls
+    assert maker_filled("No", 0.27, [0.24, 0.28, 0.10]) is True
+    assert maker_filled("No", 0.27, [0.24, 0.20, 0.05]) is False   # only fell → never lifted
+    # BUY YES (side='Yes') posted at 0.70 — fills if a later snapshot <= 0.70, not if it only rises
+    assert maker_filled("Yes", 0.70, [0.72, 0.68, 0.81]) is True
+    assert maker_filled("Yes", 0.70, [0.75, 0.80, 0.90]) is False  # only rose → bid never hit
+    assert maker_filled("No", 0.27, []) is False                    # no later prices → no fill
+
+
+def test_backbone_stats_handles_range_only_markets():
+    """Range-only (NYC/Chicago) markets must NOT be pinned at pmf_dev=1.0 / mode=mu.
+
+    Regression for the α5 backbone bug: keying coherence + market mode off `exact` bins
+    alone made every US-city (range-only) row report maximal fake incoherence and zero
+    model-vs-market mode disagreement.
+    """
+    from engine import _backbone_stats
+    from models import MarketBin
+    def rb(t, y):
+        return MarketBin("c", "between X-Y°F", "range", t, 0.278, y, 5000, 0, 0,
+                         temp_lo=t - 0.3, temp_hi=t + 0.3)
+    bins = [rb(29.0, 0.30), rb(30.0, 0.45), rb(31.0, 0.20)]   # sums to 0.95
+    dev, mode = _backbone_stats(bins, mu_fallback=99.0)
+    assert abs(dev - 0.05) < 1e-9        # |0.95 - 1| — NOT 1.0
+    assert mode == 30.0                  # priciest bin, NOT the model mean
+    dev0, mode0 = _backbone_stats([], mu_fallback=99.0)
+    assert dev0 == 0.0 and mode0 == 99.0  # empty ⇒ unknown coherence, mode falls back
+
+
+def test_reconstruct_pmf_consistency_nan_without_constraints():
+    """A market with no gte/lte bins reports NaN coherence (unchecked), not a fake 1.0."""
+    import math
+    from pmf import reconstruct_pmf
+    from models import MarketBin
+    bins = [MarketBin("c", "q", "range", 30.0, 0.278, 0.5, 5000, 0, 0,
+                      temp_lo=29.7, temp_hi=30.3)]
+    _, _, cons = reconstruct_pmf(bins, 30.0, 1.5, 8.0)
+    assert math.isnan(cons)
