@@ -1,0 +1,73 @@
+# Daily truth refresh + eval-tracker regeneration — laptop-independent.
+#
+# Mirrors scripts/raincheck_truth_eval.sh (the launchd truth-eval agent), which had no cloud
+# equivalent: the eval tracker only updated when run on the laptop. Order matters — refresh
+# station truth first so newly-published obs make resolved markets gradable, THEN regenerate
+# output/opportunities_evaluation_calibrated.csv from the grown snapshot history.
+#
+# Runs AFTER collection has had time to land (collect.yml runs every 2h). Exact time is not
+# critical: settlement-faithful truth lags ~1 day (HKO ~1 month), so a market becomes gradable
+# a day or so after it resolves regardless of when this fires.
+#
+# Refetchable truth files (*_historical_*, *_obs_hourly) are gitignored and re-fetched each run;
+# only the tracked eval-tracker CSVs under output/ are committed. --no_plots skips regenerating
+# the gitignored 200 MB plot set.
+
+name: truth-eval
+
+on:
+  schedule:
+    - cron: "0 9 * * *"    # daily ~09:00 UTC; offset well clear of collect's :13 cadence
+  workflow_dispatch: {}
+
+concurrency:
+  group: git-push          # shared with the other committing workflows to serialise pushes
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  truth-eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: src/polymarket_weather/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r src/polymarket_weather/requirements.txt
+
+      - name: Refresh station truth
+        working-directory: src/polymarket_weather
+        run: python fetch_historical_truth.py
+
+      - name: Regenerate eval tracker
+        working-directory: src/polymarket_weather
+        run: python polymarket_weather_analysis.py --data_dir ./data --no_plots
+
+      - name: Gate progress
+        working-directory: src/polymarket_weather
+        run: python data_status.py
+
+      - name: Commit regenerated trackers
+        run: |
+          git config user.name "raincheck-collector"
+          git config user.email "actions@users.noreply.github.com"
+          git add src/polymarket_weather/output
+          if git diff --cached --quiet; then
+            echo "No tracker changes — nothing to commit."
+            exit 0
+          fi
+          git commit -m "eval: daily truth refresh + tracker $(date -u '+%Y-%m-%d %H:%M UTC')"
+          # Rebase-retry push: tolerate racing commits from the collect workflow.
+          for i in 1 2 3; do
+            git push && exit 0
+            git pull --rebase && continue
+          done
+          git push
