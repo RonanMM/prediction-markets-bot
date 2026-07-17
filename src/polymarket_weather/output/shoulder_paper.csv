@@ -58,3 +58,4 @@ entered_at_utc,city,condition_id,question,target_date,leg,side,entry_side_price,
 2026-07-17T12:42:23.506551+00:00,NYC,0x85a9602be2f1390f1e46bcdbccf7aa3ad7abe3889cd2582d05e4d142fae8541d,Will the highest temperature in New York City be between 84-85°F on July 18?,2026-07-18,shoulder,No,0.925,0.075,outer,5976.62
 2026-07-17T12:42:23.506551+00:00,Seoul,0x0cf4ee608d351772643814931f8ec9acb0d321d98b0b2ec258430bd0cc1b2e8f,Will the highest temperature in Seoul be 27°C on July 18?,2026-07-18,shoulder,No,0.665,0.335,core,7487.05
 2026-07-17T12:42:23.506551+00:00,Seoul,0x7865bba6c7d86db7d0e916efb5af8afb202819cc1d36fa9248e29f60aeef5982,Will the highest temperature in Seoul be 28°C on July 18?,2026-07-18,shoulder,No,0.695,0.305,core,8048.19
+2026-07-17T13:43:20.350053+00:00,Seoul,0x1d4d95f64ed515e05d6f7abb5143d630d26ca0b8fb09affc7212a039f86209e9,Will the highest temperature in Seoul be 30°C on July 19?,2026-07-19,shoulder,No,0.925,0.075,outer,4956.63
