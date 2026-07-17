@@ -64,3 +64,4 @@ entered_at_utc,city,condition_id,question,target_date,leg,side,entry_side_price,
 2026-07-17T17:27:59.954042+00:00,Seoul,0xd75e7dd7858011f29b4b547e6815092b1dbd512ac5da92d9c7d2c8523462e68c,Will the highest temperature in Seoul be 29°C on July 19?,2026-07-19,shoulder,No,0.68,0.32,core,7969.98
 2026-07-17T19:35:19.027791+00:00,Chicago,0xf57ae282e5534d8dbbc7fa3b317e62e9058f612fb811dc27a809f49e225f8446,Will the highest temperature in Chicago be between 90-91°F on July 18?,2026-07-18,shoulder,No,0.725,0.275,core,4389.4
 2026-07-17T19:35:19.027791+00:00,London,0x69f7ed173a9bd68ef367fb6d56c956fb0878bc219012e1702e6a52b12c42f2ee,Will the highest temperature in London be 25°C on July 19?,2026-07-19,shoulder,No,0.9,0.1,outer,6890.22
+2026-07-17T23:11:02.798722+00:00,London,0x550bdea3210ce538048434832d502c9baf6629d2b95ceaf52875266951ee1ee0,Will the highest temperature in London be 21°C on July 19?,2026-07-19,shoulder,No,0.9475,0.0525,outer,6341.63
