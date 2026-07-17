@@ -40,6 +40,8 @@ coverage.xml
 .pytest_cache/
 
 # Build and docs folder/files
+# generated dashboard (build_dashboard.py) — published to Pages, never committed
+site/
 build/*
 dist/*
 sdist/*
