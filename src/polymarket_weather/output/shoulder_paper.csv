@@ -77,3 +77,4 @@ entered_at_utc,city,condition_id,question,target_date,leg,side,entry_side_price,
 2026-07-18T09:48:48.027185+00:00,HongKong,0x5b5b3eb47d2d36d73685124d3b63e50e6ac48e62765daec4d7f9d9460351bbff,Will the lowest temperature in Hong Kong be 26°C on July 19?,2026-07-19,shoulder,No,0.785,0.215,core,2738.93
 2026-07-18T15:15:35.785352+00:00,London,0x4df5aa6967bdf1380f11104757dfc738dd5614573079e344b2c887fe9058ebf0,Will the highest temperature in London be 23°C on July 20?,2026-07-20,shoulder,No,0.805,0.195,outer,3938.13
 2026-07-18T15:15:35.785352+00:00,HongKong,0x7180c99085d63e8c36874951857df8dfb924740c39cf7bb373ee5432de63fb50,Will the lowest temperature in Hong Kong be 25°C on July 20?,2026-07-20,shoulder,No,0.935,0.065,outer,1016.26
+2026-07-18T17:15:38.747382+00:00,Seoul,0x5bcc482d5b5bf640e4c5b494d0c4dc97beec9d5dead08ce21a4ce9a03181756e,Will the lowest temperature in Seoul be 25°C on July 20?,2026-07-20,shoulder,No,0.95,0.05,outer,1487.39
