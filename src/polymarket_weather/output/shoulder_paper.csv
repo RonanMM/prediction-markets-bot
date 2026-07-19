@@ -98,3 +98,4 @@ entered_at_utc,city,condition_id,question,target_date,leg,side,entry_side_price,
 2026-07-19T13:52:51.377628+00:00,London,0x022fecaca541ef063d7e23367e7021b51041468732b5379c091d5534ca8c3aff,Will the lowest temperature in London be 15°C on July 21?,2026-07-21,shoulder,No,0.675,0.325,core,1144.46
 2026-07-19T13:52:51.377628+00:00,HongKong,0x7027f9cd263efec60a138cbfac14584299787720ba9627646e39965207d82bd2,Will the lowest temperature in Hong Kong be 26°C on July 20?,2026-07-20,shoulder,No,0.69,0.31,core,1120.03
 2026-07-19T15:16:07.513027+00:00,HongKong,0xa144ad3e7a8664aafc6e32c0a9a9f4a52ea5cb89c7740f9e9364892f649dfce7,Will the lowest temperature in Hong Kong be 29°C on July 20?,2026-07-20,shoulder,No,0.925,0.075,outer,1341.48
+2026-07-19T19:27:23.293518+00:00,NYC,0x5fc0c417d2765406005d204c067278d71c81a1c0f3152297bf19902fe4be8ffd,Will the highest temperature in New York City be between 78-79°F on July 20?,2026-07-20,shoulder,No,0.855,0.145,outer,4573.05
