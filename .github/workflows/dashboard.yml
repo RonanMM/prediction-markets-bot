@@ -62,11 +62,12 @@ jobs:
           fi
           git clone --depth 1 "https://x-access-token:${DASHBOARD_TOKEN}@github.com/${PAGES_REPO}.git" pub
           cp site/index.html pub/index.html
+          cp site/data.json  pub/data.json
           touch pub/.nojekyll
           cd pub
           git config user.name "raincheck-collector"
           git config user.email "actions@users.noreply.github.com"
-          git add index.html .nojekyll
+          git add index.html data.json .nojekyll
           if git diff --cached --quiet; then
             echo "Dashboard unchanged — nothing to publish."
             exit 0

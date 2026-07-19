@@ -1,17 +1,25 @@
 #!/usr/bin/env python3
-"""build_dashboard.py — render the live status dashboard as a self-contained HTML page.
+"""build_dashboard.py — render the LIVE status dashboard as a client-side page.
 
-Two data paths:
-  * SCALARS  — parsed from data_status.py / evaluate_oos.py / shoulder_book.py --report stdout.
-  * SERIES   — computed in-process by importing evaluate_oos._graded_markets (per-market model /
-    market / outcome) + reading snapshot timestamps, then embedded as JSON and drawn as
-    interactive SVG charts (no external libraries — CSP-safe for GitHub Pages / any static host).
+Emits TWO files next to each other:
+  * index.html  — a static SHELL: all CSS + charts + a fetch/refresh loop. Contains NO baked
+    numbers in its markup; every value is filled in at view time from data.json. It also embeds
+    a copy of the current payload inline (``<script id="D0">``) so the page renders instantly on
+    first paint and still works standalone (local file://, the Claude Artifact preview) where a
+    cross-file fetch is blocked.
+  * data.json   — the payload: scalars (parsed from data_status / evaluate_oos / shoulder_book),
+    pre-rendered HTML fragments, the chart SERIES, and two timestamps. Refreshed every build.
 
-    python build_dashboard.py                # writes ../../site/index.html
-    python build_dashboard.py /path/out.html # custom path
+At view time the page loads data.json (cache-busted), fills the ``data-bind`` / ``data-bind-html``
+slots, redraws the charts if the series changed, and ticks a live "refreshed Xm ago" clock — so
+opening the link always shows the freshest published data and an open tab updates itself.
 
+    python build_dashboard.py                # writes ../../site/index.html + ../../site/data.json
+    python build_dashboard.py /path/out.html # custom path (data.json written alongside)
+
+SCALARS are parsed from stdout; SERIES are computed in-process via evaluate_oos._graded_markets.
 Every value degrades to "—" / an empty chart on a parse or import miss — the page must always
-render. Keep in sync with the published artifact template.
+render. Charts are hand-rolled SVG (no external libraries — CSP-safe for GitHub Pages / any host).
 """
 from __future__ import annotations
 
@@ -209,19 +217,21 @@ def _fmt_span(d: dict) -> tuple[str, str]:
         return "—", "—"
 
 
-def _data_through() -> str:
+def _last_commit_dt() -> datetime:
+    """UTC datetime of the last data commit (what the numbers are 'through'); now() on failure."""
     try:
         r = subprocess.run(["git", "log", "-1", "--format=%cI"], cwd=REPO,
                            capture_output=True, text=True, timeout=20)
         iso = r.stdout.strip()
         if iso:
-            return datetime.fromisoformat(iso).astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+            return datetime.fromisoformat(iso).astimezone(timezone.utc)
     except Exception:
         pass
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    return datetime.now(timezone.utc)
 
 
-def render(d: dict, series: dict) -> str:
+# ────────────────────────────── payload (data.json) ──────────────────────────────
+def build_payload(d: dict, series: dict) -> dict:
     days, span = _fmt_span(d)
     G = lambda k, dflt="—": str(d.get(k, dflt))
     try:
@@ -238,24 +248,29 @@ def render(d: dict, series: dict) -> str:
                     "forecast — the gap is narrowing but hasn't closed. Shown on purpose: no edge "
                     "is claimed until the model line drops below the market line.")
 
-    repl = {
-        "UPDATED": _data_through(),
-        "GATE_STATUS": G("gate_status"), "GATE_MKTS": G("gate_mkts"), "GATE_BETS": G("gate_bets"),
-        "GATE_MKTS_THR": G("gate_mkts_thr", "150"),
-        "DATA_DAYS": days, "SPAN": span,
-        "SB_WR": G("sb_wr"), "SB_GRADED": G("sb_graded"), "SB_ENTRIES": G("sb_entries"),
-        "BR_MARKET": G("br_market"), "BR_ENS": G("br_ens"), "BR_MODEL": G("br_model"),
-        "N_MKTS": G("n_mkts"), "CRPS_MODEL": G("crps_model"), "CRPS_ENS": G("crps_ens"),
-        "EDGE_CHIP": edge_chip, "TAKEAWAY": takeaway,
-        "SB_FULL": G("sb_full"), "SB_CORE": G("sb_core"), "SB_AWAIT": G("sb_await"),
-        "E3_ROI": G("e3_roi"), "E3_N": G("e3_n"),
-        "CITIES_HTML": _cities_html(series.get("city", []), d),
-        "CHART_DATA": json.dumps(series),
+    commit_dt = _last_commit_dt()
+    now = datetime.now(timezone.utc)
+    return {
+        "generated_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "data_through_iso": commit_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "bind": {
+            "UPDATED": commit_dt.strftime("%Y-%m-%d %H:%M UTC"),
+            "GATE_STATUS": G("gate_status"), "GATE_MKTS": G("gate_mkts"), "GATE_BETS": G("gate_bets"),
+            "GATE_MKTS_THR": G("gate_mkts_thr", "150"),
+            "DATA_DAYS": days, "SPAN": span,
+            "SB_WR": G("sb_wr"), "SB_GRADED": G("sb_graded"), "SB_ENTRIES": G("sb_entries"),
+            "BR_MARKET": G("br_market"), "BR_ENS": G("br_ens"), "BR_MODEL": G("br_model"),
+            "N_MKTS": G("n_mkts"), "CRPS_MODEL": G("crps_model"), "CRPS_ENS": G("crps_ens"),
+            "SB_FULL": G("sb_full"), "SB_CORE": G("sb_core"), "SB_AWAIT": G("sb_await"),
+            "E3_ROI": G("e3_roi"), "E3_N": G("e3_n"),
+        },
+        "html": {
+            "EDGE_CHIP": edge_chip,
+            "TAKEAWAY": takeaway,
+            "CITIES_HTML": _cities_html(series.get("city", []), d),
+        },
+        "series": series,
     }
-    html = TEMPLATE
-    for k, v in repl.items():
-        html = html.replace(f"%%{k}%%", str(v))
-    return html
 
 
 def _cities_html(city_series: list, d: dict) -> str:
@@ -274,11 +289,20 @@ def _cities_html(city_series: list, d: dict) -> str:
     return "\n      ".join(out)
 
 
+def render_shell(payload: dict) -> str:
+    # Escape "<" in the inline copy so a fragment can never break out of the <script> tag.
+    inline = json.dumps(payload, ensure_ascii=False).replace("<", "\\u003c")
+    return TEMPLATE.replace("%%PAYLOAD%%", inline)
+
+
 def main() -> None:
     out = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_OUT
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(render(gather(), compute_series()), encoding="utf-8")
-    print(f"wrote {out}  ({out.stat().st_size} bytes)")
+    payload = build_payload(gather(), compute_series())
+    out.write_text(render_shell(payload), encoding="utf-8")
+    data_out = out.parent / "data.json"
+    data_out.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    print(f"wrote {out} ({out.stat().st_size} bytes) + {data_out} ({data_out.stat().st_size} bytes)")
 
 
 TEMPLATE = r"""<title>Prediction Markets Bot — Live Dashboard</title>
@@ -319,7 +343,8 @@ TEMPLATE = r"""<title>Prediction Markets Bot — Live Dashboard</title>
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--font-sans); -webkit-font-smoothing: antialiased; line-height: 1.5; }
-  .wrap { max-width: 1120px; margin: 0 auto; padding: 30px 20px 64px; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 30px 20px 64px; opacity: 0; transform: translateY(8px); transition: opacity .5s ease, transform .5s ease; }
+  body.ready .wrap { opacity: 1; transform: none; }
   .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
   .eyebrow { font-family: var(--font-mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; }
   h1,h2 { text-wrap: balance; }
@@ -328,8 +353,9 @@ TEMPLATE = r"""<title>Prediction Markets Bot — Live Dashboard</title>
   .brand-mark { width: 38px; height: 38px; border-radius: 9px; flex: none; background: linear-gradient(145deg, var(--accent), var(--accent-ink)); display: grid; place-items: center; font-size: 20px; box-shadow: var(--shadow); }
   .brand h1 { margin: 0; font-size: 19px; font-weight: 700; letter-spacing: -.01em; }
   .brand p { margin: 1px 0 0; font-size: 12.5px; color: var(--ink-2); }
-  .updated { text-align: right; font-size: 12px; color: var(--ink-3); }
+  .updated { text-align: right; font-size: 12px; color: var(--ink-3); line-height: 1.5; }
   .updated b { color: var(--ink-2); font-weight: 600; }
+  .live-ago { display: inline-flex; align-items: center; gap: 6px; color: var(--good); font-weight: 650; font-family: var(--font-mono); font-size: 11.5px; letter-spacing: .01em; }
   .pill { display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px 5px 9px; border-radius: 100px; font-size: 12.5px; font-weight: 650; border: 1px solid transparent; white-space: nowrap; }
   .pill.good { color: var(--good); background: var(--good-bg); border-color: color-mix(in srgb, var(--good) 30%, transparent); }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex: none; }
@@ -383,6 +409,10 @@ TEMPLATE = r"""<title>Prediction Markets Bot — Live Dashboard</title>
   footer { margin-top: 38px; padding-top: 18px; border-top: 1px solid var(--border); font-size: 12px; color: var(--ink-3); line-height: 1.7; }
   footer b { color: var(--ink-2); font-weight: 600; }
   footer .row { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-bottom: 10px; }
+  #errbar { display: none; margin-bottom: 16px; padding: 9px 13px; border-radius: 9px; font-size: 12.5px; color: var(--warn); background: var(--warn-bg); border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent); }
+  [data-bind], [data-bind-html] { border-radius: 4px; }
+  .flash { animation: flashbg 1.1s ease; }
+  @keyframes flashbg { 0%, 12% { background: color-mix(in srgb, var(--accent) 26%, transparent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 26%, transparent); } 100% { background: transparent; box-shadow: 0 0 0 3px transparent; } }
   @media (max-width: 820px) {
     .kpis { grid-template-columns: repeat(2, 1fr); }
     .grid2 { grid-template-columns: 1fr; }
@@ -391,30 +421,34 @@ TEMPLATE = r"""<title>Prediction Markets Bot — Live Dashboard</title>
     .strip > div:nth-child(1), .strip > div:nth-child(2) { border-bottom: 1px solid var(--border); }
     .cities { grid-template-columns: repeat(2, 1fr); }
   }
-  @media (prefers-reduced-motion: reduce) { * { animation: none !important; } .chart * { transition: none !important; } }
+  @media (prefers-reduced-motion: reduce) { *, .chart * { animation: none !important; transition: none !important; } .wrap { opacity: 1; transform: none; } }
 </style>
 
 <div class="wrap">
+  <div id="errbar">Couldn't reach the live data feed — showing the last snapshot. Retrying…</div>
   <div class="topbar">
     <div class="brand">
       <div class="brand-mark">📊</div>
       <div><h1>Prediction Markets Bot</h1><p>Autonomous Polymarket weather-market tracker · runs in the cloud · 5 cities</p></div>
     </div>
     <span class="pill good"><span class="dot live"></span>OPERATIONAL</span>
-    <div class="updated">data through<br><b class="mono">%%UPDATED%%</b></div>
+    <div class="updated">
+      <span class="live-ago"><span class="dot live"></span><span data-ago>refreshing…</span></span><br>
+      data through <b class="mono" data-bind="UPDATED">—</b>
+    </div>
   </div>
 
   <div class="kpis">
     <div class="kpi"><div class="label">Collector</div><div class="big g">LIVE</div><div class="sub">every 2h · GitHub Actions</div></div>
-    <div class="kpi"><div class="label">Track-record gate</div><div class="big g">%%GATE_STATUS%%</div><div class="sub">%%GATE_MKTS%% mkts · %%GATE_BETS%% bets</div></div>
-    <div class="kpi"><div class="label">Data collected</div><div class="big">%%DATA_DAYS%%<span style="font-size:14px;color:var(--ink-3)"> days</span></div><div class="sub">%%SPAN%%</div></div>
-    <div class="kpi"><div class="label">Paper book win rate</div><div class="big">%%SB_WR%%<span style="font-size:14px;color:var(--ink-3)">%</span></div><div class="sub">%%SB_GRADED%% graded / %%SB_ENTRIES%% open</div></div>
+    <div class="kpi"><div class="label">Track-record gate</div><div class="big g"><span data-bind="GATE_STATUS">—</span></div><div class="sub"><span data-bind="GATE_MKTS">—</span> mkts · <span data-bind="GATE_BETS">—</span> bets</div></div>
+    <div class="kpi"><div class="label">Data collected</div><div class="big"><span data-bind="DATA_DAYS">—</span><span style="font-size:14px;color:var(--ink-3)"> days</span></div><div class="sub" data-bind="SPAN">—</div></div>
+    <div class="kpi"><div class="label">Paper book win rate</div><div class="big"><span data-bind="SB_WR">—</span><span style="font-size:14px;color:var(--ink-3)">%</span></div><div class="sub"><span data-bind="SB_GRADED">—</span> graded / <span data-bind="SB_ENTRIES">—</span> open</div></div>
   </div>
 
   <section>
-    <div class="sec-head"><h2>Is the model catching up to the market?</h2>%%EDGE_CHIP%%</div>
+    <div class="sec-head"><h2>Is the model catching up to the market?</h2><span data-bind-html="EDGE_CHIP"></span></div>
     <div class="card">
-      <p class="takeaway">%%TAKEAWAY%%</p>
+      <p class="takeaway" data-bind-html="TAKEAWAY"></p>
       <div class="legend">
         <span class="lg"><i style="background:var(--market)"></i>Market price</span>
         <span class="lg"><i style="background:var(--model)"></i>Our model</span>
@@ -441,7 +475,7 @@ TEMPLATE = r"""<title>Prediction Markets Bot — Live Dashboard</title>
   <section class="grid2">
     <div class="card">
       <div class="sec-head" style="margin-bottom:4px"><h2>Track record</h2></div>
-      <div class="legend"><span class="lg"><i style="background:var(--accent)"></i>Gradable markets</span><span class="lg" style="margin-left:auto;color:var(--ink-3)">cumulative vs station truth · dashed = %%GATE_MKTS_THR%%-market gate</span></div>
+      <div class="legend"><span class="lg"><i style="background:var(--accent)"></i>Gradable markets</span><span class="lg" style="margin-left:auto;color:var(--ink-3)">cumulative vs station truth · dashed = <span data-bind="GATE_MKTS_THR">150</span>-market gate</span></div>
       <div class="chartwrap"><div id="c_growth"></div></div>
     </div>
     <div class="card">
@@ -455,35 +489,35 @@ TEMPLATE = r"""<title>Prediction Markets Bot — Live Dashboard</title>
     <div class="sec-head" style="margin-bottom:12px"><h2>Structure paper book</h2><span class="chip accent">PAPER ONLY — NO REAL MONEY</span></div>
     <p class="lead">A <b>model-free</b> strategy that ignores the weather forecast entirely: it sells over-priced long-shot temperature bins and buys clear favorites, then settles against real results. Early signal is strong, but it stays paper until it clears a pre-registered forward test.</p>
     <div class="strip">
-      <div><div class="n pos">%%SB_WR%%%</div><div class="k">win rate <small>· %%SB_GRADED%% settled</small></div></div>
-      <div><div class="n pos">%%SB_FULL%%</div><div class="k">edge / contract <small>· full band</small></div></div>
-      <div><div class="n pos">%%SB_CORE%%</div><div class="k">edge / contract <small>· core band</small></div></div>
-      <div><div class="n">%%SB_AWAIT%%</div><div class="k">awaiting <small>· settlement</small></div></div>
+      <div><div class="n pos"><span data-bind="SB_WR">—</span>%</div><div class="k">win rate <small>· <span data-bind="SB_GRADED">—</span> settled</small></div></div>
+      <div><div class="n pos" data-bind="SB_FULL">—</div><div class="k">edge / contract <small>· full band</small></div></div>
+      <div><div class="n pos" data-bind="SB_CORE">—</div><div class="k">edge / contract <small>· core band</small></div></div>
+      <div><div class="n" data-bind="SB_AWAIT">—</div><div class="k">awaiting <small>· settlement</small></div></div>
     </div>
-    <p class="lead" style="margin-top:12px;margin-bottom:0">A second signal — the model's most selective bucket — shows <b>%%E3_ROI%% ROI on %%E3_N%% bets</b>, but that's still in-sample. Nothing goes live until a bucket logs <b>40+ forward bets</b> beating the market. Discipline first.</p>
+    <p class="lead" style="margin-top:12px;margin-bottom:0">A second signal — the model's most selective bucket — shows <b><span data-bind="E3_ROI">—</span> ROI on <span data-bind="E3_N">—</span> bets</b>, but that's still in-sample. Nothing goes live until a bucket logs <b>40+ forward bets</b> beating the market. Discipline first.</p>
   </section>
 
   <section>
     <div class="sec-head"><h2>Cities &amp; data freshness</h2><span class="note">how far behind the settlement feed is per city</span></div>
-    <div class="cities">
-      %%CITIES_HTML%%
-    </div>
+    <div class="cities" data-bind-html="CITIES_HTML"></div>
   </section>
 
   <footer>
     <div class="row"><span><b>Pipeline:</b> collect every 2h · truth-eval daily · retrain on demand</span><span><b>Host:</b> GitHub Actions (free tier)</span><span><b>Data store:</b> git</span></div>
     <div><b>Method:</b> every prediction is graded against the actual weather-station reading each market settles on — no grading a forecast against the same grid it came from. No performance is claimed until a pre-committed sample gate is met (now cleared). All trading shown is paper; no real orders are placed.</div>
-    <div style="margin-top:10px;color:var(--ink-3)">Auto-generated from the live data · rebuilt every few hours.</div>
+    <div style="margin-top:10px;color:var(--ink-3)">Live page — fetches the latest published data on open and refreshes itself while you watch.</div>
   </footer>
 </div>
 
-<script id="D" type="application/json">%%CHART_DATA%%</script>
+<script id="D0" type="application/json">%%PAYLOAD%%</script>
 <script>
 (function () {
   "use strict";
   var SVGNS = "http://www.w3.org/2000/svg";
-  var D = {};
-  try { D = JSON.parse(document.getElementById("D").textContent || "{}"); } catch (e) { D = {}; }
+  var D = {};                 // current chart series
+  var lastSeriesJSON = "";    // skip redundant redraws
+  var lastGen = null;         // generated_at (ISO) for the "refreshed Xm ago" clock
+  var prevBind = null;        // previous scalar values → flash only what changed
   var css = function (v) { return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); };
   function el(tag, attrs, text) {
     var e = document.createElementNS(SVGNS, tag);
@@ -617,7 +651,7 @@ TEMPLATE = r"""<title>Prediction Markets Bot — Live Dashboard</title>
     host.appendChild(svg);
   }
 
-  // ===== render =====
+  // ===== chart render (reads global D) =====
   function draw() {
   ["c_acc", "c_city", "c_calib", "c_growth", "c_hb"].forEach(function (id) { var h = document.getElementById(id); if (h) h.innerHTML = ""; });
   document.querySelectorAll(".chartwrap .tip").forEach(function (t) { t.remove(); });
@@ -667,7 +701,64 @@ TEMPLATE = r"""<title>Prediction Markets Bot — Live Dashboard</title>
     series: [{ key: "runs", name: "Runs", color: css("--accent") }]
   });
   }
-  draw();
+
+  // ===== live data layer =====
+  var reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  function flash(e) { if (reduceMotion) return; e.classList.remove("flash"); void e.offsetWidth; e.classList.add("flash"); }
+  function applyBind(bind, html) {
+    var b = bind || {}, first = prevBind === null;
+    Object.keys(b).forEach(function (k) {
+      var val = String(b[k]);
+      document.querySelectorAll('[data-bind="' + k + '"]').forEach(function (e) {
+        if (e.textContent === val) return;
+        e.textContent = val;
+        if (!first && prevBind[k] !== undefined && String(prevBind[k]) !== val) flash(e);
+      });
+    });
+    prevBind = b;
+    var h = html || {};
+    Object.keys(h).forEach(function (k) {
+      document.querySelectorAll('[data-bind-html="' + k + '"]').forEach(function (e) { if (e.innerHTML !== h[k]) e.innerHTML = h[k]; });
+    });
+  }
+  function tickClock() {
+    var elm = document.querySelector("[data-ago]");
+    if (!elm || !lastGen) return;
+    var t = Date.parse(lastGen);
+    if (isNaN(t)) { elm.textContent = "live"; return; }
+    var s = Math.max(0, Math.round((Date.now() - t) / 1000)), txt;
+    if (s < 45) txt = "just now";
+    else if (s < 5400) txt = Math.max(1, Math.round(s / 60)) + "m ago";
+    else if (s < 172800) txt = Math.round(s / 3600) + "h ago";
+    else txt = Math.round(s / 86400) + "d ago";
+    elm.textContent = "refreshed " + txt;
+  }
+  function apply(P) {
+    if (!P || !P.bind) return false;
+    applyBind(P.bind, P.html);
+    lastGen = P.generated_at || null;
+    var sj = JSON.stringify(P.series || {});
+    if (sj !== lastSeriesJSON) { D = P.series || {}; lastSeriesJSON = sj; draw(); }
+    document.body.classList.add("ready");
+    tickClock();
+    return true;
+  }
+  function applyInline() {
+    try { return apply(JSON.parse(document.getElementById("D0").textContent || "{}")); }
+    catch (e) { document.body.classList.add("ready"); return false; }
+  }
+  function load() {
+    fetch("data.json?t=" + Date.now(), { cache: "no-store" })
+      .then(function (r) { if (!r.ok) throw new Error("http " + r.status); return r.json(); })
+      .then(function (P) { apply(P); document.getElementById("errbar").style.display = "none"; })
+      .catch(function () { if (!document.body.classList.contains("ready")) document.getElementById("errbar").style.display = "block"; });
+  }
+
+  var haveInline = applyInline();   // instant first paint from the embedded copy
+  load();                           // then refresh from the network (no-op offline / file://)
+  setInterval(load, 120000);        // pick up the next publish while the tab stays open
+  setInterval(tickClock, 15000);    // keep the "refreshed Xm ago" clock honest
+  if (!haveInline) load();
   var _rt; window.addEventListener("resize", function () { clearTimeout(_rt); _rt = setTimeout(draw, 180); });
 })();
 </script>
