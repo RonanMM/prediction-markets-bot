@@ -44,13 +44,21 @@ jobs:
         working-directory: src/polymarket_weather
         run: python fetch_historical_truth.py
 
-      # wu_truth.py input — see truth-eval.yml. Matters most here: this workflow retrains the
-      # calibrators, and W0.2 is specifically about training against settlement-faithful
-      # targets. Without the obs file the NYC/Chicago targets revert to CLI truth and the
-      # retrain reproduces the very mismatch it is meant to remove.
+      # wu_truth.py input — see truth-eval.yml. Prerequisite for the rebuild below, which
+      # blends the WU reconstruction into the training targets.
       - name: Hourly station observations (wu_truth input)
         working-directory: src/polymarket_weather
         run: python fetch_station_obs.py
+
+      # W0.2 training targets. train_calibrator.py reads {slug}_settlement_actuals.csv via
+      # settlement_truth.load_training_truth, and that file is COMMITTED but rebuilt by no
+      # workflow — so it freezes at whenever someone last ran this by hand, and the merge
+      # against it silently drops every newer date from training. Rebuild in-runner (from the
+      # truth + obs fetched above) so training always covers through yesterday. Not committed:
+      # this workflow only adds models/ and output/, and the in-runner copy is what trains.
+      - name: Rebuild settlement-faithful training targets
+        working-directory: src/polymarket_weather
+        run: python settlement_truth.py
 
       - name: Per-lead archived forecasts (Open-Meteo Previous Runs)
         working-directory: src/polymarket_weather
