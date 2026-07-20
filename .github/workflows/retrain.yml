@@ -90,15 +90,24 @@ jobs:
         run: |
           git config user.name "raincheck-collector"
           git config user.email "actions@users.noreply.github.com"
-          git add src/polymarket_weather/models src/polymarket_weather/output
+          # data/weather/*_settlement_actuals.csv are TRACKED, and the rebuild step above
+          # rewrites them — so they MUST be staged. Leaving tracked files dirty makes the
+          # `git pull --rebase` below abort ("cannot pull with rebase: You have unstaged
+          # changes"), which is how the 2026-07-20 19:30 run threw away a completed 76-minute
+          # retrain after collect.yml raced it. Committing them also keeps the checked-in
+          # training truth fresh for every other load_training_truth consumer.
+          git add src/polymarket_weather/models src/polymarket_weather/output \
+                  src/polymarket_weather/data/weather/*_settlement_actuals.csv
           if git diff --cached --quiet; then
             echo "No model/tracker changes — nothing to commit."
             exit 0
           fi
           git commit -m "retrain: EMOS v2 models + regenerated trackers $(date -u '+%Y-%m-%d %H:%M UTC')"
           # Rebase-retry push: tolerate racing commits from the collect workflow.
+          # --autostash so that any *other* dirty tracked file can never again abort the
+          # rebase and discard an hour-plus of completed work.
           for i in 1 2 3; do
             git push && exit 0
-            git pull --rebase && continue
+            git pull --rebase --autostash && continue
           done
           git push

@@ -57,8 +57,9 @@ jobs:
           fi
           git commit -m "data: scheduled snapshot $(date -u '+%Y-%m-%d %H:%M UTC')"
           # Rebase-retry push: tolerate racing commits from the laptop collector.
+          # --autostash: a dirty tracked file otherwise aborts the rebase and loses the run.
           for i in 1 2 3; do
             git push && exit 0
-            git pull --rebase && continue
+            git pull --rebase --autostash && continue
           done
           git push
