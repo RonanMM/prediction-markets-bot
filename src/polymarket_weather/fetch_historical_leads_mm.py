@@ -79,15 +79,48 @@ def _fetch_chunk(lat: float, lon: float, start: date, end: date) -> pd.DataFrame
     return agg.reset_index()
 
 
+# Incremental refetch window — see fetch_historical_leads.py for the full rationale.
+# When an existing CSV is present, dates older than OVERLAP_DAYS before its last date
+# are served from it rather than re-fetched; with no CSV this is a full refetch,
+# identical to before.
+OVERLAP_DAYS = 21
+
+
+def _load_existing_raw(out_path, rename_map):
+    """Existing CSV, its stored (renamed) columns mapped BACK to raw per-chunk names so
+    it concatenates with fresh chunks. (df_raw, max_date) or (None, None) → full refetch."""
+    if not os.path.exists(out_path):
+        return None, None
+    try:
+        df = pd.read_csv(out_path)
+    except Exception as e:
+        logger.warning(f"could not read {out_path} ({e}); refetching from scratch")
+        return None, None
+    if "date_local" not in df.columns or df.empty:
+        return None, None
+    df = df.rename(columns={v: k for k, v in rename_map.items()})
+    max_date = pd.to_datetime(df["date_local"]).max().date()
+    return df, max_date
+
+
 def fetch_historical_leads_mm():
     os.makedirs(OUT_DIR, exist_ok=True)
     end_all = datetime.now().date() - timedelta(days=1)
+    rename_map = {f"lead{n}_{s}": f"fcst_tmax_lead{n}_{s}"
+                  for n in LEADS for s in MODELS.values()}
 
     for city, anchor in RESOLUTION_ANCHORS.items():
         slug = city.replace(" ", "_").lower()
         lat, lon = anchor["forecast_lat"], anchor["forecast_lon"]
+        out = os.path.join(OUT_DIR, f"{slug}_historical_leads_mm.csv")
+
+        existing, max_date = _load_existing_raw(out, rename_map)
+        start = START_DATE if max_date is None else max(
+            START_DATE, max_date - timedelta(days=OVERLAP_DAYS))
+        if max_date is not None:
+            logger.info(f"{city}: incremental — cached through {max_date}, refetching from {start}")
+
         chunks = []
-        start = START_DATE
         while start <= end_all:
             end = min(start + timedelta(days=CHUNK_DAYS - 1), end_all)
             chunk = _fetch_chunk(lat, lon, start, end)
@@ -98,16 +131,16 @@ def fetch_historical_leads_mm():
             start = end + timedelta(days=1)
             time.sleep(1.0)
 
-        if not chunks:
-            logger.error(f"{city}: nothing fetched — keeping any existing CSV")
+        # keep='last': fresh refetch wins on overlap dates, cached row survives where a
+        # chunk failed — never silently drop good data. See fetch_historical_leads.py.
+        frames = ([existing] if existing is not None else []) + chunks
+        if not frames:
+            logger.error(f"{city}: nothing fetched and no cache — skipping")
             continue
 
-        df = pd.concat(chunks, ignore_index=True).drop_duplicates("date_local")
-        df = df.sort_values("date_local")
-        df = df.rename(columns={
-            f"lead{n}_{s}": f"fcst_tmax_lead{n}_{s}"
-            for n in LEADS for s in MODELS.values()})
-        out = os.path.join(OUT_DIR, f"{slug}_historical_leads_mm.csv")
+        df = pd.concat(frames, ignore_index=True)
+        df = df.drop_duplicates("date_local", keep="last").sort_values("date_local")
+        df = df.rename(columns=rename_map)
         df.to_csv(out, index=False)
         n_full = df[[f"fcst_tmax_lead1_{s}" for s in MODELS.values()]].notna().all(axis=1).sum()
         logger.info(f"{city}: saved {out} — {len(df)} dates, {n_full} with all 3 models at lead1")

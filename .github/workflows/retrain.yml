@@ -60,6 +60,25 @@ jobs:
         working-directory: src/polymarket_weather
         run: python settlement_truth.py
 
+      # Cache the previous-runs leads archives across runs. They are gitignored and were
+      # refetched 2022→now every run (~105 min, and hostage to the upstream API's bad
+      # days — see the 2026-07-20 timeouts that nearly blew the 120-min budget). Paired
+      # with the incremental fetch in fetch_historical_leads[_mm].py, a restored cache
+      # means each run only pulls the last ~3 weeks plus new dates: minutes, not hours.
+      # Unique key per run so the post-job save always banks a fresh archive (including
+      # after a mid-run failure — post steps run on failure); restore-keys grabs the
+      # newest prior cache. A >7-day gap between retrains lets the cache evict, which
+      # just degrades to a one-off full refetch that re-warms it — never incorrect.
+      - name: Cache per-lead forecast archives
+        uses: actions/cache@v4
+        with:
+          path: |
+            src/polymarket_weather/data/weather/*_historical_leads.csv
+            src/polymarket_weather/data/weather/*_historical_leads_mm.csv
+          key: leads-archive-${{ github.run_id }}
+          restore-keys: |
+            leads-archive-
+
       - name: Per-lead archived forecasts (Open-Meteo Previous Runs)
         working-directory: src/polymarket_weather
         run: python fetch_historical_leads.py
