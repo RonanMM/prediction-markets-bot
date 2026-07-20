@@ -38,6 +38,12 @@ MODELS = {
     "meteofrance_seamless": "mf",
     "cma_grapes_global": "cma",
     "bom_access_global": "bom",
+    # jma is consumed only by Seoul's blend (MM_MODELS_BY_CITY), but nothing else in the repo
+    # produced {slug}_historical_leads_jma.csv, so Seoul's mm_mean could never build. Fetched
+    # here for all cities via the same machinery; non-Seoul blends simply don't select it.
+    # Model id confirmed from fetch_weather.MULTIMODEL_MODELS (live serving already uses it) and
+    # verified to return full previous-runs archive coverage for Seoul (168/168 non-null @ lead1/4).
+    "jma_seamless": "jma",
 }
 CHUNK_DAYS = 90
 REQUEST_TIMEOUT = 180

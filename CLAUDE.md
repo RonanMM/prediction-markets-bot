@@ -219,14 +219,16 @@ structure legs in `shoulder_book.py` (see EDGE_MEGAPLAN §10b/§10d), in forward
 > the 2026-07-20 retrain log `26515a5`).** Three gaps: (1) `retrain.yml` fetched only
 > `fetch_historical_leads[_mm].py`, never `_cand`/`_jma`, so `train_calibrator` could never build
 > `mm_mean` (it needs the FULL per-city model set, `MM_MODELS_BY_CITY`) and selected `best_match`
-> for every city — the multi-model blend never trained. (2) `{slug}_historical_leads_jma.csv` has
-> **no fetcher in the repo** (only read), so Seoul's blend is unbuildable regardless. (3) Tmin
-> archives (`_min`) aren't fetched in cloud → Tmin never retrains; and at serve time HK/London/Seoul
-> Tmax fall back to the raw `EnsemblePredictor` ("no usable calibrated input"), making MODEL≈ENSEMBLE
-> partly tautological for those. **In progress** (`perf/cache-incremental-leads`): the cand fetch +
-> incremental+cache is added to `retrain.yml`, unlocking the blend for Chicago/HongKong/London/NYC;
-> Seoul (jma) and Tmin remain TODO. The edge verdict is unchanged (the tails problem is
-> distributional), but stop concluding "the calibrator hurts" until the designed model has run.
+> for every city — the multi-model blend never trained. **Fixed:** `retrain.yml` now fetches
+> `fetch_historical_leads_cand.py`, and cand also fetches `jma_seamless` (Seoul's blend needs jma;
+> the model id is confirmed from `fetch_weather.MULTIMODEL_MODELS` and verified to have full
+> previous-runs archive coverage for Seoul). So training can now build `mm_mean` for **all five
+> cities**. (2) **Still open — serve-time**: HK/London/Seoul Tmax fall back to the raw
+> `EnsemblePredictor` ("no usable calibrated input — Check daily_mm/ensemble schema"), making
+> MODEL≈ENSEMBLE partly tautological for those; root cause NOT yet verified — separate task. (3)
+> Tmin archives (`_min`) still aren't fetched in cloud → Tmin never retrains. The edge verdict is
+> unchanged (the tails problem is distributional), but stop concluding "the calibrator hurts" until
+> the designed model has actually run and the serve-time fallback is resolved.
 
 ### Recent engine corrections (edge honesty)
 - **No more max-selection.** `engine.py` combined ML+ensemble via `our_prob = max(...)`, which

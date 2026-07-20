@@ -27,10 +27,11 @@ permissions:
 jobs:
   retrain:
     runs-on: ubuntu-latest
-    # 180 for the COLD-cache first run only: it refetches every leads archive (best_match +
-    # mm + cand) 2022→now, ~3-4h of upstream on a slow-API day but banked to the cache. Once
-    # the cache is warm the incremental fetches take minutes; this can drop back to ~60 then.
-    timeout-minutes: 180
+    # 240 for the COLD-cache first run only: it refetches every leads archive (best_match +
+    # mm + cand, cand now including jma) 2022→now, ~3-4h of upstream on a slow-API day but
+    # banked to the cache. Once the cache is warm the incremental fetches take minutes; this
+    # can drop back to ~60 then. (Hosted-runner hard cap is 360.)
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
 
@@ -93,10 +94,11 @@ jobs:
       # train_calibrator only builds mm_mean when the FULL per-city model set is present
       # (MM_MODELS_BY_CITY), and every set needs at least `gem` from here — so without this
       # step mm_mean is never built and training silently falls back to best_match for ALL
-      # cities, leaving the expensive mm fetch above inert. Unlocks the Tmax blend for
-      # Chicago/HongKong/London/NYC. Seoul additionally needs a `jma` file that NO script in
-      # the repo produces, so Seoul Tmax stays best_match until that source is added (tracked
-      # separately). Tmin (fetch_historical_leads_min.py) is likewise not yet wired here.
+      # cities, leaving the expensive mm fetch above inert. Unlocks the Tmax blend for all
+      # five cities: cand now also fetches `jma_seamless` (Seoul's blend needs it, and nothing
+      # else produced the jma archive). Serving may still fall back for some cities until the
+      # daily_mm/ensemble serve-time schema issue is resolved (see CLAUDE.md caveat); Tmin
+      # (fetch_historical_leads_min.py) is likewise not yet wired here.
       - name: Candidate blend models (gem/aifs/mf…)
         working-directory: src/polymarket_weather
         run: python fetch_historical_leads_cand.py
