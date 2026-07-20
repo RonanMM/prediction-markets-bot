@@ -214,6 +214,20 @@ truth) — **retraining EMOS/Tmin/intraday against settlement truth is the top q
 task** (`docs/EDGE_MEGAPLAN.md` W0.2). The live positive-EV candidates are the model-free
 structure legs in `shoulder_book.py` (see EDGE_MEGAPLAN §10b/§10d), in forward paper trials.
 
+> ⚠️ **The cloud-served "model" is a DEGRADED version of the one described above — so read
+> "the calibrator loses to the ensemble" as measuring the pipeline, not the design (verified from
+> the 2026-07-20 retrain log `26515a5`).** Three gaps: (1) `retrain.yml` fetched only
+> `fetch_historical_leads[_mm].py`, never `_cand`/`_jma`, so `train_calibrator` could never build
+> `mm_mean` (it needs the FULL per-city model set, `MM_MODELS_BY_CITY`) and selected `best_match`
+> for every city — the multi-model blend never trained. (2) `{slug}_historical_leads_jma.csv` has
+> **no fetcher in the repo** (only read), so Seoul's blend is unbuildable regardless. (3) Tmin
+> archives (`_min`) aren't fetched in cloud → Tmin never retrains; and at serve time HK/London/Seoul
+> Tmax fall back to the raw `EnsemblePredictor` ("no usable calibrated input"), making MODEL≈ENSEMBLE
+> partly tautological for those. **In progress** (`perf/cache-incremental-leads`): the cand fetch +
+> incremental+cache is added to `retrain.yml`, unlocking the blend for Chicago/HongKong/London/NYC;
+> Seoul (jma) and Tmin remain TODO. The edge verdict is unchanged (the tails problem is
+> distributional), but stop concluding "the calibrator hurts" until the designed model has run.
+
 ### Recent engine corrections (edge honesty)
 - **No more max-selection.** `engine.py` combined ML+ensemble via `our_prob = max(...)`, which
   cherry-picked the more optimistic model and manufactured edge. It now **averages** the two.
