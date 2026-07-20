@@ -223,12 +223,17 @@ structure legs in `shoulder_book.py` (see EDGE_MEGAPLAN §10b/§10d), in forward
 > `fetch_historical_leads_cand.py`, and cand also fetches `jma_seamless` (Seoul's blend needs jma;
 > the model id is confirmed from `fetch_weather.MULTIMODEL_MODELS` and verified to have full
 > previous-runs archive coverage for Seoul). So training can now build `mm_mean` for **all five
-> cities**. (2) **Still open — serve-time**: HK/London/Seoul Tmax fall back to the raw
-> `EnsemblePredictor` ("no usable calibrated input — Check daily_mm/ensemble schema"), making
-> MODEL≈ENSEMBLE partly tautological for those; root cause NOT yet verified — separate task. (3)
-> Tmin archives (`_min`) still aren't fetched in cloud → Tmin never retrains. The edge verdict is
-> unchanged (the tails problem is distributional), but stop concluding "the calibrator hurts" until
-> the designed model has actually run and the serve-time fallback is resolved.
+> cities**, and serving `daily_mm.csv` already carries all six blend models incl. jma
+> (well-covered on recent rows) — so the plumbing is complete end-to-end and a future retrain
+> will train+serve `mm_mean` where it wins the holdout. (2) **Serve-time fallback — investigated
+> 2026-07-21, NOT a contamination.** The "no usable calibrated input — raw EnsemblePredictor"
+> warning fires once-per-city (`_warn_once`) for early-March boundary snapshots that get *skipped*;
+> the committed calibrated tracker has **zero** `ensemble`-`sigma_source` rows (all 493 are
+> `emos_v2*`), so MODEL≈ENSEMBLE is NOT tautological — the model genuinely lost as the calibrated
+> best_match model. (3) Tmin archives (`_min`) still aren't fetched in cloud → Tmin never retrains.
+> **Bottom line:** the edge verdict is unchanged and sound. The model loses on its overconfident
+> TAILS (`[0,0.1)` predicts 3.6%, realizes 15.5%) — a distributional problem the mean-input blend
+> won't fix. Making the model competitive needs a tails/dispersion change, not more data plumbing.
 
 ### Recent engine corrections (edge honesty)
 - **No more max-selection.** `engine.py` combined ML+ensemble via `our_prob = max(...)`, which
