@@ -48,6 +48,14 @@ jobs:
         working-directory: src/polymarket_weather
         run: python fetch_historical_truth.py || echo "truth refresh skipped (network) — using committed tracker"
 
+      # Without this the published dashboard grades NYC/Chicago on the NWS CLI feed rather
+      # than the wunderground-faithful reconstruction (wu_truth.py), which flips ~3% of rows
+      # — concentrated in NYC|same-day and Chicago|1d. Best-effort to match the step above:
+      # a network blip should degrade the numbers, not block the publish.
+      - name: Refresh hourly station observations (wu_truth input)
+        working-directory: src/polymarket_weather
+        run: python fetch_station_obs.py || echo "obs refresh skipped (network) — NYC/Chicago fall back to CLI truth"
+
       - name: Build dashboard
         working-directory: src/polymarket_weather
         run: python build_dashboard.py "${GITHUB_WORKSPACE}/site/index.html"

@@ -47,9 +47,26 @@ jobs:
         working-directory: src/polymarket_weather
         run: python fetch_historical_truth.py
 
+      # Hourly METARs — REQUIRED, not optional. wu_truth.py reconstructs the settlement
+      # extremes for NYC/Chicago from this file and returns None *silently* when it is
+      # absent, so grading falls back to the NWS CLI feed — the pre-W0 ruler. The obs file
+      # is gitignored and only ever written by main.py on the collect runner, so a fresh
+      # runner has none unless we fetch it here. Full fetch, not --recent: a 3-day top-up
+      # onto a nonexistent file leaves the same gap.
+      - name: Refresh hourly station observations (wu_truth input)
+        working-directory: src/polymarket_weather
+        run: python fetch_station_obs.py
+
       - name: Regenerate eval tracker
         working-directory: src/polymarket_weather
         run: python polymarket_weather_analysis.py --data_dir ./data --no_plots
+
+      # Permanent grading guard (CLAUDE.md): compares resolves_yes against how markets
+      # ACTUALLY settled and exits 1 below 95% agreement. Runs after the truth refresh so a
+      # regression in either truth source fails the run instead of silently republishing.
+      - name: Settlement audit (grading fidelity floor)
+        working-directory: src/polymarket_weather
+        run: python audit_settlements.py
 
       - name: Gate progress
         working-directory: src/polymarket_weather
