@@ -141,6 +141,63 @@ def _mean_crps(csv_path):
     return (sum(by.values()) / len(by), len(by)) if by else None
 
 
+def _dispersion_by_segment(csv_path):
+    """Spread-skill / PIT calibration of the served predictive SPREAD, by segment.
+
+    `sigma` is the predictive STANDARD DEVIATION (see `_crps_student_t`), so under an honest
+    spread the standardized residual z=(truth-mu)/sigma has std ~1.0 and the PIT (computed via
+    the SAME `_t_scale` CDF the engine grades with) is ~Uniform. The spread-skill ratio is
+    therefore just std(z): **>1 = OVERCONFIDENT (spread too narrow for the realized errors),
+    <1 = spread too wide.** Reported overall (Tmax / Tmin) and by target month for Tmax — the
+    latter is the point: it catches under-dispersion drifting back in (e.g. spring volatility)
+    that the aggregate hides. Intraday-CENSORED distributions (floor/ceiling set) are excluded —
+    they are not a plain Student-t, so z is meaningless there.
+
+    Returns {label: (n, ratio_or_None, pit_lo, pit_hi)} (ratio None when too thin to read).
+    """
+    if not csv_path.exists():
+        return {}
+    df = pd.read_csv(csv_path)
+    need = {"forecast_mu", "forecast_sigma", "forecast_nu", "city", "target_date"}
+    if not need.issubset(df.columns):
+        return {}
+    q = (df["question"].astype(str).str.lower() if "question" in df.columns
+         else pd.Series([""] * len(df), index=df.index))
+    df["_kind"] = np.where(q.str.contains("lowest"), "min", "max")
+    df = df.sort_values("fetched_at").groupby(
+        ["city", "target_date", "_kind"], as_index=False).tail(1)
+
+    recs = []
+    for _, r in df.iterrows():
+        sigma = r["forecast_sigma"]
+        if sigma is None or pd.isna(sigma) or float(sigma) <= 0:
+            continue
+        if pd.notna(r.get("forecast_floor")) or pd.notna(r.get("forecast_ceiling")):
+            continue  # intraday-censored: not a plain Student-t
+        y = fetch_actual_weather(r["city"], r["target_date"], r.get("question", ""))
+        if y is None:
+            continue
+        mu, sig, nu = float(r["forecast_mu"]), float(sigma), max(float(r["forecast_nu"]), 2.1)
+        recs.append((str(r["target_date"])[:7], r["_kind"],
+                     (float(y) - mu) / sig,
+                     float(student_t.cdf((float(y) - mu) / _t_scale(sig, nu), df=nu))))
+    if not recs:
+        return {}
+    d = pd.DataFrame(recs, columns=["month", "kind", "z", "pit"])
+
+    def agg(sub):
+        if len(sub) < 6:
+            return (len(sub), None, None, None)
+        return (len(sub), float(sub["z"].std()),
+                float((sub["pit"] < 0.1).mean()), float((sub["pit"] > 0.9).mean()))
+
+    out = {"Tmax (all)": agg(d[d["kind"] == "max"]),
+           "Tmin (all)": agg(d[d["kind"] == "min"])}
+    for m, sub in d[d["kind"] == "max"].groupby("month"):
+        out[f"Tmax {m}"] = agg(sub)
+    return out
+
+
 def _best_shrink_weight(ml):
     """Sweep the shrink-to-market weight and return (best_w, best_brier, brier_w1, brier_w0).
 
@@ -365,6 +422,25 @@ def main():
     print(f"    {'bin':<12} {'n':>4} {'pred':>7} {'realized':>9}")
     for lo, hi, n_, pred, real in _calibration(p_model, y):
         print(f"    [{lo:.1f},{hi:.1f})    {n_:>4} {pred:>7.3f} {real:>9.3f}")
+
+    # Dispersion monitor — is the predictive SPREAD honest? std(z) ~1.0 = calibrated; >1.15 =
+    # OVERCONFIDENT (tails too thin), <0.85 = too wide. The by-month Tmax rows are the point:
+    # they catch under-dispersion returning (e.g. spring) that the pooled number hides. A static
+    # sigma widen is NOT the fix — it over-widens the calm months (see docs/tails-fix note).
+    disp = _dispersion_by_segment(_OUT / "opportunities_evaluation_calibrated.csv")
+    if disp:
+        print("\n  Dispersion monitor (served spread vs realized error; ~1.0 = calibrated,")
+        print("  >1.15 OVERCONFIDENT / <0.85 too-wide; intraday-censored excluded):")
+        print(f"    {'segment':<16} {'n':>4} {'std(z)':>8} {'PIT<.1':>7} {'PIT>.9':>7}  flag")
+        for label, (n_, ratio, plo, phi) in disp.items():
+            if ratio is None:
+                print(f"    {label:<16} {n_:>4} {'(thin)':>8}")
+                continue
+            flag = "OVERCONFIDENT" if ratio > 1.15 else ("too-wide" if ratio < 0.85 else "ok")
+            print(f"    {label:<16} {n_:>4} {ratio:>8.2f} {plo:>6.0%} {phi:>6.0%}  {flag}")
+        print("    Read the by-MONTH Tmax rows, not the pooled one: dispersion drifts seasonally")
+        print("    (spring volatile → summer calm). A static sigma widen fixes spring but")
+        print("    over-widens summer — validated OOS to hurt; see the tails-fix investigation.")
 
     roi = _roi_at_production(ml)
     wr = roi["wins"] / roi["bets"] if roi["bets"] else 0.0
