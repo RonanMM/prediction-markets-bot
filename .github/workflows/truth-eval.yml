@@ -82,10 +82,21 @@ jobs:
             exit 0
           fi
           git commit -m "eval: daily truth refresh + tracker $(date -u '+%Y-%m-%d %H:%M UTC')"
-          # Rebase-retry push: tolerate racing commits from the collect workflow.
-          # --autostash: a dirty tracked file otherwise aborts the rebase and loses the run.
-          for i in 1 2 3; do
+          # Conflict-proof push. actions/checkout pins the job to master's head at TRIGGER
+          # time, so after this run waits out the shared git-push lock (e.g. behind a
+          # multi-hour retrain) the checked-out base is stale and origin/master has moved —
+          # a plain `git pull --rebase` then hits a real CONTENT conflict on the regenerated
+          # eval CSVs and dies (exit 128; this is the 2026-07-21 truth-eval failure).
+          # These trackers are DETERMINISTIC full regenerations, so a line-merge is
+          # meaningless: on a rejected push we rebase with `-X ours`, which DEFERS to a
+          # concurrent regeneration — if a retrain just republished the trackers with newer
+          # models, keep theirs (our commit then rebases to empty and drops, the push no-ops).
+          # If nobody else touched the trackers, ours applies cleanly. Either way: no failure,
+          # and the next cycle self-heals. --autostash guards a dirty tree; || abort clears a
+          # half-finished rebase so the next attempt starts clean.
+          for i in 1 2 3 4 5; do
             git push && exit 0
-            git pull --rebase --autostash && continue
+            echo "push rejected (attempt $i) — rebasing onto latest origin/master"
+            git pull --rebase --autostash -X ours || git rebase --abort
           done
           git push

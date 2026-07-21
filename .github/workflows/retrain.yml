@@ -166,11 +166,16 @@ jobs:
             exit 0
           fi
           git commit -m "retrain: EMOS v2 models + regenerated trackers $(date -u '+%Y-%m-%d %H:%M UTC')"
-          # Rebase-retry push: tolerate racing commits from the collect workflow.
-          # --autostash so that any *other* dirty tracked file can never again abort the
-          # rebase and discard an hour-plus of completed work.
-          for i in 1 2 3; do
+          # Conflict-proof push (see truth-eval.yml for the full write-up). A rejected push
+          # means origin/master moved under us (collect snapshot, or a racing truth-eval).
+          # A plain rebase content-conflicts on the regenerated eval CSVs and dies; here we
+          # rebase with `-X theirs`, which KEEPS OUR regeneration — retrain's trackers are
+          # computed from the freshly-trained models, so on a collision with truth-eval's
+          # older-model regeneration, retrain must win. --autostash also protects the tracked
+          # *_settlement_actuals.csv the rebuild step rewrote; || abort clears a stuck rebase.
+          for i in 1 2 3 4 5; do
             git push && exit 0
-            git pull --rebase --autostash && continue
+            echo "push rejected (attempt $i) — rebasing onto latest origin/master"
+            git pull --rebase --autostash -X theirs || git rebase --abort
           done
           git push
