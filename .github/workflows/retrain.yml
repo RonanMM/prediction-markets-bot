@@ -27,11 +27,12 @@ permissions:
 jobs:
   retrain:
     runs-on: ubuntu-latest
-    # 240 for the COLD-cache first run only: it refetches every leads archive (best_match +
-    # mm + cand, cand now including jma) 2022→now, ~3-4h of upstream on a slow-API day but
-    # banked to the cache. Once the cache is warm the incremental fetches take minutes; this
-    # can drop back to ~60 then. (Hosted-runner hard cap is 360.)
-    timeout-minutes: 240
+    # 360 (the hosted-runner hard cap) for the COLD-cache runs: refetching every leads archive
+    # (best_match + mm + cand incl. jma) 2022→now is ~3-4h, worse on a slow-API day — the 240
+    # cap killed the 2026-07-21 run mid-cand. With the per-fetch cache banking below, even a
+    # capped run makes forward progress, so this converges in ≤2 runs. Drop back to ~60 once the
+    # cache is warm and incremental fetches take minutes.
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
 
@@ -64,17 +65,20 @@ jobs:
         working-directory: src/polymarket_weather
         run: python settlement_truth.py
 
-      # Cache the previous-runs leads archives across runs. They are gitignored and were
-      # refetched 2022→now every run (~105 min, and hostage to the upstream API's bad
-      # days — see the 2026-07-20 timeouts that nearly blew the 120-min budget). Paired
-      # with the incremental fetch in fetch_historical_leads[_mm].py, a restored cache
-      # means each run only pulls the last ~3 weeks plus new dates: minutes, not hours.
-      # Unique key per run so the post-job save always banks a fresh archive (including
-      # after a mid-run failure — post steps run on failure); restore-keys grabs the
-      # newest prior cache. A >7-day gap between retrains lets the cache evict, which
-      # just degrades to a one-off full refetch that re-warms it — never incorrect.
-      - name: Cache per-lead forecast archives
-        uses: actions/cache@v4
+      # Cache the previous-runs leads archives across runs. Gitignored and refetched 2022→now
+      # every cold run (~3-4h on a slow-API day). Paired with the incremental fetch in
+      # fetch_historical_leads[_mm/_cand].py, a restored cache means each run only pulls the
+      # last ~3 weeks plus new dates: minutes, not hours.
+      #
+      # RESTORE + PER-FETCH SAVE (not a single actions/cache): a single cache only saves in a
+      # POST step, which GitHub SKIPS on a hard timeout — so the 2026-07-21 4h-capped run banked
+      # NOTHING and a retry would start cold again (groundhog). Instead: restore once, then save
+      # INLINE right after each fetch, so each fetch's result is banked immediately and survives
+      # a later timeout. Keys are unique+incrementing per run; restore-keys grabs the newest
+      # (=most complete) prior cache. Convergence: a run capped mid-cand still banks leads+mm, so
+      # the next run restores those (fast) and only fetches cand → finishes well inside the cap.
+      - name: Restore per-lead forecast archives
+        uses: actions/cache/restore@v4
         with:
           path: |
             src/polymarket_weather/data/weather/*_historical_leads*.csv
@@ -86,9 +90,25 @@ jobs:
         working-directory: src/polymarket_weather
         run: python fetch_historical_leads.py
 
+      - name: Bank cache (after best_match leads)
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: |
+            src/polymarket_weather/data/weather/*_historical_leads*.csv
+          key: leads-archive-${{ github.run_id }}-1-leads
+
       - name: Multi-model per-lead archives
         working-directory: src/polymarket_weather
         run: python fetch_historical_leads_mm.py
+
+      - name: Bank cache (after multi-model)
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: |
+            src/polymarket_weather/data/weather/*_historical_leads*.csv
+          key: leads-archive-${{ github.run_id }}-2-mm
 
       # Candidate blend models (gem/aifs/mf/cma/bom). REQUIRED for the calibrated blend:
       # train_calibrator only builds mm_mean when the FULL per-city model set is present
@@ -102,6 +122,14 @@ jobs:
       - name: Candidate blend models (gem/aifs/mf…)
         working-directory: src/polymarket_weather
         run: python fetch_historical_leads_cand.py
+
+      - name: Bank cache (after candidate blend)
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: |
+            src/polymarket_weather/data/weather/*_historical_leads*.csv
+          key: leads-archive-${{ github.run_id }}-3-cand
 
       - name: Train per-lead EMOS v2 calibrators
         working-directory: src/polymarket_weather
