@@ -665,8 +665,13 @@ TEMPLATE = r"""<meta charset="utf-8">
     <div class="brierdef"><b>Brier score</b> = mean squared error of the probabilities. 0 = perfect · lower = more accurate.</div>
 
     <div class="panel" style="margin-top:16px">
-      <div class="find" style="font-size:13px">Accuracy vs. profit — why we trust the Brier, not the ROI</div>
-      <div class="findsub" id="roisub">the same forecasters, scored two ways · all-time</div>
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+        <div>
+          <div class="find" style="font-size:13px">Accuracy vs. profit — why we trust the Brier, not the ROI</div>
+          <div class="findsub" id="roisub" style="margin-bottom:0">the same forecasters, scored two ways · all-time</div>
+        </div>
+        <span class="seg" id="roiseg" style="flex:none"><button class="on" data-rwin="all">All time</button><button data-rwin="recent">Last 60</button></span>
+      </div>
       <div style="overflow-x:auto"><table class="data cmp" id="t_roi"><thead><tr>
         <th>Metric</th><th class="num">Market</th><th class="num">Ensemble</th><th class="num">Model</th>
       </tr></thead><tbody></tbody></table></div>
@@ -814,7 +819,8 @@ TEMPLATE = r"""<meta charset="utf-8">
   var D = {};
   var lastSeriesJSON = "";
   var lastGen = null, lastCollect = null, prevBind = null;
-  var win = "all";
+  var win = "all";       // verdict scoreboard window
+  var roiWin = "all";    // ROI box window — independent of the verdict toggle
   var css = function (v) { return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); };
   function el(tag, attrs, text) {
     var e = document.createElementNS(SVGNS, tag);
@@ -1016,11 +1022,11 @@ TEMPLATE = r"""<meta charset="utf-8">
     document.querySelectorAll("#winseg button").forEach(function (b) { b.classList.toggle("on", b.getAttribute("data-win") === win); });
   }
   function renderRoi() {
-    var tb = document.querySelector("#t_roi tbody"), warn = document.getElementById("roiwarn"), sub = document.getElementById("roisub");
+    var tb = document.querySelector("#t_roi tbody"), warn = document.getElementById("roiwarn"), sub = document.getElementById("roisub"), seg = document.getElementById("roiseg");
     if (!tb) return;
-    var sc = D.score || {}, s = sc[win] || sc.all || {};
-    var rm = (D.roi && D.roi.model) ? (D.roi.model[win] || D.roi.model.all) : null;
-    var re = (D.roi && D.roi.ens) ? (D.roi.ens[win] || D.roi.ens.all) : null;
+    var sc = D.score || {}, s = sc[roiWin] || sc.all || {};
+    var rm = (D.roi && D.roi.model) ? (D.roi.model[roiWin] || D.roi.model.all) : null;
+    var re = (D.roi && D.roi.ens) ? (D.roi.ens[roiWin] || D.roi.ens.all) : null;
     function b(v) { return v == null ? "—" : v.toFixed(3); }
     function pct(o) { var x = o.roi; return (x >= 0 ? "+" : "−") + Math.abs(x * 100).toFixed(1) + "%"; }
     function roiCell(o) {
@@ -1029,7 +1035,7 @@ TEMPLATE = r"""<meta charset="utf-8">
       var cls = o.roi < 0 ? ' neg' : '', col = o.roi < 0 ? '' : ' style="color:var(--muted)"';
       return '<td class="num' + cls + '"' + col + '>' + pct(o) + ' <small style="color:var(--faint)">· ' + o.bets + 'b</small></td>';
     }
-    var recent = win === "recent";
+    var recent = roiWin === "recent";
     var brierLbl = 'Brier · accuracy <small>(' + (recent ? 'last 60 mkts' : 'all markets') + ')</small>';
     var roiLbl = 'ROI · in-sample <small>(' + (recent ? 'recent bets' : 'bets placed') + ')</small>';
     tb.innerHTML =
@@ -1038,7 +1044,8 @@ TEMPLATE = r"""<meta charset="utf-8">
       + '<tr><td class="rowlbl">' + roiLbl + '</td>'
       + '<td class="num" style="color:var(--faint)">—</td>' + roiCell(re) + roiCell(rm) + '</tr>';
     if (sub) sub.textContent = "the same forecasters, scored two ways · " + (recent ? "last 60" : "all-time");
-    if (warn) warn.innerHTML = '<b>Why ROI is not the scoreboard.</b> The ensemble is <b>less accurate than the market</b> (worse Brier) yet can show a positive ROI — bet-selection and sizing luck on a small in-sample set, not a real edge. It even <b>flips sign across time-splits</b> and inflates in the recent window, the tell-tale of noise. Accuracy (Brier) is the honest verdict; the market still wins it.';
+    if (seg) seg.querySelectorAll("button").forEach(function (x) { x.classList.toggle("on", x.getAttribute("data-rwin") === roiWin); });
+    if (warn) warn.innerHTML = '<b>Why ROI is not the scoreboard.</b> The ensemble is <b>less accurate than the market</b> (worse Brier) yet can show a positive ROI — bet-selection and sizing luck on a small in-sample set, not a real edge. It <b>swings wildly between windows and each data refresh</b> (all-time vs recent, and run to run), the tell-tale of noise rather than skill. Accuracy (Brier) is the honest verdict; the market still wins it.';
   }
   function renderWon() {
     var host = document.getElementById("c_won"), hd = document.getElementById("wonhd"), w = D.woncity;
@@ -1187,7 +1194,11 @@ TEMPLATE = r"""<meta charset="utf-8">
   }
   document.getElementById("winseg").addEventListener("click", function (ev) {
     var b = ev.target.closest("button"); if (!b || b.getAttribute("data-win") === win) return;
-    win = b.getAttribute("data-win"); renderScore(); renderRoi();
+    win = b.getAttribute("data-win"); renderScore();
+  });
+  document.getElementById("roiseg").addEventListener("click", function (ev) {
+    var b = ev.target.closest("button"); if (!b || b.getAttribute("data-rwin") === roiWin) return;
+    roiWin = b.getAttribute("data-rwin"); renderRoi();
   });
   applyInline(); load();
   setInterval(load, 120000); setInterval(tickClock, 1000);
