@@ -274,10 +274,16 @@ def _roi_at_production(df):
         tot = grp["k"].sum()
         if tot > config.MAX_KELLY_PER_GROUP:
             g.loc[grp.index, "k"] = grp["k"] * (config.MAX_KELLY_PER_GROUP / tot)
-    # portfolio cap
-    tot = g["k"].sum()
-    if tot > config.MAX_TOTAL_KELLY:
-        g["k"] = g["k"] * (config.MAX_TOTAL_KELLY / tot)
+    # Portfolio cap = concurrent exposure on any one settlement date. Grouping by
+    # target_date (not summing across the whole passed set) is essential: a global sum
+    # scales every bet by MAX_TOTAL_KELLY / (sum over ALL bets), so bet sizes shrink as
+    # the backtest lengthens and — via the $1 size floor below — silently drops the
+    # smallest bets, differently for a 60-bet window vs a 264-bet one, making windows
+    # non-comparable. Per-date keeps sizing window-independent (fixes that inconsistency).
+    for dt, grp in g.groupby("target_date"):
+        tot = grp["k"].sum()
+        if tot > config.MAX_TOTAL_KELLY:
+            g.loc[grp.index, "k"] = grp["k"] * (config.MAX_TOTAL_KELLY / tot)
 
     profit = staked = 0.0
     wins = n = 0
