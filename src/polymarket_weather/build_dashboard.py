@@ -190,12 +190,11 @@ def compute_series() -> dict:
         # never as an edge claim. Same betting policy for both (MIN_EDGE + positive Kelly).
         try:
             import config as _cfg
-            _cutoff = cs.tail(60)["td"].min()   # same recent window as the Brier toggle
 
             def _roi(df, recent=False):
                 b = df[(df["abs_edge"].astype(float) >= _cfg.MIN_EDGE) & (df["kelly"].astype(float) > 0)].copy()
-                if recent:
-                    b = b[pd.to_datetime(b["target_date"], errors="coerce") >= _cutoff]
+                if recent:   # rolling last 60 BETS — ROI's natural unit, so the count matches the toggle
+                    b = b.assign(_td=pd.to_datetime(b["target_date"], errors="coerce")).sort_values("_td").tail(60)
                 r = ev._roi_at_production(b)
                 return {"roi": round(float(r["roi"]), 4), "bets": int(r["bets"]), "wins": int(r["wins"])}
             out["roi"] = {"model": {"all": _roi(cal), "recent": _roi(cal, True)},
@@ -1033,11 +1032,11 @@ TEMPLATE = r"""<meta charset="utf-8">
       if (!o || o.bets == null || o.bets === 0) return '<td class="num" style="color:var(--faint)">—</td>';
       // positive ROI is muted (never green — a worse forecaster's profit is not "good"); negative is red
       var cls = o.roi < 0 ? ' neg' : '', col = o.roi < 0 ? '' : ' style="color:var(--muted)"';
-      return '<td class="num' + cls + '"' + col + '>' + pct(o) + ' <small style="color:var(--faint)">· ' + o.bets + 'b</small></td>';
+      return '<td class="num' + cls + '"' + col + '>' + pct(o) + ' <small style="color:var(--faint)">· ' + o.bets + ' bets</small></td>';
     }
     var recent = roiWin === "recent";
-    var brierLbl = 'Brier · accuracy <small>(' + (recent ? 'last 60 mkts' : 'all markets') + ')</small>';
-    var roiLbl = 'ROI · in-sample <small>(' + (recent ? 'recent bets' : 'bets placed') + ')</small>';
+    var brierLbl = 'Brier · accuracy <small>(' + (recent ? 'last 60 markets' : 'all markets') + ')</small>';
+    var roiLbl = 'ROI · in-sample <small>(' + (recent ? 'last 60 bets' : 'all bets placed') + ')</small>';
     tb.innerHTML =
       '<tr><td class="rowlbl">' + brierLbl + '</td>'
       + '<td class="num pos">' + b(s.market) + '</td><td class="num">' + b(s.ens) + '</td><td class="num">' + b(s.model) + '</td></tr>'
