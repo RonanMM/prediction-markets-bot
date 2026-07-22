@@ -190,12 +190,16 @@ def compute_series() -> dict:
         # never as an edge claim. Same betting policy for both (MIN_EDGE + positive Kelly).
         try:
             import config as _cfg
+            _cutoff = cs.tail(60)["td"].min()   # same recent window as the Brier toggle
 
-            def _roi(df):
-                b = df[(df["abs_edge"].astype(float) >= _cfg.MIN_EDGE) & (df["kelly"].astype(float) > 0)]
+            def _roi(df, recent=False):
+                b = df[(df["abs_edge"].astype(float) >= _cfg.MIN_EDGE) & (df["kelly"].astype(float) > 0)].copy()
+                if recent:
+                    b = b[pd.to_datetime(b["target_date"], errors="coerce") >= _cutoff]
                 r = ev._roi_at_production(b)
                 return {"roi": round(float(r["roi"]), 4), "bets": int(r["bets"]), "wins": int(r["wins"])}
-            out["roi"] = {"model": _roi(cal), "ens": _roi(ens)}
+            out["roi"] = {"model": {"all": _roi(cal), "recent": _roi(cal, True)},
+                          "ens":   {"all": _roi(ens), "recent": _roi(ens, True)}}
         except Exception as e:
             out["roi_error"] = f"{type(e).__name__}: {e}"
 
@@ -662,7 +666,7 @@ TEMPLATE = r"""<meta charset="utf-8">
 
     <div class="panel" style="margin-top:16px">
       <div class="find" style="font-size:13px">Accuracy vs. profit — why we trust the Brier, not the ROI</div>
-      <div class="findsub">the same forecasters, scored two ways · all-time</div>
+      <div class="findsub" id="roisub">the same forecasters, scored two ways · all-time</div>
       <div style="overflow-x:auto"><table class="data cmp" id="t_roi"><thead><tr>
         <th>Metric</th><th class="num">Market</th><th class="num">Ensemble</th><th class="num">Model</th>
       </tr></thead><tbody></tbody></table></div>
@@ -739,11 +743,11 @@ TEMPLATE = r"""<meta charset="utf-8">
     <p class="lede" style="margin:0 2px 14px">A <b>separate book</b> from the model above — it bets on market <b>structure</b>, not the weather. <b>Leg 1</b> sells over-priced 5–35¢ shoulder bins; <b>Leg 2</b> buys 65–85¢ YES-favourites &gt;12h before close. Independent mispricings, each gated on its own before a single real order.</p>
     <div class="cwrap">
       <div class="panel">
-        <div class="find">The shoulder leg is up — but in-sample.</div>
+        <div class="find" id="sb_title">The shoulder leg — model-free, in-sample.</div>
         <div class="findsub">Running net units · taker fees paid</div>
         <div class="chartwrap"><div id="c_equity"></div></div>
         <div class="statrow">
-          <div class="st"><div class="k">Net units</div><div class="v" style="color:var(--good)" data-bind="BOOK_NET">—</div></div>
+          <div class="st"><div class="k">Net units</div><div class="v" id="sb_net" data-bind="BOOK_NET">—</div></div>
           <div class="st"><div class="k">Settled</div><div class="v" data-bind="SB_GRADED">—</div></div>
           <div class="st"><div class="k">Win rate</div><div class="v"><span data-bind="SB_WR">—</span>%</div></div>
           <div class="st"><div class="k">Awaiting</div><div class="v" data-bind="SB_AWAIT">—</div></div>
@@ -754,7 +758,7 @@ TEMPLATE = r"""<meta charset="utf-8">
         <div class="findsub">A leg must clear a pre-registered forward target — settlements holding positive expectancy out-of-sample — before it can trade. In-sample profit doesn't count.</div>
         <table class="data" style="margin-top:2px">
           <tr><th>Leg</th><th class="num">Graded</th><th class="num">Edge / contract</th><th>Status</th></tr>
-          <tr><td class="city">1 · sell shoulder</td><td class="num" data-bind="SB_GRADED">—</td><td class="num pos" data-bind="SB_FULL">—</td><td><span class="pill2 warn">paper</span></td></tr>
+          <tr><td class="city">1 · sell shoulder</td><td class="num" data-bind="SB_GRADED">—</td><td class="num" id="sb_full_cell" data-bind="SB_FULL">—</td><td><span class="pill2 warn">paper</span></td></tr>
           <tr><td class="city">2 · buy favourite</td><td class="num" id="leg2n">—</td><td class="num" id="leg2edge">—</td><td><span class="pill2" id="leg2status">pending</span></td></tr>
         </table>
         <p class="cap" style="margin-top:14px"><b>Nothing is live.</b> A second signal — the model's most selective bucket — shows <b><span data-bind="E3_ROI">—</span> on <span data-bind="E3_N">—</span> bets</b>, still in-sample. No real orders until a gate passes.</p>
@@ -1012,20 +1016,29 @@ TEMPLATE = r"""<meta charset="utf-8">
     document.querySelectorAll("#winseg button").forEach(function (b) { b.classList.toggle("on", b.getAttribute("data-win") === win); });
   }
   function renderRoi() {
-    var tb = document.querySelector("#t_roi tbody"), warn = document.getElementById("roiwarn");
+    var tb = document.querySelector("#t_roi tbody"), warn = document.getElementById("roiwarn"), sub = document.getElementById("roisub");
     if (!tb) return;
-    var s = (D.score && D.score.all) || {}, r = D.roi || {};
+    var sc = D.score || {}, s = sc[win] || sc.all || {};
+    var rm = (D.roi && D.roi.model) ? (D.roi.model[win] || D.roi.model.all) : null;
+    var re = (D.roi && D.roi.ens) ? (D.roi.ens[win] || D.roi.ens.all) : null;
     function b(v) { return v == null ? "—" : v.toFixed(3); }
-    function pct(o) { if (!o || o.roi == null) return "—"; var x = o.roi; return (x >= 0 ? "+" : "−") + Math.abs(x * 100).toFixed(1) + "%"; }
-    function n(o) { return o && o.bets != null ? o.bets : "—"; }
+    function pct(o) { var x = o.roi; return (x >= 0 ? "+" : "−") + Math.abs(x * 100).toFixed(1) + "%"; }
+    function roiCell(o) {
+      if (!o || o.bets == null || o.bets === 0) return '<td class="num" style="color:var(--faint)">—</td>';
+      // positive ROI is muted (never green — a worse forecaster's profit is not "good"); negative is red
+      var cls = o.roi < 0 ? ' neg' : '', col = o.roi < 0 ? '' : ' style="color:var(--muted)"';
+      return '<td class="num' + cls + '"' + col + '>' + pct(o) + ' <small style="color:var(--faint)">· ' + o.bets + 'b</small></td>';
+    }
+    var recent = win === "recent";
+    var brierLbl = 'Brier · accuracy <small>(' + (recent ? 'last 60 mkts' : 'all markets') + ')</small>';
+    var roiLbl = 'ROI · in-sample <small>(' + (recent ? 'recent bets' : 'bets placed') + ')</small>';
     tb.innerHTML =
-      '<tr><td class="rowlbl">Brier · accuracy <small>(all markets)</small></td>'
+      '<tr><td class="rowlbl">' + brierLbl + '</td>'
       + '<td class="num pos">' + b(s.market) + '</td><td class="num">' + b(s.ens) + '</td><td class="num">' + b(s.model) + '</td></tr>'
-      + '<tr><td class="rowlbl">ROI · in-sample <small>(bets placed)</small></td>'
-      + '<td class="num" style="color:var(--faint)">—</td>'
-      + '<td class="num" style="color:var(--muted)">' + pct(r.ens) + ' <small style="color:var(--faint)">· ' + n(r.ens) + '</small></td>'
-      + '<td class="num neg">' + pct(r.model) + ' <small style="color:var(--faint)">· ' + n(r.model) + '</small></td></tr>';
-    if (warn) warn.innerHTML = '<b>Why ROI is not the scoreboard.</b> The ensemble is <b>less accurate than the market</b> (worse Brier) yet shows a positive ROI — that is bet-selection and sizing luck on a small in-sample set, not a real edge, and it would not survive live. Accuracy (Brier) is the honest verdict; the market still wins it.';
+      + '<tr><td class="rowlbl">' + roiLbl + '</td>'
+      + '<td class="num" style="color:var(--faint)">—</td>' + roiCell(re) + roiCell(rm) + '</tr>';
+    if (sub) sub.textContent = "the same forecasters, scored two ways · " + (recent ? "last 60" : "all-time");
+    if (warn) warn.innerHTML = '<b>Why ROI is not the scoreboard.</b> The ensemble is <b>less accurate than the market</b> (worse Brier) yet can show a positive ROI — bet-selection and sizing luck on a small in-sample set, not a real edge. It even <b>flips sign across time-splits</b> and inflates in the recent window, the tell-tale of noise. Accuracy (Brier) is the honest verdict; the market still wins it.';
   }
   function renderWon() {
     var host = document.getElementById("c_won"), hd = document.getElementById("wonhd"), w = D.woncity;
@@ -1094,11 +1107,12 @@ TEMPLATE = r"""<meta charset="utf-8">
     dispChart("c_disp", D.disp || []);
 
     var eq = D.equity || [];
+    var eqCol = (eq.length && eq[eq.length - 1].v < 0) ? css("--model") : css("--good");
     if (eq.length) lineChart("c_equity", {
       h: 210, area: true, xLabels: eq.map(function (r) { return r.t; }),
       yFmt: function (v) { return (v >= 0 ? "+" : "") + v.toFixed(1) + "u"; }, tipFmt: function (v) { return (v >= 0 ? "+" : "") + v.toFixed(2) + "u"; },
       endFmt: function (s) { var last = s.points.slice(-1)[0]; return last != null ? (last >= 0 ? "+" : "") + last.toFixed(2) + "u" : ""; },
-      series: [{ name: "Net units", color: css("--good"), points: eq.map(function (r) { return r.v; }), fill: true, thick: 2.2 }]
+      series: [{ name: "Net units", color: eqCol, points: eq.map(function (r) { return r.v; }), fill: true, thick: 2.2 }]
     });
     else { var he = document.getElementById("c_equity"); if (he) he.innerHTML = '<div style="color:var(--faint);font-size:12px;padding:20px 0">No settled paper entries yet.</div>'; }
 
@@ -1122,6 +1136,16 @@ TEMPLATE = r"""<meta charset="utf-8">
         if (!first && prevBind[k] !== undefined && String(prevBind[k]) !== val) flash(e);
       });
     });
+    // Sign-aware colours + data-driven titles — a "finding" must never contradict the number.
+    // BOOK_NET / SB_FULL strings use "−" (U+2212) for negatives (Python formats +/− then swaps).
+    function _neg(v) { return v != null && (String(v).charAt(0) === "−" || String(v).charAt(0) === "-"); }
+    if (b.BOOK_NET != null) {
+      var neg = _neg(b.BOOK_NET);
+      var netEl = document.getElementById("sb_net"); if (netEl) netEl.style.color = neg ? "var(--model)" : "var(--good)";
+      var tEl = document.getElementById("sb_title");
+      if (tEl) tEl.textContent = neg ? "The shoulder leg is underwater — and in-sample." : "The shoulder leg is up — but in-sample.";
+    }
+    if (b.SB_FULL != null) { var fc = document.getElementById("sb_full_cell"); if (fc) fc.style.color = _neg(b.SB_FULL) ? "var(--model)" : "var(--good)"; }
     // Leg 2 favourites — honest "pending" until it has graded entries
     var favN = b.SB_FAV_GRADED;
     if (favN != null) {
@@ -1163,7 +1187,7 @@ TEMPLATE = r"""<meta charset="utf-8">
   }
   document.getElementById("winseg").addEventListener("click", function (ev) {
     var b = ev.target.closest("button"); if (!b || b.getAttribute("data-win") === win) return;
-    win = b.getAttribute("data-win"); renderScore();
+    win = b.getAttribute("data-win"); renderScore(); renderRoi();
   });
   applyInline(); load();
   setInterval(load, 120000); setInterval(tickClock, 1000);
