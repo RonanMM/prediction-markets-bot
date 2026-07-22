@@ -146,3 +146,5 @@ entered_at_utc,city,condition_id,question,target_date,leg,side,entry_side_price,
 2026-07-22T17:44:34.772846+00:00,London,0xd4a4bb206de299b37cb71a9e6ca1a2328558217b8991ca7a750eb3e8235e8dcd,Will the highest temperature in London be 27°C on July 24?,2026-07-24,shoulder,No,0.75,0.25,core,7274.12
 2026-07-22T17:44:34.772846+00:00,Seoul,0xbf6c46db04f7a2b6f71aef8bee0244f9109f53aa6668539cee3106bd8b3e828e,Will the highest temperature in Seoul be 29°C on July 24?,2026-07-24,shoulder,No,0.7,0.3,core,6705.09
 2026-07-22T17:44:34.772846+00:00,Seoul,0xd01840a59329aebe887b7edd8a0dc89169dfd0e531262615f468ff64fabfd01d,Will the highest temperature in Seoul be 27°C on July 24?,2026-07-24,shoulder,No,0.935,0.065,outer,6558.05
+2026-07-22T19:47:22.284524+00:00,NYC,0x6cac4411b6ee5033d949f92ba6fc108448dd0ac47799615d2be208bdd4ceb859,Will the highest temperature in New York City be between 82-83°F on July 23?,2026-07-23,shoulder,No,0.725,0.275,core,4713.46
+2026-07-22T19:47:22.284524+00:00,Seoul,0x34e59ed58575344ba809d1f54877858210f362c28b749cece94e546e9079bf05,Will the lowest temperature in Seoul be 23°C on July 24?,2026-07-24,shoulder,No,0.825,0.175,outer,1707.37
