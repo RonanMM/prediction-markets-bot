@@ -184,6 +184,21 @@ def compute_series() -> dict:
                     "model": round(float(w["b_model"].mean()), 4), "n": int(len(w))}
         out["score"] = {"all": _sb(cs), "recent": _sb(cs.tail(60))}
 
+        # ROI at production params (IN-SAMPLE, noisy) — model AND ensemble, for the honest
+        # accuracy-vs-profit panel. The ensemble's positive ROI while it LOSES on Brier is the
+        # exact "127% ROI" mirage this project warns about; surfaced only with that caveat,
+        # never as an edge claim. Same betting policy for both (MIN_EDGE + positive Kelly).
+        try:
+            import config as _cfg
+
+            def _roi(df):
+                b = df[(df["abs_edge"].astype(float) >= _cfg.MIN_EDGE) & (df["kelly"].astype(float) > 0)]
+                r = ev._roi_at_production(b)
+                return {"roi": round(float(r["roi"]), 4), "bets": int(r["bets"]), "wins": int(r["wins"])}
+            out["roi"] = {"model": _roi(cal), "ens": _roi(ens)}
+        except Exception as e:
+            out["roi_error"] = f"{type(e).__name__}: {e}"
+
         # rolling form — trailing 60-market window on the same common set (recent form vs history)
         cc = c.sort_values("td").reset_index(drop=True)
         roll = []
@@ -545,6 +560,8 @@ TEMPLATE = r"""<meta charset="utf-8">
   .rrow .d{text-align:right;font-family:var(--mono);font-size:12px;color:var(--bad)} .rrow .d.z{color:var(--faint)}
   .caveat{display:none;margin-top:10px;font-size:11px;line-height:1.5;color:var(--warn);background:rgba(250,178,25,.07);border:1px solid rgba(250,178,25,.28);border-radius:7px;padding:9px 12px}
   .caveat.show{display:block} .caveat b{color:#f0c24a}
+  .roiwarn{margin-top:12px;font-size:11px;line-height:1.55;color:var(--warn);background:rgba(250,178,25,.07);border:1px solid rgba(250,178,25,.28);border-radius:7px;padding:10px 12px} .roiwarn b{color:#f0c24a}
+  table.cmp td:first-child{color:var(--ink2);font-weight:500} table.cmp .rowlbl small{color:var(--faint);font-weight:400}
 
   .gloss{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:18px}
   .gc{background:var(--surf);border:1px solid var(--line);border-radius:8px;padding:13px 14px;border-top:2px solid var(--faint)}
@@ -642,6 +659,15 @@ TEMPLATE = r"""<meta charset="utf-8">
       <div class="gc r"><div class="h"><span class="sw model"></span>Calibrated model</div><p>Our forecast: a multi-model blend, then EMOS — a statistical correction of bias &amp; spread against each station's history.</p></div>
     </div>
     <div class="brierdef"><b>Brier score</b> = mean squared error of the probabilities. 0 = perfect · lower = more accurate.</div>
+
+    <div class="panel" style="margin-top:16px">
+      <div class="find" style="font-size:13px">Accuracy vs. profit — why we trust the Brier, not the ROI</div>
+      <div class="findsub">the same forecasters, scored two ways · all-time</div>
+      <div style="overflow-x:auto"><table class="data cmp" id="t_roi"><thead><tr>
+        <th>Metric</th><th class="num">Market</th><th class="num">Ensemble</th><th class="num">Model</th>
+      </tr></thead><tbody></tbody></table></div>
+      <div class="roiwarn" id="roiwarn"></div>
+    </div>
 
     <div class="kpis">
       <div class="kpi b"><div class="k">Markets graded</div><div class="v" data-bind="N_MKTS">—</div><div class="s">settlement truth</div></div>
@@ -746,10 +772,10 @@ TEMPLATE = r"""<meta charset="utf-8">
         </tr></thead><tbody></tbody></table></div>
       </div>
       <div class="panel">
-        <div class="find" style="font-size:13px" id="wonhd">Who was closer, last 60</div>
-        <div class="findsub">by city · recent window has no Hong Kong (21-day truth lag)</div>
+        <div class="find" style="font-size:13px" id="wonhd">Nearer the outcome, last 60</div>
+        <div class="findsub">one vote per market · the metric that most flatters the model</div>
         <div class="wonbars" id="c_won"></div>
-        <div class="cap" style="margin-top:14px"><span style="color:var(--model)">■</span> model closer &nbsp; <span style="color:var(--market)">■</span> market closer. "Closer" counts each market once; the market still wins on Brier because the model misses bigger when it's wrong.</div>
+        <div class="cap" style="margin-top:14px"><span style="color:var(--model)">■</span> model nearer &nbsp; <span style="color:var(--market)">■</span> market nearer. This counts each market once, so a hair-closer call and a lucky call both score 1 — the model wins ~half these coin-flips yet still <b>loses on Brier and ROI</b>, because when it's wrong it's wrong big. Not an edge. Recent window has no Hong Kong (21-day truth lag).</div>
       </div>
     </div>
   </section>
@@ -985,10 +1011,27 @@ TEMPLATE = r"""<meta charset="utf-8">
     document.getElementById("cav").classList.toggle("show", win === "recent");
     document.querySelectorAll("#winseg button").forEach(function (b) { b.classList.toggle("on", b.getAttribute("data-win") === win); });
   }
+  function renderRoi() {
+    var tb = document.querySelector("#t_roi tbody"), warn = document.getElementById("roiwarn");
+    if (!tb) return;
+    var s = (D.score && D.score.all) || {}, r = D.roi || {};
+    function b(v) { return v == null ? "—" : v.toFixed(3); }
+    function pct(o) { if (!o || o.roi == null) return "—"; var x = o.roi; return (x >= 0 ? "+" : "−") + Math.abs(x * 100).toFixed(1) + "%"; }
+    function n(o) { return o && o.bets != null ? o.bets : "—"; }
+    tb.innerHTML =
+      '<tr><td class="rowlbl">Brier · accuracy <small>(all markets)</small></td>'
+      + '<td class="num pos">' + b(s.market) + '</td><td class="num">' + b(s.ens) + '</td><td class="num">' + b(s.model) + '</td></tr>'
+      + '<tr><td class="rowlbl">ROI · in-sample <small>(bets placed)</small></td>'
+      + '<td class="num" style="color:var(--faint)">—</td>'
+      + '<td class="num" style="color:var(--muted)">' + pct(r.ens) + ' <small style="color:var(--faint)">· ' + n(r.ens) + '</small></td>'
+      + '<td class="num neg">' + pct(r.model) + ' <small style="color:var(--faint)">· ' + n(r.model) + '</small></td></tr>';
+    if (warn) warn.innerHTML = '<b>Why ROI is not the scoreboard.</b> The ensemble is <b>less accurate than the market</b> (worse Brier) yet shows a positive ROI — that is bet-selection and sizing luck on a small in-sample set, not a real edge, and it would not survive live. Accuracy (Brier) is the honest verdict; the market still wins it.';
+  }
   function renderWon() {
     var host = document.getElementById("c_won"), hd = document.getElementById("wonhd"), w = D.woncity;
     if (!host || !w) return;
-    hd.textContent = "Model closer " + w.mwin + " / " + w.n;
+    var pctAll = w.n ? Math.round(w.mwin / w.n * 100) : 0;
+    hd.innerHTML = 'Nearer the outcome: model ' + w.mwin + ' / ' + w.n + ' <span style="color:var(--faint);font-weight:400">(' + pctAll + '% — a coin-flip)</span>';
     host.innerHTML = (w.rows || []).map(function (r) {
       var pct = r.n ? Math.round(r.mwin / r.n * 100) : 0;
       return '<div class="wb"><span class="nm">' + esc(r.city) + '</span><span class="bar"><span class="mk" style="width:' + pct + '%"></span><span class="mkt" style="width:' + (100 - pct) + '%"></span></span><span class="c">' + r.mwin + '/' + r.n + '</span></div>';
@@ -1060,6 +1103,7 @@ TEMPLATE = r"""<meta charset="utf-8">
     else { var he = document.getElementById("c_equity"); if (he) he.innerHTML = '<div style="color:var(--faint);font-size:12px;padding:20px 0">No settled paper entries yet.</div>'; }
 
     renderScore();
+    renderRoi();
     renderWon();
     renderBuckets();
     renderRecent();
