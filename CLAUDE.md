@@ -230,7 +230,10 @@ structure legs in `shoulder_book.py` (see EDGE_MEGAPLAN §10b/§10d), in forward
 > warning fires once-per-city (`_warn_once`) for early-March boundary snapshots that get *skipped*;
 > the committed calibrated tracker has **zero** `ensemble`-`sigma_source` rows (all 493 are
 > `emos_v2*`), so MODEL≈ENSEMBLE is NOT tautological — the model genuinely lost as the calibrated
-> best_match model. (3) Tmin archives (`_min`) still aren't fetched in cloud → Tmin never retrains.
+> best_match model. (3) Tmin archives (`_min`) **now fetched in cloud** (`retrain.yml`, 2026-07-22):
+> `fetch_historical_leads_min.py` (made incremental to match the Tmax fetchers) writes both min
+> files and a retrain now rebuilds the Tmin stack (all 5 cities select `mm_mean`, e.g. Seoul min
+> RMSE 1.10 blend vs 1.73 best_match) instead of freezing at the last hand-commit (2026-07-04).
 > **Bottom line:** the edge verdict is unchanged and sound. The model loses on its overconfident
 > TAILS (`[0,0.1)` predicts 3.6%, realizes 15.5%) — a distributional problem the mean-input blend
 > won't fix. Making the model competitive needs a tails/dispersion change, not more data plumbing.

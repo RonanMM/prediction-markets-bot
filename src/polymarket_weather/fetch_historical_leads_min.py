@@ -43,6 +43,27 @@ CHUNK_DAYS = 90
 REQUEST_TIMEOUT = 180
 OUT_DIR = "data/weather"
 
+# Incremental refetch window — dates older than this many days before an existing CSV's
+# last date are treated as final (their archived leads long since published) and served
+# from the CSV rather than re-fetched, mirroring fetch_historical_leads.py. With no CSV
+# it is a full 2022→now refetch. Keeps a cached retrain converging in minutes.
+OVERLAP_DAYS = 21
+
+
+def _load_existing(out_path):
+    """Existing CSV (already stored with the final fcst_tmin_* columns) and its last
+    date, or (None, None) when absent/unreadable → full refetch."""
+    if not os.path.exists(out_path):
+        return None, None
+    try:
+        df = pd.read_csv(out_path)
+    except Exception as e:  # a corrupt/partial cache must never block a fresh fetch
+        logger.warning(f"could not read {out_path} ({e}); refetching from scratch")
+        return None, None
+    if "date_local" not in df.columns or df.empty:
+        return None, None
+    return df, pd.to_datetime(df["date_local"]).max().date()
+
 
 def _get(params: dict) -> dict | None:
     for attempt in range(4):
@@ -79,11 +100,19 @@ def _daily_min(hourly: dict, leads, col_of) -> pd.DataFrame | None:
     return agg.reset_index()
 
 
-def _fetch_series(lat, lon, leads, models: dict | None):
-    """Chunked previous-runs fetch reduced to local-day minima."""
+def _fetch_series(lat, lon, leads, models: dict | None, out_path):
+    """Chunked previous-runs fetch reduced to local-day minima, INCREMENTAL: when an
+    existing CSV is present, only dates within OVERLAP_DAYS of its last date onward are
+    re-fetched; fresh chunks supersede cached rows for the overlap, and a cached row
+    SURVIVES if its refetch chunk failed (existing first + keep='last'), so a partial
+    network failure never silently drops good data. With no CSV it is a full refetch."""
     end_all = datetime.now().date() - timedelta(days=1)
+    existing, max_date = _load_existing(out_path)
+    start = START_DATE if max_date is None else max(
+        START_DATE, max_date - timedelta(days=OVERLAP_DAYS))
+    if max_date is not None:
+        logger.info(f"  incremental — cached through {max_date}, refetching from {start}")
     chunks = []
-    start = START_DATE
     hourly_vars = ",".join(f"temperature_2m_previous_day{n}" for n in leads)
     while start <= end_all:
         end = min(start + timedelta(days=CHUNK_DAYS - 1), end_all)
@@ -105,10 +134,11 @@ def _fetch_series(lat, lon, leads, models: dict | None):
                 chunks.append(chunk)
         start = end + timedelta(days=1)
         time.sleep(1.0)
-    if not chunks:
+    frames = ([existing] if existing is not None else []) + chunks
+    if not frames:
         return None
-    return (pd.concat(chunks, ignore_index=True)
-              .drop_duplicates("date_local").sort_values("date_local"))
+    return (pd.concat(frames, ignore_index=True)
+              .drop_duplicates("date_local", keep="last").sort_values("date_local"))
 
 
 def fetch_historical_leads_min():
@@ -117,19 +147,19 @@ def fetch_historical_leads_min():
         slug = city.replace(" ", "_").lower()
         lat, lon = anchor["forecast_lat"], anchor["forecast_lon"]
 
-        bm = _fetch_series(lat, lon, BM_LEADS, models=None)
+        out_bm = os.path.join(OUT_DIR, f"{slug}_historical_leads_min.csv")
+        bm = _fetch_series(lat, lon, BM_LEADS, None, out_bm)
         if bm is not None:
-            out = os.path.join(OUT_DIR, f"{slug}_historical_leads_min.csv")
-            bm.to_csv(out, index=False)
-            logger.info(f"{city}: saved {out} — {len(bm)} dates")
+            bm.to_csv(out_bm, index=False)
+            logger.info(f"{city}: saved {out_bm} — {len(bm)} dates")
         else:
             logger.error(f"{city}: best_match min fetch failed")
 
-        mm = _fetch_series(lat, lon, MM_LEADS, models=MM_MODELS)
+        out_mm = os.path.join(OUT_DIR, f"{slug}_historical_leads_min_mm.csv")
+        mm = _fetch_series(lat, lon, MM_LEADS, MM_MODELS, out_mm)
         if mm is not None:
-            out = os.path.join(OUT_DIR, f"{slug}_historical_leads_min_mm.csv")
-            mm.to_csv(out, index=False)
-            logger.info(f"{city}: saved {out} — {len(mm)} dates")
+            mm.to_csv(out_mm, index=False)
+            logger.info(f"{city}: saved {out_mm} — {len(mm)} dates")
         else:
             logger.error(f"{city}: multi-model min fetch failed")
 

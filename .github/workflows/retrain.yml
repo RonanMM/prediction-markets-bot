@@ -117,8 +117,8 @@ jobs:
       # cities, leaving the expensive mm fetch above inert. Unlocks the Tmax blend for all
       # five cities: cand now also fetches `jma_seamless` (Seoul's blend needs it, and nothing
       # else produced the jma archive). Serving may still fall back for some cities until the
-      # daily_mm/ensemble serve-time schema issue is resolved (see CLAUDE.md caveat); Tmin
-      # (fetch_historical_leads_min.py) is likewise not yet wired here.
+      # daily_mm/ensemble serve-time schema issue is resolved (see CLAUDE.md caveat). Tmin is
+      # now wired below.
       - name: Candidate blend models (gem/aifs/mf…)
         working-directory: src/polymarket_weather
         run: python fetch_historical_leads_cand.py
@@ -130,6 +130,27 @@ jobs:
           path: |
             src/polymarket_weather/data/weather/*_historical_leads*.csv
           key: leads-archive-${{ github.run_id }}-3-cand
+
+      # Tmin training archives. ~26% of markets settle on the daily MINIMUM and are priced by
+      # a dedicated Tmin stack ({slug}_emos_min.json, same per-city blend). Without this fetch
+      # the min archives aren't present on a fresh runner, so train_calibrator can't rebuild
+      # the min models and they FREEZE at whatever was last committed by hand — they had stuck
+      # at 2026-07-04 while the Tmax models retrained daily-fresh, silently mispricing a quarter
+      # of the book. fetch_historical_leads_min writes both files train_calibrator needs
+      # (best_match {slug}_historical_leads_min.csv + blend {slug}_historical_leads_min_mm.csv)
+      # and is now incremental like the Tmax fetchers, so a warm cache means it only pulls the
+      # recent tail. The *_historical_leads* cache glob above already covers the _min files.
+      - name: Per-lead MIN archives (Tmin training data)
+        working-directory: src/polymarket_weather
+        run: python fetch_historical_leads_min.py
+
+      - name: Bank cache (after Tmin)
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: |
+            src/polymarket_weather/data/weather/*_historical_leads*.csv
+          key: leads-archive-${{ github.run_id }}-4-min
 
       - name: Train per-lead EMOS v2 calibrators
         working-directory: src/polymarket_weather

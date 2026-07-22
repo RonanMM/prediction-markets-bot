@@ -71,3 +71,6 @@ src/polymarket_weather/data/weather/*_historical_*.csv
 src/polymarket_weather/data/weather/*_obs_hourly.csv
 src/polymarket_weather/data/weather/*_nbm.csv
 output/logs/
+
+# Brainstorming visual companion (local only)
+.superpowers/
