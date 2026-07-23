@@ -419,6 +419,39 @@ def _scoreboard_html(d: dict, n_common) -> str:
             f'Every prediction graded against the station reading each market settles on.</div>')
 
 
+def _breadth_binds() -> dict:
+    """Breadth structure-book stats, read OFFLINE from the committed CSV (no network — the
+    daily truth-eval job does the settlement lookups and freezes them). Returns bind strings
+    with sensible defaults so the panel renders even before the first entry."""
+    b = {"BK_ENTRIES": "0", "BK_CITIES": "0", "BK_GRADED": "0", "BK_AWAIT": "0",
+         "BK_MOD_N": "0", "BK_MOD_NEED": "80", "BK_MOD_NET": "—", "BK_MOD_PASS": "0",
+         "BK_FULL_N": "0", "BK_FULL_NET": "—", "BK_WR": "—"}
+    try:
+        import shoulder_book_breadth as bb
+        book = bb._load_book()
+        if book.empty:
+            return b
+        graded = bb.grade_book(book=book, lookup=False)   # offline: frozen settlements only
+        b.update(BK_ENTRIES=str(len(book)), BK_CITIES=str(book["city"].nunique()),
+                 BK_GRADED=str(len(graded)), BK_AWAIT=str(len(book) - len(graded)))
+        if not graded.empty:
+            sh = graded[graded["leg"] == "shoulder"]
+            if len(sh):
+                b.update(BK_FULL_N=str(len(sh)),
+                         BK_WR=f"{sh['side_won'].mean() * 100:.0f}",
+                         BK_FULL_NET=f"{sh['net_edge'].mean():+.4f}".replace("-", "−"))
+            st = bb.moderate_gate_stats(graded, prereg_date=bb.BREADTH_PREREG_DATE)
+            if st:
+                f = st["forward"]
+                need_n, _ = bb.GATE_MOD_BREADTH
+                b.update(BK_MOD_N=str(f["n"]), BK_MOD_NEED=str(need_n),
+                         BK_MOD_NET=(f"{f['taker']:+.4f}".replace("-", "−") if f["n"] else "—"),
+                         BK_MOD_PASS="1" if f.get("gate_pass") else "0")
+    except Exception as e:
+        b["BK_ERR"] = str(e)[:80]
+    return b
+
+
 def build_payload(d: dict, series: dict) -> dict:
     days, span = _fmt_span(d)
     series["disp"] = d.get("disp", [])
@@ -460,6 +493,7 @@ def build_payload(d: dict, series: dict) -> dict:
             "SB_MOD_NEED": G("sb_mod_need", "80"), "SB_MOD_PASS": G("sb_mod_pass", "0"),
             "E3_ROI": G("e3_roi"), "E3_N": G("e3_n"),
             "SKILL": skill_txt, "BOOK_NET": book_net, "RUNS_TODAY": runs_today,
+            **_breadth_binds(),
         },
         "html": {
             "EDGE_CHIP": edge_chip,
@@ -773,6 +807,22 @@ TEMPLATE = r"""<meta charset="utf-8">
         </table>
         <p class="cap" style="margin-top:14px"><b>Nothing is live.</b> A second signal — the model's most selective bucket — shows <b><span data-bind="E3_ROI">—</span> on <span data-bind="E3_N">—</span> bets</b>, still in-sample. No real orders until a gate passes.</p>
       </div>
+    </div>
+    <div class="panel" style="margin-top:14px">
+      <div class="find">Breadth book · every Polymarket weather city</div>
+      <div class="findsub">The same model-free structure legs, extended from 5 cities to every active weather market (~51), graded on Polymarket's own settlement. A separately pre-registered forward gate (2026-07-23) that cross-validates the 5-city book at ~10× the inventory.</div>
+      <div class="statrow">
+        <div class="st"><div class="k">Entries</div><div class="v" data-bind="BK_ENTRIES">—</div></div>
+        <div class="st"><div class="k">Cities</div><div class="v" data-bind="BK_CITIES">—</div></div>
+        <div class="st"><div class="k">Settled</div><div class="v" data-bind="BK_GRADED">—</div></div>
+        <div class="st"><div class="k">Awaiting</div><div class="v" data-bind="BK_AWAIT">—</div></div>
+      </div>
+      <table class="data" style="margin-top:10px">
+        <tr><th>Leg</th><th class="num">Forward</th><th class="num">Net / contract</th><th>Status</th></tr>
+        <tr><td class="city">1b · moderate [10–25¢] · all cities</td><td class="num" id="bkmodn">—</td><td class="num" id="bkmodedge">—</td><td><span class="pill2" id="bkmodstatus">forward</span></td></tr>
+        <tr><td class="city">1 · sell shoulder [5–35¢] · all cities</td><td class="num" id="bkfulln">—</td><td class="num" id="bkfulledge" data-bind="BK_FULL_NET">—</td><td><span class="pill2 warn">paper</span></td></tr>
+      </table>
+      <p class="cap" style="margin-top:12px"><b>Paper — no real money.</b> Forward-only: only entries recorded on/after 2026-07-23 count toward the gate, so the hypothesis is never graded on the data that suggested it.</p>
     </div>
   </section>
 
@@ -1149,6 +1199,17 @@ TEMPLATE = r"""<meta charset="utf-8">
       if (mn) mn.textContent = b.SB_MOD_FWD_N + "/" + (b.SB_MOD_NEED || "80");
       if (me) me.textContent = fn > 0 ? b.SB_MOD_FWD : "—";
       if (ms) { ms.textContent = pass ? "gate ✓" : "forward"; ms.className = pass ? "pill2 on" : "pill2"; }
+    }
+    // Breadth book — all-cities Leg 1b forward gate + shoulder leg, mirrors the 5-city panel.
+    if (b.BK_MOD_N != null) {
+      var bn = document.getElementById("bkmodn"), be = document.getElementById("bkmodedge"),
+          bs = document.getElementById("bkmodstatus");
+      var bfn = parseInt(b.BK_MOD_N, 10) || 0, bpass = b.BK_MOD_PASS === "1";
+      if (bn) bn.textContent = b.BK_MOD_N + "/" + (b.BK_MOD_NEED || "80");
+      if (be) { be.textContent = bfn > 0 ? b.BK_MOD_NET : "—"; be.style.color = _neg(b.BK_MOD_NET) ? "var(--model)" : (bfn > 0 ? "var(--good)" : ""); }
+      if (bs) { bs.textContent = bpass ? "gate ✓" : "forward"; bs.className = bpass ? "pill2 on" : "pill2"; }
+      var bfl = document.getElementById("bkfulln"); if (bfl) bfl.textContent = b.BK_FULL_N;
+      var bfe = document.getElementById("bkfulledge"); if (bfe) bfe.style.color = _neg(b.BK_FULL_NET) ? "var(--model)" : (b.BK_FULL_NET && b.BK_FULL_NET !== "—" ? "var(--good)" : "");
     }
     prevBind = b;
     var h = html || {};

@@ -33,7 +33,7 @@ GATE_MOD_BREADTH    = (80, 0.03)            # (min forward graded, min mean net 
 PREDAY_HOURS        = 24                     # tz-free "pre-day": > this many hours to market end
 _PIN                = 0.03                   # terminal price within this of 0/1 counts as settled
 
-_OUT = Path(__file__).resolve().parent.parent.parent / "output" / "shoulder_paper_breadth.csv"
+_OUT = Path(__file__).resolve().parent / "output" / "shoulder_paper_breadth.csv"
 _BCOLS = ["entered_at_utc", "city", "condition_id", "market_id", "question", "target_date",
           "entry_yes_price", "liquidity", "leg", "side", "entry_side_price", "band",
           "settled_outcome"]
@@ -192,20 +192,25 @@ def _is_unset(v):
         or str(v).strip() in ("", "nan", "None")
 
 
-def grade_book(book=None, out_path=_OUT, fetch=get_json) -> pd.DataFrame:
+def grade_book(book=None, out_path=_OUT, fetch=get_json, lookup=True) -> pd.DataFrame:
     """Fill+freeze settled_outcome for any ungraded entry (looked up once, never re-fetched),
-    persist, and return the graded frame with side_won + net_edge (verified taker-fee model)."""
+    persist, and return the graded frame with side_won + net_edge (verified taker-fee model).
+
+    lookup=False skips all network calls and grades ONLY entries already frozen in the CSV —
+    use this for read-time consumers (e.g. the dashboard) that must stay fast and offline;
+    a scheduled job (truth-eval) does the lookups and commits the frozen settlements."""
     if book is None:
         book = _load_book(out_path)
     if book.empty:
         return book
     changed = False
-    for i, r in book.iterrows():
-        if _is_unset(r.get("settled_outcome")):
-            o = settlement_outcome(r.get("market_id"), fetch=fetch)
-            if o is not None:
-                book.at[i, "settled_outcome"] = o
-                changed = True
+    if lookup:
+        for i, r in book.iterrows():
+            if _is_unset(r.get("settled_outcome")):
+                o = settlement_outcome(r.get("market_id"), fetch=fetch)
+                if o is not None:
+                    book.at[i, "settled_outcome"] = o
+                    changed = True
     if changed:
         book.reindex(columns=_BCOLS).to_csv(out_path, index=False)
     graded = book[book["settled_outcome"].map(lambda v: not _is_unset(v))].copy()
