@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import glob
 import json
+import os
 import re
 import subprocess
 import sys
@@ -535,10 +536,29 @@ def render_shell(payload: dict) -> str:
     return TEMPLATE.replace("%%PAYLOAD%%", inline)
 
 
+def _missing_cities(payload: dict) -> list:
+    """Expected cities (CITY_ORDER) that have NO gradable markets in this build — the signature
+    of a truth-source outage (e.g. IEM 503 dropping Seoul/London). A city missing here silently
+    corrupts every downstream number (Brier/ROI/buckets/win-rate), so the caller must refuse to
+    publish rather than overwrite the last good dashboard with a partial one."""
+    present = {c.get("city") for c in payload.get("series", {}).get("city", [])}
+    return [c for c in CITY_ORDER if c not in present]
+
+
 def main() -> None:
     out = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_OUT
     out.parent.mkdir(parents=True, exist_ok=True)
     payload = build_payload(gather(), compute_series())
+    # Completeness guard: never publish a degraded dashboard. A transient truth outage that drops
+    # whole cities must FAIL LOUDLY (red run + last-good copy preserved), not silently ship half a
+    # dataset. Override with DASHBOARD_ALLOW_PARTIAL=1 only for deliberate local/partial builds.
+    missing = _missing_cities(payload)
+    if missing and os.environ.get("DASHBOARD_ALLOW_PARTIAL") != "1":
+        sys.stderr.write(
+            f"::error::dashboard build INCOMPLETE — no gradable markets for {missing} "
+            f"(likely a truth-source outage). Refusing to publish a degraded dashboard; the last "
+            f"good published copy is kept. Set DASHBOARD_ALLOW_PARTIAL=1 to override.\n")
+        sys.exit(1)
     out.write_text(render_shell(payload), encoding="utf-8")
     data_out = out.parent / "data.json"
     data_out.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")

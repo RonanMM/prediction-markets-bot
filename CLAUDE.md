@@ -321,7 +321,15 @@ the run list. Verify by checking the timestamp in the published `data.json`, not
 - **Perishable → committed.** Market snapshots, price history, forecast/ensemble/multi-model
   rows. A price not recorded at 14:00 is gone forever; nobody re-serves it.
 - **Refetchable → gitignored.** `*_historical_*.csv`, `*_obs_hourly.csv`, `*_nbm.csv`. IEM / NWS
-  / HKO / Open-Meteo serve full history on demand.
+  / HKO / Open-Meteo serve full history on demand. **EXCEPTION (do not re-ignore):**
+  `*_historical_actuals.csv` (the daily settlement truth, ~200 KB/city) IS committed as a
+  resilience fallback — IEM 503s intermittently and a fresh cloud runner has no other copy, so an
+  outage was dropping whole cities from grading (2026-07-23: a dashboard build published with only
+  3/5 cities, corrupting every Brier/ROI/bucket number). `fetch_historical_truth` "keeps the
+  existing CSV" on a failed refetch, so the committed copy keeps the build complete; `truth-eval`
+  re-commits the refreshed file daily. `build_dashboard._missing_cities` is a hard guard on top:
+  it refuses to publish (exits non-zero → last-good copy kept) if any `CITY_ORDER` city is
+  ungradable.
 
 ⚠️ **The trap (fixed 2026-07-20, do not regress).** `wu_truth.py` reads
 `{slug}_obs_hourly.csv` and returns `None` **silently** when it is missing, so

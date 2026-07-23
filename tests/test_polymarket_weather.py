@@ -1212,3 +1212,15 @@ def test_breadth_maker_path_and_fill(tmp_path):
     b.scan_and_record_breadth(bins=[mk("0xNF", 0.11)], now_utc=t2, out_path=out2)   # only falls
     g2 = b.grade_book(out_path=out2, fetch=lambda u, p=None, l="API": {"closed": True, "outcomePrices": "[\"0\",\"1\"]"})
     assert bool(g2.iloc[0]["maker_filled"]) is False
+
+
+def test_dashboard_completeness_guard():
+    import build_dashboard as bd
+    # full set -> nothing missing
+    full = {"series": {"city": [{"city": c} for c in bd.CITY_ORDER]}}
+    assert bd._missing_cities(full) == []
+    # an IEM outage drops Seoul + London -> both flagged (this is what must block publishing)
+    degraded = {"series": {"city": [{"city": c} for c in ["NYC", "Chicago", "HongKong"]]}}
+    assert set(bd._missing_cities(degraded)) == {"Seoul", "London"}
+    # empty / malformed payload -> all cities missing (never publishes nothing)
+    assert set(bd._missing_cities({})) == set(bd.CITY_ORDER)

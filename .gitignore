@@ -70,6 +70,13 @@ src/polymarket_weather/polymarket/
 src/polymarket_weather/data/weather/*_historical_*.csv
 src/polymarket_weather/data/weather/*_obs_hourly.csv
 src/polymarket_weather/data/weather/*_nbm.csv
+# EXCEPTION — the daily settlement-truth actuals ARE committed as a resilience fallback.
+# They are small (~200KB/city, daily) and the grading of the ENTIRE dashboard depends on
+# them; the IEM feed 503s intermittently and a fresh cloud runner has no other copy, so a
+# transient outage was dropping whole cities. Committed here, fetch_historical_truth "keeps
+# the existing CSV" on a failed refetch and the build stays complete. truth-eval refreshes
+# and re-commits them daily, so the fallback never goes more than ~1 day stale.
+!src/polymarket_weather/data/weather/*_historical_actuals.csv
 output/logs/
 
 # Brainstorming visual companion (local only)
