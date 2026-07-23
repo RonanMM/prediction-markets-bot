@@ -230,7 +230,17 @@ structure legs in `shoulder_book.py` (see EDGE_MEGAPLAN §10b/§10d), in forward
 > warning fires once-per-city (`_warn_once`) for early-March boundary snapshots that get *skipped*;
 > the committed calibrated tracker has **zero** `ensemble`-`sigma_source` rows (all 493 are
 > `emos_v2*`), so MODEL≈ENSEMBLE is NOT tautological — the model genuinely lost as the calibrated
-> best_match model. (3) Tmin archives (`_min`) **now fetched in cloud** (`retrain.yml`, 2026-07-22):
+> best_match model. **Root-caused 2026-07-23 (why best_match, quantified):** the blend (`mm_mean`)
+> serves only **~16%** of eval rows. `_latest_mm_mean` requires the FULL trained model set non-NaN
+> in the live `daily_mm` feed, but (a) `daily_mm` only starts **2026-07-03**, so 55% of the eval
+> (Mar–Jun) has no multimodel data at serve time, and (b) early-July rows hit collection-ramp-up
+> NaNs in `aifs`/`gem`/`mf` — any ONE missing model degrades the whole blend (the all-or-nothing
+> rule is a deliberate anti-skew guard). **Self-healing** (`aifs`/`gem` now 0% NaN in current
+> fetches); a future retrain, once `daily_mm` has weeks of complete data, blend-serves far more.
+> **Deliberately NOT fixed:** serving the backtest from the historical archive would make it
+> measure a cleaner data path than live delivers (a backtest/live mismatch), and per the bet
+> meta-analysis even a fully-served blend loses to the market (0.145 vs 0.121) — this is
+> measurement-fairness, not edge. (3) Tmin archives (`_min`) **now fetched in cloud** (`retrain.yml`, 2026-07-22):
 > `fetch_historical_leads_min.py` (made incremental to match the Tmax fetchers) writes both min
 > files and a retrain now rebuilds the Tmin stack (all 5 cities select `mm_mean`, e.g. Seoul min
 > RMSE 1.10 blend vs 1.73 best_match) instead of freezing at the last hand-commit (2026-07-04).
