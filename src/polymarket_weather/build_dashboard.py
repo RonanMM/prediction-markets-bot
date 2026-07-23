@@ -779,18 +779,10 @@ TEMPLATE = r"""<meta charset="utf-8">
   <!-- 04 ENTRIES -->
   <section>
     <div class="shd"><span class="n">04</span><h2>Recent settlements</h2><span class="r">last 60 · every graded market</span></div>
-    <div class="cwrap" style="grid-template-columns:1.7fr 1fr">
-      <div class="panel">
-        <div class="tblscroll"><table class="data" id="t_recent"><thead><tr>
-          <th>Date</th><th>City</th><th>Bin</th><th class="num">Mdl</th><th class="num">Mkt</th><th>Result</th><th>Closer</th>
-        </tr></thead><tbody></tbody></table></div>
-      </div>
-      <div class="panel">
-        <div class="find" style="font-size:13px" id="wonhd">Nearer the outcome, last 60</div>
-        <div class="findsub">one vote per market · magnitude ignored (differs from Brier / ROI)</div>
-        <div class="wonbars" id="c_won"></div>
-        <div class="cap" style="margin-top:14px"><span style="color:var(--model)">■</span> model nearer &nbsp; <span style="color:var(--market)">■</span> market nearer. Counts each market once (ignores how far off), so it can differ from the Brier and ROI ranking. Recent window has no Hong Kong (21-day truth lag).</div>
-      </div>
+    <div class="panel">
+      <div class="tblscroll"><table class="data" id="t_recent"><thead><tr>
+        <th>Date</th><th>City</th><th>Bin</th><th class="num">Mdl</th><th class="num">Mkt</th><th>Result</th><th>Closer</th>
+      </tr></thead><tbody></tbody></table></div>
     </div>
   </section>
 
@@ -1049,16 +1041,6 @@ TEMPLATE = r"""<meta charset="utf-8">
     if (seg) seg.querySelectorAll("button").forEach(function (x) { x.classList.toggle("on", x.getAttribute("data-rwin") === roiWin); });
     if (warn) warn.innerHTML = '<b>ROI is in-sample and noisy.</b> On the same bets, a forecaster with a worse Brier can still show a positive ROI — bet-selection and sizing luck on a small set. It <b>swings between windows and each data refresh</b> (all-time vs recent, run to run). The Brier row above is the ranking; ROI is context, not the scoreboard.';
   }
-  function renderWon() {
-    var host = document.getElementById("c_won"), hd = document.getElementById("wonhd"), w = D.woncity;
-    if (!host || !w) return;
-    var pctAll = w.n ? Math.round(w.mwin / w.n * 100) : 0;
-    hd.innerHTML = 'Nearer the outcome, last ' + w.n + ' · model ' + w.mwin + ' / ' + w.n + ' <span style="color:var(--faint);font-weight:400">(' + pctAll + '%)</span>';
-    host.innerHTML = (w.rows || []).map(function (r) {
-      var pct = r.n ? Math.round(r.mwin / r.n * 100) : 0;
-      return '<div class="wb"><span class="nm">' + esc(r.city) + '</span><span class="bar"><span class="mk" style="width:' + pct + '%"></span><span class="mkt" style="width:' + (100 - pct) + '%"></span></span><span class="c">' + r.mwin + '/' + r.n + '</span></div>';
-    }).join("");
-  }
   function renderBuckets() {
     var tb = document.querySelector("#t_buckets tbody");
     if (!tb) return;
@@ -1127,7 +1109,6 @@ TEMPLATE = r"""<meta charset="utf-8">
 
     renderScore();
     renderRoi();
-    renderWon();
     renderBuckets();
     renderRecent();
   }
