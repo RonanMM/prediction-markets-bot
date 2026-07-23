@@ -215,3 +215,52 @@ def grade_book(book=None, out_path=_OUT, fetch=get_json) -> pd.DataFrame:
     graded["side_won"] = (graded["settled_outcome"] == 1) == (graded["side"] == "Yes")
     graded["net_edge"] = _net_edge(graded["side_won"], graded["entry_side_price"].astype(float))
     return graded
+
+
+def _leg_line(graded, mask, label):
+    sub = graded[mask]
+    if sub.empty:
+        print(f"  {label}: 0 graded")
+        return
+    print(f"  {label}: n={len(sub)}  win={sub['side_won'].mean():.1%}  "
+          f"net taker={sub['net_edge'].mean():+.4f}/share")
+
+
+def report_breadth(out_path=_OUT, fetch=get_json) -> None:
+    """Grade (freeze new settlements) and print the breadth legs + the pre-registered
+    Leg 1b moderate-shoulder forward gate."""
+    book = _load_book(out_path)
+    if book.empty:
+        print("BREADTH structure book: no paper entries yet.")
+        return
+    graded = grade_book(book=book, out_path=out_path, fetch=fetch)
+    ncities = book["city"].nunique()
+    print(f"BREADTH STRUCTURE PAPER BOOK: {len(book)} entries across {ncities} cities "
+          f"({len(graded)} graded, {len(book) - len(graded)} awaiting settlement)")
+    if graded.empty:
+        return
+    yes = graded["entry_yes_price"].astype(float)
+    sh = graded["leg"] == "shoulder"
+    _leg_line(graded, sh, "Leg1 shoulder [5,35)")
+    _leg_line(graded, sh & (yes >= CORE_LO), "Leg1 core   [20,35)")
+    _leg_line(graded, graded["leg"] == "favorite", "Leg2 favorite [65,85)")
+    st = moderate_gate_stats(graded, prereg_date=BREADTH_PREREG_DATE)
+    if st:
+        c, f = st["context"], st["forward"]
+        need_n, need_e = GATE_MOD_BREADTH
+        mark = "PASS" if f.get("gate_pass") else "pending"
+        print(f"  Leg1b moderate [10,25) — pre-registered {BREADTH_PREREG_DATE}")
+        print(f"    context (all graded):  n={c['n']}  wr {c['wr']:.1%}  taker {c['taker']:+.4f}")
+        print(f"    FORWARD gate:          n={f['n']}/{need_n}  taker {f['taker']:+.4f} "
+              f"v +{need_e:.3f}  [{mark}]")
+
+
+if __name__ == "__main__":
+    import argparse
+    ap = argparse.ArgumentParser(description="Breadth structure paper book (all weather cities)")
+    ap.add_argument("--record", action="store_true", help="scan live markets and record entries")
+    a = ap.parse_args()
+    if a.record:
+        print(f"recorded {scan_and_record_breadth()} new breadth entries")
+    else:
+        report_breadth()

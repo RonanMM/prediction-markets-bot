@@ -1149,3 +1149,23 @@ def test_settlement_outcome_and_freeze(tmp_path):
         return {"closed": True, "outcomePrices": "[\"0\",\"1\"]"}
     g2 = b.grade_book(out_path=out, fetch=fetch2)
     assert int(g2.iloc[0]["settled_outcome"]) == 1
+
+
+def test_report_breadth_gate_forward_only(tmp_path, capsys):
+    import shoulder_book_breadth as b
+    import pandas as pd
+    rows = []
+    for cid, entered, won in [("0xA", "2026-07-01T00:00:00+00:00", 1),
+                              ("0xB", "2026-07-25T00:00:00+00:00", 1)]:
+        rows.append({**{c: "" for c in b._BCOLS}, "condition_id": cid, "market_id": cid,
+                     "leg": "shoulder", "side": "No", "entry_yes_price": 0.15,
+                     "entry_side_price": 0.85, "entered_at_utc": entered, "settled_outcome": won})
+    out = tmp_path / "breadth.csv"
+    pd.DataFrame(rows).reindex(columns=b._BCOLS).to_csv(out, index=False)
+    b.report_breadth(out_path=out, fetch=lambda *a, **k: None)   # no-op fetch (already settled)
+    text = capsys.readouterr().out
+    assert "BREADTH" in text.upper()
+    # forward gate counts ONLY the post-2026-07-23 entry
+    graded = b.grade_book(out_path=out, fetch=lambda *a, **k: None)
+    stats = b.moderate_gate_stats(graded, prereg_date=b.BREADTH_PREREG_DATE)
+    assert stats["forward"]["n"] == 1
