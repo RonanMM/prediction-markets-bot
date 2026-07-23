@@ -158,3 +158,4 @@ entered_at_utc,city,condition_id,question,target_date,leg,side,entry_side_price,
 2026-07-23T10:38:40.917660+00:00,HongKong,0x1bd5fab3d5df026a7bf8455a966e6229da4db468dfe9367ce5133096d114f598,Will the lowest temperature in Hong Kong be 27°C on July 24?,2026-07-24,shoulder,No,0.865,0.135,outer,11885.14
 2026-07-23T14:33:00.362268+00:00,Chicago,0x7a000b73f5ea9c8c224ba2bdbc7df733d79f48ead2e047b4316c1592611f85df,Will the highest temperature in Chicago be between 82-83°F on July 24?,2026-07-24,shoulder,No,0.755,0.245,core,5876.32
 2026-07-23T14:33:00.362268+00:00,Seoul,0xd57c96b63e762f62f75e2429a9f4872a24eaa5c1724959aedfad6143901c9afe,Will the highest temperature in Seoul be 31°C on July 25?,2026-07-25,shoulder,No,0.85,0.15,outer,3358.79
+2026-07-23T23:14:09.105852+00:00,HongKong,0x45fcd8429287af0ca06c7791725a80e7f5de8d8f3e28b07e5ac43265a20dd0bb,Will the lowest temperature in Hong Kong be 28°C on July 25?,2026-07-25,shoulder,No,0.705,0.295,core,1919.81
