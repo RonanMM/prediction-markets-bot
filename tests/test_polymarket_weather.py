@@ -975,3 +975,51 @@ def test_reconstruct_pmf_consistency_nan_without_constraints():
                       temp_lo=29.7, temp_hi=30.3)]
     _, _, cons = reconstruct_pmf(bins, 30.0, 1.5, 8.0)
     assert math.isnan(cons)
+
+
+def test_moderate_gate_stats():
+    """Leg 1b: report-time moderate-shoulder [0.10,0.25) gate, forward-only (entered >=
+    MOD_PREREG_DATE). Verifies band filter, forward-date filter, and taker gate math."""
+    import pandas as pd
+    from shoulder_book import moderate_gate_stats, MOD_LO, MOD_HI, MOD_PREREG_DATE, GATE_MOD
+    assert (MOD_LO, MOD_HI) == (0.10, 0.25)
+    assert MOD_PREREG_DATE == "2026-07-23"
+    need_n, need_e = GATE_MOD
+
+    def rows(n, yes, won, entered):
+        # a shoulder SELL: side='No', entry_side_price = 1 - yes
+        return pd.DataFrame({
+            "entry_yes_price": [yes] * n,
+            "entered_at_utc": [entered] * n,
+            "side_won": [won] * n,
+            "entry_side_price": [round(1.0 - yes, 4)] * n,
+        })
+
+    PRE = "2026-01-01T00:00:00+00:00"    # before pre-reg
+    POST = "2026-12-31T00:00:00+00:00"   # on/after pre-reg
+
+    # band + forward filters: deep (0.07) and core (0.30) excluded; PRE entries context-only
+    df = pd.concat([
+        rows(3, 0.15, True, POST),   # in band, forward
+        rows(2, 0.07, True, POST),   # deep band -> excluded
+        rows(4, 0.30, True, POST),   # core band -> excluded
+        rows(5, 0.15, True, PRE),    # in band but pre-reg -> context only
+    ], ignore_index=True)
+    s = moderate_gate_stats(df)
+    assert s["context"]["n"] == 8        # in-band: 3 forward + 5 pre
+    assert s["forward"]["n"] == 3        # in-band AND forward
+    assert s["forward"]["gate_pass"] is False   # n=3 < 80
+
+    # gate PASSES: >=80 forward in-band winners (taker per win >> +0.03)
+    sp = moderate_gate_stats(rows(need_n, 0.12, True, POST))
+    assert sp["forward"]["n"] == need_n
+    assert sp["forward"]["taker"] >= need_e
+    assert sp["forward"]["gate_pass"] is True
+
+    # gate FAILS on edge: >=80 forward in-band losers (taker very negative)
+    sl = moderate_gate_stats(rows(need_n, 0.12, False, POST))
+    assert sl["forward"]["n"] == need_n
+    assert sl["forward"]["gate_pass"] is False
+
+    # empty / missing columns -> {}
+    assert moderate_gate_stats(pd.DataFrame()) == {}

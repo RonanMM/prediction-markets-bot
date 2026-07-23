@@ -26,6 +26,12 @@ PRE-REGISTERED FORWARD GATES (real orders only after a gate passes):
   Leg 1 core       [20,35)¢: ≥80  graded entries AND mean net edge ≥ +3¢/share
   Leg 2 core   yes∈[65,75)¢: ≥80  graded entries AND mean net edge ≥ +3¢/share
   (Leg 2 outer [75,85)¢ is recorded and reported but carries no gate.)
+  Leg 1b moderate yes∈[10,25)¢: ≥80 graded FORWARD entries AND mean net taker ≥ +3¢/share
+    (§10f, pre-reg 2026-07-23) — a report-time refinement of Leg 1. Discovered in-sample
+    (n=109): the full band nets ~0 because it lumps the fat-tail-UNDER-priced deep band
+    [5,10)¢ with the OVER-priced moderate band. Sells only the moderate band; gate counts
+    only entries recorded on/after the pre-reg date, so it is never graded on the discovery
+    data. Maker reported, not gated.
 
 Usage (from src/polymarket_weather/; scan runs automatically each collector cycle via main.py):
     python shoulder_book.py            # record new entries, then print the report
@@ -75,6 +81,17 @@ GATE_FAV_CORE = (80, 0.03)
 # analogy, NOT tuned to the observed number). Leg 2 (favorite) has NO pre-day maker entries — it is
 # a same-day phenomenon, deferred to a future same-day entry window (megaplan §10e follow-up).
 GATE_CORE_MAKER = (80, 0.03)   # (min FILLED core entries, min mean maker net $/share)
+
+# Leg 1b (moderate shoulder) — pre-registered 2026-07-23. A REPORT-TIME refinement of Leg 1,
+# not a new recorded leg. Sell only the OVER-priced moderate band; the deep band [0.05,0.10) is
+# fat-tail-UNDER-priced (excluded) and the core [0.25,0.35) is fair (excluded). Discovered
+# in-sample (n=109, where the full band nets ~0 by lumping the two). The gate counts FORWARD
+# entries only (entered_at_utc >= MOD_PREREG_DATE), so the hypothesis is never graded on the data
+# that generated it. Taker-gated; maker reported, not gated. Threshold shape mirrors GATE_CORE
+# (chosen by analogy, NOT tuned to the observed ~+3¢).
+MOD_LO, MOD_HI  = 0.10, 0.25
+MOD_PREREG_DATE = "2026-07-23"     # forward clock (UTC): gate counts entries entered_at_utc >= this
+GATE_MOD        = (80, 0.03)       # (min graded FORWARD entries, min mean net taker $/share)
 
 _SNAP_WINDOW_MIN = 60             # a "run" = rows within this window of the newest row
 
@@ -203,6 +220,43 @@ def _price_paths(cids: set) -> dict:
     snaps = snaps[snaps["condition_id"].isin(cids)]
     return {cid: g.sort_values("t")[["t", "yes"]].reset_index(drop=True)
             for cid, g in snaps.groupby("condition_id")}
+
+
+def moderate_gate_stats(graded: pd.DataFrame) -> dict:
+    """Leg 1b — the moderate-shoulder [MOD_LO, MOD_HI) refinement of Leg 1, computed at REPORT
+    TIME from existing shoulder entries (no new recording). Returns 'context' (all graded
+    in-band, incl. the in-sample discovery sample) and 'forward' (entries entered on/after
+    MOD_PREREG_DATE only — the pre-registered, forward-only gate). Taker-gated; maker reported,
+    not gated. Returns {} if graded is empty or missing a required column.
+
+    graded needs: entry_yes_price, entered_at_utc, side_won, entry_side_price (optional: maker_filled).
+    """
+    need = {"entry_yes_price", "entered_at_utc", "side_won", "entry_side_price"}
+    if graded.empty or not need.issubset(graded.columns):
+        return {}
+    yes = graded["entry_yes_price"].astype(float)
+    inband = graded[(yes >= MOD_LO) & (yes < MOD_HI)].copy()
+    inband["_taker"] = _net_edge(inband["side_won"], inband["entry_side_price"].astype(float))
+    entered = pd.to_datetime(inband["entered_at_utc"], utc=True, errors="coerce")
+    prereg = pd.Timestamp(MOD_PREREG_DATE, tz="UTC")
+
+    def _agg(sub: pd.DataFrame) -> dict:
+        d = {"n": int(len(sub)),
+             "wr": float(sub["side_won"].mean()) if len(sub) else 0.0,
+             "taker": float(sub["_taker"].mean()) if len(sub) else 0.0,
+             "maker_n": 0, "maker": 0.0}
+        if "maker_filled" in sub.columns and len(sub):
+            f = sub[sub["maker_filled"].astype(bool)]
+            d["maker_n"] = int(len(f))
+            if len(f):
+                d["maker"] = float((f["side_won"].astype(float)
+                                    - f["entry_side_price"].astype(float)).mean())
+        return d
+
+    need_n, need_e = GATE_MOD
+    forward = _agg(inband[entered >= prereg])
+    forward["gate_pass"] = bool(forward["n"] >= need_n and forward["taker"] >= need_e)
+    return {"context": _agg(inband), "forward": forward}
 
 
 def report() -> None:
