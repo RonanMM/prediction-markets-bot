@@ -496,7 +496,6 @@ def build_payload(d: dict, series: dict) -> dict:
             "SB_FAV_GRADED": G("sb_fav_graded", "0"),
             "SB_MOD_FWD_N": G("sb_mod_fwd_n", "0"), "SB_MOD_FWD": G("sb_mod_fwd", "—"),
             "SB_MOD_NEED": G("sb_mod_need", "80"), "SB_MOD_PASS": G("sb_mod_pass", "0"),
-            "E3_ROI": G("e3_roi"), "E3_N": G("e3_n"),
             "SKILL": skill_txt, "BOOK_NET": book_net, "RUNS_TODAY": runs_today,
             **_breadth_binds(),
         },
@@ -829,7 +828,7 @@ TEMPLATE = r"""<meta charset="utf-8">
           <tr><td class="city">2 · buy favourite</td><td class="num" id="leg2n">—</td><td class="num" id="leg2edge">—</td><td><span class="pill2" id="leg2status">pending</span></td></tr>
           <tr><td class="city">1b · moderate [10–25¢]</td><td class="num" id="modn">—</td><td class="num" id="modedge">—</td><td><span class="pill2" id="modstatus">forward</span></td></tr>
         </table>
-        <p class="cap" style="margin-top:14px"><b>Nothing is live.</b> A second signal — the model's most selective bucket — shows <b><span data-bind="E3_ROI">—</span> on <span data-bind="E3_N">—</span> bets</b>, still in-sample. No real orders until a gate passes.</p>
+        <p class="cap" style="margin-top:14px"><b>Nothing is live — this is a paper book.</b> Each leg trades real money only after its own pre-registered forward gate passes. In-sample profit doesn't count; the honest measure is the settled edge per contract above.</p>
       </div>
     </div>
     <div class="panel" style="margin-top:14px">
