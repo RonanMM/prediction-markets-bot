@@ -429,15 +429,10 @@ def build_payload(d: dict, series: dict) -> dict:
         skill_txt = f"{skill:+.1f}%".replace("-", "−")
     except Exception:
         model_wins, skill_txt = False, "—"
-    if model_wins:
-        takeaway = ("Our calibrated forecast now predicts settlements <b>more accurately than the "
-                    "market price</b> — the lines below have crossed.")
-        edge_chip = '<span class="chip good">MODEL AHEAD</span>'
-    else:
-        takeaway = ("The market still out-predicts the model — shown on purpose. <b>No edge is "
-                    "claimed until the model line drops below the market line</b>; meanwhile the "
-                    "candidate edges below are walked forward on paper.")
-        edge_chip = '<span class="chip warn">MARKET LEADS</span>'
+    takeaway = ("Brier score is the scoreboard (lower = more accurate). <b>No real money is "
+                "traded until a forecaster's Brier beats the market's</b> — the table above is the "
+                "current standing; the candidate edges below are walked forward on paper.")
+    edge_chip = ""
 
     # paper-book running total from the equity series
     eq = series.get("equity") or []
@@ -656,8 +651,8 @@ TEMPLATE = r"""<meta charset="utf-8">
 
   <!-- 00 VERDICT -->
   <section style="padding-top:32px">
-    <div class="eyebrow">The verdict · <span id="wLabel">the full track record</span></div>
-    <div class="verdict" id="verdictLine">Who forecasts the weather markets best?</div>
+    <div class="eyebrow">Forecast accuracy · <span id="wLabel">the full track record</span></div>
+    <div class="verdict" id="verdictLine">Brier score by forecaster — lower is more accurate; the leader is flagged.</div>
 
     <div class="vhead">
       <span class="lbl">Window</span>
@@ -676,7 +671,7 @@ TEMPLATE = r"""<meta charset="utf-8">
     <div class="panel" style="margin-top:16px">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:12px">
         <div>
-          <div class="find" style="font-size:13px">Accuracy vs. profit — why we trust the Brier, not the ROI</div>
+          <div class="find" style="font-size:13px">Accuracy (Brier) vs. profit (ROI)</div>
           <div class="findsub" id="roisub" style="margin-bottom:0">the same forecasters, scored two ways · all-time</div>
         </div>
         <span class="seg" id="roiseg" style="flex:none"><button class="on" data-rwin="all">All time</button><button data-rwin="recent">Last 60</button></span>
@@ -701,25 +696,25 @@ TEMPLATE = r"""<meta charset="utf-8">
     <div class="shd"><span class="n">01</span><h2>Accuracy</h2><span class="r">over time · by city · by temperature</span></div>
     <div class="cwrap">
       <div class="panel">
-        <div class="find">The market has led all season.</div>
+        <div class="find">Brier score over time</div>
         <div class="findsub">Running Brier as markets settle · lower = better</div>
         <div class="leg"><span><i style="background:var(--market)"></i>Market</span><span><i style="background:var(--model)"></i>Model</span><span><i style="background:var(--ens)"></i>Ensemble</span></div>
         <div class="chartwrap"><div id="c_acc"></div></div>
-        <div class="cap"><b>The model (red) must cross below the market (blue) and stay.</b> It hasn't, once.</div>
+        <div class="cap">Running Brier score as markets settle — market, model, ensemble. Lower is more accurate.</div>
       </div>
       <div class="panel">
-        <div class="find">The model loses to the market in every city.</div>
+        <div class="find">Brier score by city</div>
         <div class="findsub">Brier per city · market vs ensemble vs model</div>
         <div class="leg"><span><i style="background:var(--market);border-radius:50%"></i>Market</span><span><i style="background:var(--ens);border-radius:50%"></i>Ensemble</span><span><i style="background:var(--model);border-radius:50%"></i>Model</span></div>
         <div class="chartwrap"><div id="c_city"></div></div>
-        <div class="cap"><b>Each row is one city.</b> The model dot (red) sits right of the market (blue) everywhere — worse in all five.</div>
+        <div class="cap">Each row is one city — market, ensemble, and model Brier. Further left is more accurate.</div>
       </div>
     </div>
     <div class="panel" style="margin-top:14px">
       <div class="statrow" style="border-top:0;padding-top:0;margin-top:0">
         <div class="st"><div class="k">Temp accuracy · CRPS</div><div class="v" style="color:var(--good)"><span data-bind="CRPS_MODEL">—</span> <small>model</small></div></div>
         <div class="st"><div class="k">vs ensemble</div><div class="v"><span data-bind="CRPS_ENS">—</span> <small>°C err</small></div></div>
-        <div class="st" style="flex:1;min-width:240px"><div class="k">what it means</div><div class="v" style="font-size:11.5px;font-family:var(--sans);color:var(--ink2);line-height:1.5">On the raw temperature the calibration <b style="color:var(--good)">does help</b> — the model's forecast is sharper than the ensemble's. It just doesn't beat the market's bin <em>prices</em>.</div></div>
+        <div class="st" style="flex:1;min-width:240px"><div class="k">what it measures</div><div class="v" style="font-size:11.5px;font-family:var(--sans);color:var(--ink2);line-height:1.5">CRPS is the temperature-forecast error in °C (lower = sharper). It scores the point forecast against the station reading — not the market's bin prices.</div></div>
       </div>
     </div>
   </section>
@@ -729,22 +724,22 @@ TEMPLATE = r"""<meta charset="utf-8">
     <div class="shd"><span class="n">02</span><h2>Model diagnostics</h2><span class="r">calibration · overconfidence · buckets</span></div>
     <div class="cwrap">
       <div class="panel">
-        <div class="find">The model's long-shot odds are too low.</div>
+        <div class="find">Model calibration by confidence bin</div>
         <div class="findsub">Real outcome rate minus what the model said, by confidence bin</div>
         <div class="leg"><span><i style="background:var(--market)"></i>happened more than it said</span><span><i style="background:var(--model)"></i>happened less</span></div>
         <div class="chartwrap"><div id="c_calib"></div></div>
-        <div class="cap"><b>Read:</b> a bin the model calls a long shot happens more often than it claimed (blue, up); its mid-confidence calls land a bit less (red, down). Off at the edges only.</div>
+        <div class="cap">Realized outcome rate minus the model's predicted rate, by confidence bin. Blue = happened more often than predicted; red = less. On the line = calibrated.</div>
       </div>
       <div class="panel">
-        <div class="find">The overconfidence was a spring thing.</div>
+        <div class="find">Forecast spread calibration, by month</div>
         <div class="findsub">Spread calibration by month · 1.0 = honest, &gt;1.15 = overconfident</div>
         <div class="chartwrap"><div id="c_disp"></div></div>
-        <div class="cap"><b>Read:</b> overconfident in spring's volatile weather (amber), calibrated by summer (green). <b>So we don't widen the tails</b> — that would over-correct the calm months.</div>
+        <div class="cap">Realized error divided by the forecast's stated spread, by month. 1.0 = calibrated; above 1.0 (amber) = spread too narrow; below 1.0 = too wide.</div>
       </div>
     </div>
     <div class="panel" style="margin-top:14px">
-      <div class="find">Only a couple of buckets beat the market — and only in-sample.</div>
-      <div class="findsub">A "bucket" = a city × lead-time slice. Where the model loses it is not nominated; the ones that win must prove it forward before any real order.</div>
+      <div class="find">Accuracy by bucket, with forward gates</div>
+      <div class="findsub">A "bucket" = a city × lead-time slice. Δ = market − model Brier. Nominated buckets carry a forward gate that must pass before any real order.</div>
       <div style="overflow-x:auto"><table class="data" id="t_buckets" style="margin-top:4px"><thead><tr>
         <th>Bucket</th><th class="num">n</th><th class="num">Model</th><th class="num">Market</th><th class="num">Δ</th><th>Forward gate</th>
       </tr></thead><tbody></tbody></table></div>
@@ -757,7 +752,7 @@ TEMPLATE = r"""<meta charset="utf-8">
     <p class="lede" style="margin:0 2px 14px">A <b>separate book</b> from the model above — it bets on market <b>structure</b>, not the weather. <b>Leg 1</b> sells over-priced 5–35¢ shoulder bins; <b>Leg 2</b> buys 65–85¢ YES-favourites &gt;12h before close. Independent mispricings, each gated on its own before a single real order. <b>Leg 1b</b> refines Leg 1 to the over-priced 10–25¢ sub-band (pre-registered 2026-07-23, forward-only).</p>
     <div class="cwrap">
       <div class="panel">
-        <div class="find" id="sb_title">The shoulder leg — model-free, in-sample.</div>
+        <div class="find" id="sb_title">Shoulder book · running net units</div>
         <div class="findsub">Running net units · taker fees paid</div>
         <div class="chartwrap"><div id="c_equity"></div></div>
         <div class="statrow">
@@ -792,9 +787,9 @@ TEMPLATE = r"""<meta charset="utf-8">
       </div>
       <div class="panel">
         <div class="find" style="font-size:13px" id="wonhd">Nearer the outcome, last 60</div>
-        <div class="findsub">one vote per market · the metric that most flatters the model</div>
+        <div class="findsub">one vote per market · magnitude ignored (differs from Brier / ROI)</div>
         <div class="wonbars" id="c_won"></div>
-        <div class="cap" style="margin-top:14px"><span style="color:var(--model)">■</span> model nearer &nbsp; <span style="color:var(--market)">■</span> market nearer. This counts each market once, so a hair-closer call and a lucky call both score 1 — the model wins ~half these coin-flips yet still <b>loses on Brier and ROI</b>, because when it's wrong it's wrong big. Not an edge. Recent window has no Hong Kong (21-day truth lag).</div>
+        <div class="cap" style="margin-top:14px"><span style="color:var(--model)">■</span> model nearer &nbsp; <span style="color:var(--market)">■</span> market nearer. Counts each market once (ignores how far off), so it can differ from the Brier and ROI ranking. Recent window has no Hong Kong (21-day truth lag).</div>
       </div>
     </div>
   </section>
@@ -1023,10 +1018,7 @@ TEMPLATE = r"""<meta charset="utf-8">
     }).join("");
     var mg = s.model - s.market;
     if (gapEl) gapEl.textContent = (mg >= 0 ? "+" : "−") + Math.abs(mg).toFixed(3);
-    var leadName = ordered[0][0];
-    if (vl) vl.innerHTML = leadName === "model"
-      ? 'Our model now forecasts the weather markets <em style="color:var(--good)">best</em>.'
-      : 'The <em style="color:var(--market)">market</em> forecasts the weather better than our model.';
+    // verdictLine is a neutral static description; the ranked table (leader flagged) shows the standing.
     if (wl) wl.textContent = win === "recent" ? "the last " + s.n + " settled markets" : "all " + s.n + " common markets";
     document.getElementById("cav").classList.toggle("show", win === "recent");
     document.querySelectorAll("#winseg button").forEach(function (b) { b.classList.toggle("on", b.getAttribute("data-win") === win); });
@@ -1055,13 +1047,13 @@ TEMPLATE = r"""<meta charset="utf-8">
       + '<td class="num" style="color:var(--faint)">—</td>' + roiCell(re) + roiCell(rm) + '</tr>';
     if (sub) sub.textContent = "the same forecasters, scored two ways · " + (recent ? "last 60" : "all-time");
     if (seg) seg.querySelectorAll("button").forEach(function (x) { x.classList.toggle("on", x.getAttribute("data-rwin") === roiWin); });
-    if (warn) warn.innerHTML = '<b>Why ROI is not the scoreboard.</b> The ensemble is <b>less accurate than the market</b> (worse Brier) yet can show a positive ROI — bet-selection and sizing luck on a small in-sample set, not a real edge. It <b>swings wildly between windows and each data refresh</b> (all-time vs recent, and run to run), the tell-tale of noise rather than skill. Accuracy (Brier) is the honest verdict; the market still wins it.';
+    if (warn) warn.innerHTML = '<b>ROI is in-sample and noisy.</b> On the same bets, a forecaster with a worse Brier can still show a positive ROI — bet-selection and sizing luck on a small set. It <b>swings between windows and each data refresh</b> (all-time vs recent, run to run). The Brier row above is the ranking; ROI is context, not the scoreboard.';
   }
   function renderWon() {
     var host = document.getElementById("c_won"), hd = document.getElementById("wonhd"), w = D.woncity;
     if (!host || !w) return;
     var pctAll = w.n ? Math.round(w.mwin / w.n * 100) : 0;
-    hd.innerHTML = 'Nearer the outcome: model ' + w.mwin + ' / ' + w.n + ' <span style="color:var(--faint);font-weight:400">(' + pctAll + '% — a coin-flip)</span>';
+    hd.innerHTML = 'Nearer the outcome, last ' + w.n + ' · model ' + w.mwin + ' / ' + w.n + ' <span style="color:var(--faint);font-weight:400">(' + pctAll + '%)</span>';
     host.innerHTML = (w.rows || []).map(function (r) {
       var pct = r.n ? Math.round(r.mwin / r.n * 100) : 0;
       return '<div class="wb"><span class="nm">' + esc(r.city) + '</span><span class="bar"><span class="mk" style="width:' + pct + '%"></span><span class="mkt" style="width:' + (100 - pct) + '%"></span></span><span class="c">' + r.mwin + '/' + r.n + '</span></div>';
@@ -1157,10 +1149,8 @@ TEMPLATE = r"""<meta charset="utf-8">
     // BOOK_NET / SB_FULL strings use "−" (U+2212) for negatives (Python formats +/− then swaps).
     function _neg(v) { return v != null && (String(v).charAt(0) === "−" || String(v).charAt(0) === "-"); }
     if (b.BOOK_NET != null) {
-      var neg = _neg(b.BOOK_NET);
-      var netEl = document.getElementById("sb_net"); if (netEl) netEl.style.color = neg ? "var(--model)" : "var(--good)";
-      var tEl = document.getElementById("sb_title");
-      if (tEl) tEl.textContent = neg ? "The shoulder leg is underwater — and in-sample." : "The shoulder leg is up — but in-sample.";
+      // net-units value stays sign-coloured (green +, red −) — the number shows good/bad, not a title.
+      var netEl = document.getElementById("sb_net"); if (netEl) netEl.style.color = _neg(b.BOOK_NET) ? "var(--model)" : "var(--good)";
     }
     if (b.SB_FULL != null) { var fc = document.getElementById("sb_full_cell"); if (fc) fc.style.color = _neg(b.SB_FULL) ? "var(--model)" : "var(--good)"; }
     // Leg 2 favourites — honest "pending" until it has graded entries
