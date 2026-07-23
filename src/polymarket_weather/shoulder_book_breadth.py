@@ -78,3 +78,30 @@ def bins_from_event(event: dict) -> list[dict]:
                         question=mk.get("question") or event.get("title", ""),
                         yes=yes, liquidity=liq, end=end))
     return out
+
+
+def fetch_weather_events(fetch=get_json) -> list[dict]:
+    """All active weather-tag temperature events (paged, injectable fetcher)."""
+    out, off = [], 0
+    while True:
+        page = fetch(f"{GAMMA}/events",
+                     {"tag_slug": "weather", "active": "true", "closed": "false",
+                      "limit": 100, "offset": off}, "Gamma")
+        page = page if isinstance(page, list) else (page or {}).get("data", [])
+        if not page:
+            break
+        out += [e for e in page if parse_event_title(e.get("title", ""))]
+        if len(page) < 100:
+            break
+        off += 100
+        if off > 3000:          # safety cap
+            break
+    return out
+
+
+def fetch_weather_bins(fetch=get_json) -> list[dict]:
+    """Flatten every active temperature event into per-bin dicts."""
+    bins = []
+    for ev in fetch_weather_events(fetch=fetch):
+        bins.extend(bins_from_event(ev))
+    return bins

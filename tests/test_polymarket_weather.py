@@ -1066,3 +1066,17 @@ def test_parse_event_title_and_bins():
     assert r["condition_id"] == "0xAAA" and r["market_id"] == "111"
     assert abs(r["yes"] - 0.18) < 1e-9 and abs(r["liquidity"] - 5000) < 1e-9
     assert str(r["end"].tz) == "UTC"
+
+
+def test_fetch_weather_bins_injected():
+    import shoulder_book_breadth as b
+    page = [{"title": "Highest temperature in Paris on July 23?", "endDate": "2026-07-23T22:00:00Z",
+             "markets": [{"conditionId": "0xAAA", "id": "1", "question": "q",
+                          "outcomePrices": "[\"0.2\",\"0.8\"]", "liquidityNum": 100}]},
+            {"title": "Not a temperature market", "markets": []}]
+
+    def fake(url, params, label="API"):
+        return page if params.get("offset", 0) == 0 else []   # one page then empty
+
+    bins = b.fetch_weather_bins(fetch=fake)
+    assert len(bins) == 1 and bins[0]["city"] == "Paris"
