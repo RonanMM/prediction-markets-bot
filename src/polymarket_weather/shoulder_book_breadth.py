@@ -36,7 +36,7 @@ _PIN                = 0.03                   # terminal price within this of 0/1
 _OUT = Path(__file__).resolve().parent / "output" / "shoulder_paper_breadth.csv"
 _BCOLS = ["entered_at_utc", "city", "condition_id", "market_id", "question", "target_date",
           "entry_yes_price", "liquidity", "leg", "side", "entry_side_price", "band",
-          "settled_outcome"]
+          "settled_outcome", "max_yes_after", "min_yes_after"]
 
 _TITLE = re.compile(r"^(Highest|Lowest) temperature in (.+?) on (.+?)\??$")
 
@@ -127,6 +127,26 @@ def scan_and_record_breadth(bins=None, now_utc=None, out_path=_OUT, fetch=get_js
         now_utc = datetime.now(timezone.utc)
     book = _load_book(out_path)
     known = set(zip(book["condition_id"], book["leg"]))
+
+    # Maintain the forward price path for still-open entries: the running max/min post-entry
+    # yes-price is the exact sufficient statistic for the conservative maker-fill check (a resting
+    # order fills only if a later snapshot trades THROUGH it). Updated BEFORE new entries are
+    # appended, so a market's entry snapshot is never counted as its own "later" observation.
+    dirty = False
+    if len(book):
+        cur = {r["condition_id"]: float(r["yes"]) for r in bins
+               if r.get("condition_id") and r.get("yes") is not None}
+        for i in book.index:
+            if not _is_unset(book.at[i, "settled_outcome"]):
+                continue                                   # settled — path is frozen
+            y = cur.get(book.at[i, "condition_id"])
+            if y is None:
+                continue                                   # market not in this cycle's feed
+            mx, mn = book.at[i, "max_yes_after"], book.at[i, "min_yes_after"]
+            book.at[i, "max_yes_after"] = y if _is_unset(mx) else max(float(mx), y)
+            book.at[i, "min_yes_after"] = y if _is_unset(mn) else min(float(mn), y)
+            dirty = True
+
     added = []
     for r in bins:
         end = r["end"]
@@ -140,7 +160,7 @@ def scan_and_record_breadth(bins=None, now_utc=None, out_path=_OUT, fetch=get_js
                 "condition_id": r["condition_id"], "market_id": r["market_id"],
                 "question": r["question"], "target_date": str(tgt),
                 "entry_yes_price": round(yes, 4), "liquidity": round(float(r["liquidity"]), 2),
-                "settled_outcome": ""}
+                "settled_outcome": "", "max_yes_after": "", "min_yes_after": ""}
         cid = r["condition_id"]
         if (cid, "shoulder") not in known and hours_to_end > PREDAY_HOURS \
                 and BAND_LO <= yes < BAND_HI:
@@ -156,6 +176,7 @@ def scan_and_record_breadth(bins=None, now_utc=None, out_path=_OUT, fetch=get_js
             known.add((cid, "favorite"))
     if added:
         book = pd.concat([book, pd.DataFrame(added)], ignore_index=True)
+    if added or dirty:
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
         book.reindex(columns=_BCOLS).to_csv(out_path, index=False)
     return len(added)
@@ -188,8 +209,12 @@ def settlement_outcome(market_id, fetch=get_json):
 
 
 def _is_unset(v):
-    return v is None or (isinstance(v, float) and pd.isna(v)) \
-        or str(v).strip() in ("", "nan", "None")
+    try:
+        if pd.isna(v):        # None, np.nan, pd.NA
+            return True
+    except (TypeError, ValueError):
+        pass                  # arrays/lists — treat as set
+    return str(v).strip() in ("", "nan", "None", "<NA>")
 
 
 def grade_book(book=None, out_path=_OUT, fetch=get_json, lookup=True) -> pd.DataFrame:
@@ -219,6 +244,17 @@ def grade_book(book=None, out_path=_OUT, fetch=get_json, lookup=True) -> pd.Data
     graded["settled_outcome"] = graded["settled_outcome"].astype(float).astype(int)
     graded["side_won"] = (graded["settled_outcome"] == 1) == (graded["side"] == "Yes")
     graded["net_edge"] = _net_edge(graded["side_won"], graded["entry_side_price"].astype(float))
+    # Conservative maker fill: a resting order at the entry yes-price fills only if a later
+    # snapshot traded THROUGH it — shoulder SELL (side No) fills if post-entry yes rose to the
+    # entry (max_yes_after >= entry), favorite BUY (side Yes) fills if it fell to the entry
+    # (min_yes_after <= entry). maker_net (side_won − side_price, no fee/spread, rebate excluded)
+    # is added by moderate_gate_stats over filled rows.
+    ey = graded["entry_yes_price"].astype(float)
+    mx = pd.to_numeric(graded.get("max_yes_after"), errors="coerce")
+    mn = pd.to_numeric(graded.get("min_yes_after"), errors="coerce")
+    is_sh = graded["side"] == "No"
+    graded["maker_filled"] = ((is_sh & mx.notna() & (mx >= ey - 1e-9)) |
+                              (~is_sh & mn.notna() & (mn <= ey + 1e-9)))
     return graded
 
 
@@ -227,8 +263,16 @@ def _leg_line(graded, mask, label):
     if sub.empty:
         print(f"  {label}: 0 graded")
         return
-    print(f"  {label}: n={len(sub)}  win={sub['side_won'].mean():.1%}  "
-          f"net taker={sub['net_edge'].mean():+.4f}/share")
+    line = (f"  {label}: n={len(sub)}  win={sub['side_won'].mean():.1%}  "
+            f"taker={sub['net_edge'].mean():+.4f}")
+    if "maker_filled" in sub.columns:
+        f = sub[sub["maker_filled"].astype(bool)]
+        if len(f):
+            mnet = (f["side_won"].astype(float) - f["entry_side_price"].astype(float)).mean()
+            line += f"  maker={len(f)}/{len(sub)} {mnet:+.4f}"
+        else:
+            line += "  maker=0 filled"
+    print(line)
 
 
 def report_breadth(out_path=_OUT, fetch=get_json) -> None:
@@ -255,9 +299,10 @@ def report_breadth(out_path=_OUT, fetch=get_json) -> None:
         need_n, need_e = GATE_MOD_BREADTH
         mark = "PASS" if f.get("gate_pass") else "pending"
         print(f"  Leg1b moderate [10,25) — pre-registered {BREADTH_PREREG_DATE}")
-        print(f"    context (all graded):  n={c['n']}  wr {c['wr']:.1%}  taker {c['taker']:+.4f}")
+        print(f"    context (all graded):  n={c['n']}  wr {c['wr']:.1%}  taker {c['taker']:+.4f}  "
+              f"maker {c['maker_n']}/{c['n']} {c['maker']:+.4f}")
         print(f"    FORWARD gate:          n={f['n']}/{need_n}  taker {f['taker']:+.4f} "
-              f"v +{need_e:.3f}  [{mark}]")
+              f"v +{need_e:.3f}  [{mark}]  maker {f['maker_n']}/{f['n']} {f['maker']:+.4f}")
 
 
 if __name__ == "__main__":

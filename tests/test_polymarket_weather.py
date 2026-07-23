@@ -1169,3 +1169,46 @@ def test_report_breadth_gate_forward_only(tmp_path, capsys):
     graded = b.grade_book(out_path=out, fetch=lambda *a, **k: None)
     stats = b.moderate_gate_stats(graded, prereg_date=b.BREADTH_PREREG_DATE)
     assert stats["forward"]["n"] == 1
+
+
+def test_breadth_maker_path_and_fill(tmp_path):
+    import shoulder_book_breadth as b
+    import pandas as pd
+    from datetime import datetime, timezone, timedelta
+    end = pd.Timestamp("2026-07-25T22:00:00Z")   # far future -> pre-day, >12h to end
+
+    def mk(cid, yes):
+        return dict(condition_id=cid, market_id=cid[2:], city="Paris", kind="max",
+                    date_str="July 25", question="Highest temperature in Paris on July 25 (30-31°C)?",
+                    yes=yes, liquidity=5000, end=end)
+
+    out = tmp_path / "b.csv"
+    t1 = datetime(2026, 7, 23, 0, 0, tzinfo=timezone.utc)
+    # cycle 1: record a shoulder sell (0.15) and a favorite buy (0.70)
+    b.scan_and_record_breadth(bins=[mk("0xSH", 0.15), mk("0xFV", 0.70)], now_utc=t1, out_path=out)
+    d = pd.read_csv(out)
+    assert d.loc[d.condition_id == "0xSH", "max_yes_after"].isna().all()   # entry cycle: no path yet
+
+    # cycle 2: shoulder ticks UP through the resting sell (0.20 >= 0.15 -> fills);
+    #          favorite ticks DOWN through the resting bid (0.60 <= 0.70 -> fills)
+    t2 = t1 + timedelta(hours=2)
+    n2 = b.scan_and_record_breadth(bins=[mk("0xSH", 0.20), mk("0xFV", 0.60)], now_utc=t2, out_path=out)
+    assert n2 == 0   # dedup: no new entries, only path updates
+    d = pd.read_csv(out)
+    assert float(d.loc[d.condition_id == "0xSH", "max_yes_after"].iloc[0]) == 0.20
+    assert float(d.loc[d.condition_id == "0xFV", "min_yes_after"].iloc[0]) == 0.60
+
+    def fetch(url, params=None, label="API"):
+        mid = url.rstrip("/").split("/")[-1]
+        return {"SH": {"closed": True, "outcomePrices": "[\"0\",\"1\"]"},   # NO won -> shoulder wins
+                "FV": {"closed": True, "outcomePrices": "[\"1\",\"0\"]"}}[mid]  # YES won -> favorite wins
+    g = b.grade_book(out_path=out, fetch=fetch)
+    assert bool(g[g.condition_id == "0xSH"].iloc[0]["maker_filled"]) is True
+    assert bool(g[g.condition_id == "0xFV"].iloc[0]["maker_filled"]) is True
+
+    # a shoulder whose price NEVER rose to entry does NOT fill as maker
+    out2 = tmp_path / "b2.csv"
+    b.scan_and_record_breadth(bins=[mk("0xNF", 0.15)], now_utc=t1, out_path=out2)
+    b.scan_and_record_breadth(bins=[mk("0xNF", 0.11)], now_utc=t2, out_path=out2)   # only falls
+    g2 = b.grade_book(out_path=out2, fetch=lambda u, p=None, l="API": {"closed": True, "outcomePrices": "[\"0\",\"1\"]"})
+    assert bool(g2.iloc[0]["maker_filled"]) is False

@@ -425,6 +425,7 @@ def _breadth_binds() -> dict:
     with sensible defaults so the panel renders even before the first entry."""
     b = {"BK_ENTRIES": "0", "BK_CITIES": "0", "BK_GRADED": "0", "BK_AWAIT": "0",
          "BK_MOD_N": "0", "BK_MOD_NEED": "80", "BK_MOD_NET": "—", "BK_MOD_PASS": "0",
+         "BK_MOD_MAKER": "—", "BK_MOD_MAKER_N": "0",
          "BK_FULL_N": "0", "BK_FULL_NET": "—", "BK_WR": "—"}
     try:
         import shoulder_book_breadth as bb
@@ -442,11 +443,14 @@ def _breadth_binds() -> dict:
                          BK_FULL_NET=f"{sh['net_edge'].mean():+.4f}".replace("-", "−"))
             st = bb.moderate_gate_stats(graded, prereg_date=bb.BREADTH_PREREG_DATE)
             if st:
-                f = st["forward"]
+                f, ctx = st["forward"], st["context"]
                 need_n, _ = bb.GATE_MOD_BREADTH
                 b.update(BK_MOD_N=str(f["n"]), BK_MOD_NEED=str(need_n),
                          BK_MOD_NET=(f"{f['taker']:+.4f}".replace("-", "−") if f["n"] else "—"),
-                         BK_MOD_PASS="1" if f.get("gate_pass") else "0")
+                         BK_MOD_PASS="1" if f.get("gate_pass") else "0",
+                         BK_MOD_MAKER_N=str(ctx.get("maker_n", 0)),
+                         BK_MOD_MAKER=(f"{ctx['maker']:+.4f}".replace("-", "−")
+                                       if ctx.get("maker_n") else "—"))
     except Exception as e:
         b["BK_ERR"] = str(e)[:80]
     return b
@@ -818,11 +822,11 @@ TEMPLATE = r"""<meta charset="utf-8">
         <div class="st"><div class="k">Awaiting</div><div class="v" data-bind="BK_AWAIT">—</div></div>
       </div>
       <table class="data" style="margin-top:10px">
-        <tr><th>Leg</th><th class="num">Forward</th><th class="num">Net / contract</th><th>Status</th></tr>
-        <tr><td class="city">1b · moderate [10–25¢] · all cities</td><td class="num" id="bkmodn">—</td><td class="num" id="bkmodedge">—</td><td><span class="pill2" id="bkmodstatus">forward</span></td></tr>
-        <tr><td class="city">1 · sell shoulder [5–35¢] · all cities</td><td class="num" id="bkfulln">—</td><td class="num" id="bkfulledge" data-bind="BK_FULL_NET">—</td><td><span class="pill2 warn">paper</span></td></tr>
+        <tr><th>Leg</th><th class="num">Forward</th><th class="num">Taker net</th><th class="num">Maker net</th><th>Status</th></tr>
+        <tr><td class="city">1b · moderate [10–25¢] · all cities</td><td class="num" id="bkmodn">—</td><td class="num" id="bkmodedge">—</td><td class="num" id="bkmodmaker">—</td><td><span class="pill2" id="bkmodstatus">forward</span></td></tr>
+        <tr><td class="city">1 · sell shoulder [5–35¢] · all cities</td><td class="num" id="bkfulln">—</td><td class="num" id="bkfulledge" data-bind="BK_FULL_NET">—</td><td class="num dim">—</td><td><span class="pill2 warn">paper</span></td></tr>
       </table>
-      <p class="cap" style="margin-top:12px"><b>Paper — no real money.</b> Forward-only: only entries recorded on/after 2026-07-23 count toward the gate, so the hypothesis is never graded on the data that suggested it.</p>
+      <p class="cap" style="margin-top:12px"><b>Paper — no real money.</b> <b>Maker net</b> = filled-only, no spread/fee, rebate excluded (our 5-city + a 300k-contract study both find the moderate-band edge is bigger maker-side). Forward-only: only entries recorded on/after 2026-07-23 count toward the gate, so the hypothesis is never graded on the data that suggested it.</p>
     </div>
   </section>
 
@@ -1207,6 +1211,8 @@ TEMPLATE = r"""<meta charset="utf-8">
       var bfn = parseInt(b.BK_MOD_N, 10) || 0, bpass = b.BK_MOD_PASS === "1";
       if (bn) bn.textContent = b.BK_MOD_N + "/" + (b.BK_MOD_NEED || "80");
       if (be) { be.textContent = bfn > 0 ? b.BK_MOD_NET : "—"; be.style.color = _neg(b.BK_MOD_NET) ? "var(--model)" : (bfn > 0 ? "var(--good)" : ""); }
+      var bmk = document.getElementById("bkmodmaker"), mkn = parseInt(b.BK_MOD_MAKER_N, 10) || 0;
+      if (bmk) { bmk.textContent = mkn > 0 ? b.BK_MOD_MAKER : "—"; bmk.style.color = _neg(b.BK_MOD_MAKER) ? "var(--model)" : (mkn > 0 ? "var(--good)" : ""); }
       if (bs) { bs.textContent = bpass ? "gate ✓" : "forward"; bs.className = bpass ? "pill2 on" : "pill2"; }
       var bfl = document.getElementById("bkfulln"); if (bfl) bfl.textContent = b.BK_FULL_N;
       var bfe = document.getElementById("bkfulledge"); if (bfe) bfe.style.color = _neg(b.BK_FULL_NET) ? "var(--model)" : (b.BK_FULL_NET && b.BK_FULL_NET !== "—" ? "var(--good)" : "");
