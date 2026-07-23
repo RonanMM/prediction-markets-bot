@@ -430,8 +430,8 @@ def build_payload(d: dict, series: dict) -> dict:
     except Exception:
         model_wins, skill_txt = False, "—"
     takeaway = ("Brier score is the scoreboard (lower = more accurate). <b>No real money is "
-                "traded until a forecaster's Brier beats the market's</b> — the table above is the "
-                "current standing; the candidate edges below are walked forward on paper.")
+                "traded until a forecaster's Brier falls below the market's</b> — the table above "
+                "is the current standing; the candidate edges below are walked forward on paper.")
     edge_chip = ""
 
     # paper-book running total from the equity series
@@ -1071,7 +1071,7 @@ TEMPLATE = r"""<meta charset="utf-8">
       if (r.nom) {
         var pct = Math.min(100, r.fwd_n / gate * 100);
         gateCell = '<span class="gatebar"><i style="width:' + pct.toFixed(0) + '%"></i></span> <span class="mono" style="font-size:10.5px;color:var(--good)">nominated · ' + r.fwd_n + '/' + gate + '</span>';
-      } else gateCell = '<span class="pill2">loses — off</span>';
+      } else gateCell = '<span class="pill2">not nominated</span>';
       return '<tr><td class="city">' + esc(r.b) + '</td><td class="num">' + r.n + '</td><td class="num ' + (d > 0.0005 ? 'pos' : '') + '">' + r.model.toFixed(3) + '</td><td class="num">' + r.market.toFixed(3) + '</td><td class="num">' + dCell + '</td><td>' + gateCell + '</td></tr>';
     }).join("");
   }
