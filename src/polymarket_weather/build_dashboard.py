@@ -97,6 +97,14 @@ def gather() -> dict:
     # Leg2 favourites — often "0 graded" this early; capture so the UI can say "pending" honestly.
     fav = re.search(r"Leg2 favorite core.*?n=(\d+)\s+wr\s+(\d+)%.*?taker\s+([+\-][\d.]+)", book)
     d["sb_fav_graded"] = fav.group(1) if fav else "0"
+    # Leg 1b moderate-shoulder FORWARD gate (pre-reg 2026-07-23) — forward-only progress.
+    mod = re.search(r"Leg1b moderate.*?FORWARD gate[^:]*:\s*n=(\d+)\s+taker\s+([+\-][\d.]+)\s+\[([^\]]+)\]",
+                    book, re.DOTALL)
+    if mod:
+        d["sb_mod_fwd_n"], d["sb_mod_fwd"] = mod.group(1), mod.group(2)
+        gm = re.match(r"(\d+)/(\d+)", mod.group(3))
+        d["sb_mod_need"] = gm.group(2) if gm else "80"
+        d["sb_mod_pass"] = "1" if "GATE" in mod.group(3) else "0"
     # dispersion monitor — per-month spread calibration std(z) (1.0 = honest, >1.15 overconfident)
     d["disp"] = [{"m": m, "z": float(z)} for m, _n, z in
                  re.findall(r"Tmax (\d{4}-\d{2})\s+(\d+)\s+([\d.]+)", oos)]
@@ -453,6 +461,8 @@ def build_payload(d: dict, series: dict) -> dict:
             "N_MKTS": G("n_mkts"), "CRPS_MODEL": G("crps_model"), "CRPS_ENS": G("crps_ens"),
             "SB_FULL": G("sb_full"), "SB_CORE": G("sb_core"), "SB_AWAIT": G("sb_await"),
             "SB_FAV_GRADED": G("sb_fav_graded", "0"),
+            "SB_MOD_FWD_N": G("sb_mod_fwd_n", "0"), "SB_MOD_FWD": G("sb_mod_fwd", "—"),
+            "SB_MOD_NEED": G("sb_mod_need", "80"), "SB_MOD_PASS": G("sb_mod_pass", "0"),
             "E3_ROI": G("e3_roi"), "E3_N": G("e3_n"),
             "SKILL": skill_txt, "BOOK_NET": book_net, "RUNS_TODAY": runs_today,
         },
@@ -744,7 +754,7 @@ TEMPLATE = r"""<meta charset="utf-8">
   <!-- 03 PAPER BOOK -->
   <section>
     <div class="shd"><span class="n">03</span><h2>Paper book</h2><span class="r">model-free structure legs</span> <span class="paperflag">Paper — no real money</span></div>
-    <p class="lede" style="margin:0 2px 14px">A <b>separate book</b> from the model above — it bets on market <b>structure</b>, not the weather. <b>Leg 1</b> sells over-priced 5–35¢ shoulder bins; <b>Leg 2</b> buys 65–85¢ YES-favourites &gt;12h before close. Independent mispricings, each gated on its own before a single real order.</p>
+    <p class="lede" style="margin:0 2px 14px">A <b>separate book</b> from the model above — it bets on market <b>structure</b>, not the weather. <b>Leg 1</b> sells over-priced 5–35¢ shoulder bins; <b>Leg 2</b> buys 65–85¢ YES-favourites &gt;12h before close. Independent mispricings, each gated on its own before a single real order. <b>Leg 1b</b> refines Leg 1 to the over-priced 10–25¢ sub-band (pre-registered 2026-07-23, forward-only).</p>
     <div class="cwrap">
       <div class="panel">
         <div class="find" id="sb_title">The shoulder leg — model-free, in-sample.</div>
@@ -764,6 +774,7 @@ TEMPLATE = r"""<meta charset="utf-8">
           <tr><th>Leg</th><th class="num">Graded</th><th class="num">Edge / contract</th><th>Status</th></tr>
           <tr><td class="city">1 · sell shoulder</td><td class="num" data-bind="SB_GRADED">—</td><td class="num" id="sb_full_cell" data-bind="SB_FULL">—</td><td><span class="pill2 warn">paper</span></td></tr>
           <tr><td class="city">2 · buy favourite</td><td class="num" id="leg2n">—</td><td class="num" id="leg2edge">—</td><td><span class="pill2" id="leg2status">pending</span></td></tr>
+          <tr><td class="city">1b · moderate [10–25¢]</td><td class="num" id="modn">—</td><td class="num" id="modedge">—</td><td><span class="pill2" id="modstatus">forward</span></td></tr>
         </table>
         <p class="cap" style="margin-top:14px"><b>Nothing is live.</b> A second signal — the model's most selective bucket — shows <b><span data-bind="E3_ROI">—</span> on <span data-bind="E3_N">—</span> bets</b>, still in-sample. No real orders until a gate passes.</p>
       </div>
@@ -1159,6 +1170,14 @@ TEMPLATE = r"""<meta charset="utf-8">
       if (n2) n2.textContent = favN;
       if (parseInt(favN, 10) > 0) { if (s2) { s2.textContent = "paper"; s2.className = "pill2 warn"; } }
       else { if (e2) e2.textContent = "—"; if (s2) { s2.textContent = "pending"; s2.className = "pill2"; } }
+    }
+    // Leg 1b moderate-shoulder forward gate — progress n/need, edge only once it has entries.
+    if (b.SB_MOD_FWD_N != null) {
+      var mn = document.getElementById("modn"), me = document.getElementById("modedge"), ms = document.getElementById("modstatus");
+      var fn = parseInt(b.SB_MOD_FWD_N, 10) || 0, pass = b.SB_MOD_PASS === "1";
+      if (mn) mn.textContent = b.SB_MOD_FWD_N + "/" + (b.SB_MOD_NEED || "80");
+      if (me) me.textContent = fn > 0 ? b.SB_MOD_FWD : "—";
+      if (ms) { ms.textContent = pass ? "gate ✓" : "forward"; ms.className = pass ? "pill2 on" : "pill2"; }
     }
     prevBind = b;
     var h = html || {};
