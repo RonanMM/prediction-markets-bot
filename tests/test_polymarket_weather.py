@@ -1023,3 +1023,23 @@ def test_moderate_gate_stats():
 
     # empty / missing columns -> {}
     assert moderate_gate_stats(pd.DataFrame()) == {}
+
+
+# ── Breadth structure book (all Polymarket weather cities) ──────────────────────
+
+def test_moderate_gate_prereg_date_kwarg():
+    """The additive prereg_date kwarg re-bases the forward clock without touching the default."""
+    import shoulder_book as sb
+    import pandas as pd
+    graded = pd.DataFrame([
+        {"entry_yes_price": 0.15, "entered_at_utc": "2026-07-20T00:00:00+00:00",
+         "side_won": True,  "entry_side_price": 0.85},
+        {"entry_yes_price": 0.15, "entered_at_utc": "2026-08-01T00:00:00+00:00",
+         "side_won": False, "entry_side_price": 0.85},
+    ])
+    # default date (2026-07-23): forward = the Aug-01 row only
+    assert sb.moderate_gate_stats(graded)["forward"]["n"] == 1
+    # custom later date: forward = only the Aug-01 row (>= 2026-08-01)
+    assert sb.moderate_gate_stats(graded, prereg_date="2026-08-01")["forward"]["n"] == 1
+    # custom earlier date: both rows are forward
+    assert sb.moderate_gate_stats(graded, prereg_date="2026-07-01")["forward"]["n"] == 2

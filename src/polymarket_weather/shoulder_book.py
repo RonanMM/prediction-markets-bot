@@ -222,7 +222,7 @@ def _price_paths(cids: set) -> dict:
             for cid, g in snaps.groupby("condition_id")}
 
 
-def moderate_gate_stats(graded: pd.DataFrame) -> dict:
+def moderate_gate_stats(graded: pd.DataFrame, prereg_date: str = MOD_PREREG_DATE) -> dict:
     """Leg 1b — the moderate-shoulder [MOD_LO, MOD_HI) refinement of Leg 1, computed at REPORT
     TIME from existing shoulder entries (no new recording). Returns 'context' (all graded
     in-band, incl. the in-sample discovery sample) and 'forward' (entries entered on/after
@@ -238,7 +238,7 @@ def moderate_gate_stats(graded: pd.DataFrame) -> dict:
     inband = graded[(yes >= MOD_LO) & (yes < MOD_HI)].copy()
     inband["_taker"] = _net_edge(inband["side_won"], inband["entry_side_price"].astype(float))
     entered = pd.to_datetime(inband["entered_at_utc"], utc=True, errors="coerce")
-    prereg = pd.Timestamp(MOD_PREREG_DATE, tz="UTC")
+    prereg = pd.Timestamp(prereg_date, tz="UTC")
 
     def _agg(sub: pd.DataFrame) -> dict:
         d = {"n": int(len(sub)),
