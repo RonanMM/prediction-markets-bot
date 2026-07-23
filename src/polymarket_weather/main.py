@@ -160,6 +160,16 @@ def step_fetch_weather(cities: list[str]) -> None:
     except Exception as e:
         logger.warning("Shoulder book scan failed: %s", e)
 
+    # Breadth structure book (ALL Polymarket weather cities) — model-free, settlement-graded.
+    # Standalone of the 5-city book/model; pulls the weather tag live from Gamma.
+    try:
+        from shoulder_book_breadth import scan_and_record_breadth
+        nb = scan_and_record_breadth()
+        if nb:
+            logger.info("Breadth structure book: recorded %d new entries.", nb)
+    except Exception as e:
+        logger.warning("Breadth book scan failed: %s", e)
+
 
 def step_fetch_ensemble(cities: list[str]) -> None:
     logger.info("═══ Step 2b: Fetching ensemble forecasts ═══")
