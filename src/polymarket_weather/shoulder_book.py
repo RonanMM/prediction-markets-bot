@@ -319,6 +319,18 @@ def report() -> None:
     # Full band: taker gate only — the maker fill is adversely selected here (see GATE_CORE_MAKER).
     _line("Leg1 shoulder full [5,35)¢", sh, GATE_FULL, None)
     _line("Leg1 shoulder core [20,35)¢", sh[sh["band"] == "core"], GATE_CORE, GATE_CORE_MAKER)
+    # Leg 1b — moderate shoulder [0.10,0.25): report-time refinement, FORWARD-only gate.
+    mod = moderate_gate_stats(sh)
+    if mod:
+        c, f = mod["context"], mod["forward"]
+        need_n, need_e = GATE_MOD
+        gate = ("✅MOD-GATE" if f["gate_pass"]
+                else f"{f['n']}/{need_n}@{f['taker']:+.3f}v{need_e:+.3f}")
+        print(f"  Leg1b moderate shoulder [10,25)¢ — pre-reg {MOD_PREREG_DATE}")
+        print(f"    context (incl. in-sample): n={c['n']} wr {c['wr']:.0%} "
+              f"taker {c['taker']:+.3f} | maker {c['maker_n']}/{c['n']} {c['maker']:+.3f}")
+        print(f"    FORWARD gate (entered≥pre-reg): n={f['n']} taker {f['taker']:+.3f} "
+              f"[{gate}] | maker {f['maker_n']}/{f['n']} {f['maker']:+.3f}")
     _line("Leg2 favorite core [65,75)¢", fav[fav["band"] == "fav_core"], GATE_FAV_CORE, None)
     _line("Leg2 favorite outer [75,85)¢", fav[fav["band"] == "fav_outer"], None, None)
     print("  (pre-registered gates; taker crosses spread + 0.05·p·(1−p) fee; maker = filled-only, "
