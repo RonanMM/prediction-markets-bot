@@ -1043,3 +1043,26 @@ def test_moderate_gate_prereg_date_kwarg():
     assert sb.moderate_gate_stats(graded, prereg_date="2026-08-01")["forward"]["n"] == 1
     # custom earlier date: both rows are forward
     assert sb.moderate_gate_stats(graded, prereg_date="2026-07-01")["forward"]["n"] == 2
+
+
+def test_parse_event_title_and_bins():
+    import shoulder_book_breadth as b
+    assert b.parse_event_title("Highest temperature in Paris on July 23?") == ("max", "Paris", "July 23")
+    assert b.parse_event_title("Lowest temperature in New York City on July 3?") == ("min", "New York City", "July 3")
+    assert b.parse_event_title("Who wins the election?") is None
+
+    ev = {"title": "Highest temperature in Paris on July 23?", "endDate": "2026-07-23T22:00:00Z",
+          "markets": [
+              {"conditionId": "0xAAA", "id": "111",
+               "question": "Highest temperature in Paris on July 23 (30-31°C)?",
+               "groupItemTitle": "30-31", "outcomePrices": "[\"0.18\", \"0.82\"]", "liquidityNum": 5000},
+              {"conditionId": "0xBBB", "id": "222", "question": "…(bad)…",
+               "groupItemTitle": "x", "outcomePrices": "not-json", "liquidityNum": 10},
+          ]}
+    bins = b.bins_from_event(ev)
+    assert len(bins) == 1                      # bad-price bin skipped
+    r = bins[0]
+    assert r["city"] == "Paris" and r["kind"] == "max"
+    assert r["condition_id"] == "0xAAA" and r["market_id"] == "111"
+    assert abs(r["yes"] - 0.18) < 1e-9 and abs(r["liquidity"] - 5000) < 1e-9
+    assert str(r["end"].tz) == "UTC"
