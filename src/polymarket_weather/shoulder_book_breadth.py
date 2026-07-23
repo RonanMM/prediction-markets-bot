@@ -105,3 +105,57 @@ def fetch_weather_bins(fetch=get_json) -> list[dict]:
     for ev in fetch_weather_events(fetch=fetch):
         bins.extend(bins_from_event(ev))
     return bins
+
+
+def _load_book(path=_OUT) -> pd.DataFrame:
+    if Path(path).exists():
+        df = pd.read_csv(path)
+        for c in _BCOLS:
+            if c not in df.columns:
+                df[c] = pd.NA
+        return df
+    return pd.DataFrame(columns=_BCOLS)
+
+
+def scan_and_record_breadth(bins=None, now_utc=None, out_path=_OUT, fetch=get_json) -> int:
+    """Record shoulder-sell / favorite-buy paper entries across all cities, deduped on
+    (condition_id, leg). Pre-day is tz-free: hours-to-end > PREDAY_HOURS. Returns count added.
+    No liquidity gate (paper book — a liquidity filter belongs only at go-live)."""
+    if bins is None:
+        bins = fetch_weather_bins(fetch=fetch)
+    if now_utc is None:
+        now_utc = datetime.now(timezone.utc)
+    book = _load_book(out_path)
+    known = set(zip(book["condition_id"], book["leg"]))
+    added = []
+    for r in bins:
+        end = r["end"]
+        if pd.isna(end):
+            continue
+        yes = float(r["yes"])
+        hours_to_end = (pd.Timestamp(end) - pd.Timestamp(now_utc)).total_seconds() / 3600.0
+        tgt = parse_question_date(r["question"], pd.Timestamp(end).tz_localize(None)) \
+            or pd.Timestamp(end).date()
+        base = {"entered_at_utc": now_utc.isoformat(), "city": r["city"],
+                "condition_id": r["condition_id"], "market_id": r["market_id"],
+                "question": r["question"], "target_date": str(tgt),
+                "entry_yes_price": round(yes, 4), "liquidity": round(float(r["liquidity"]), 2),
+                "settled_outcome": ""}
+        cid = r["condition_id"]
+        if (cid, "shoulder") not in known and hours_to_end > PREDAY_HOURS \
+                and BAND_LO <= yes < BAND_HI:
+            added.append({**base, "leg": "shoulder", "side": "No",
+                          "entry_side_price": round(1.0 - yes, 4),
+                          "band": "core" if yes >= CORE_LO else "outer"})
+            known.add((cid, "shoulder"))
+        if (cid, "favorite") not in known and hours_to_end > FAV_MIN_HOURS_TO_END \
+                and FAV_LO <= yes < FAV_HI:
+            added.append({**base, "leg": "favorite", "side": "Yes",
+                          "entry_side_price": round(yes, 4),
+                          "band": "fav_core" if yes < FAV_CORE_HI else "fav_outer"})
+            known.add((cid, "favorite"))
+    if added:
+        book = pd.concat([book, pd.DataFrame(added)], ignore_index=True)
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        book.reindex(columns=_BCOLS).to_csv(out_path, index=False)
+    return len(added)

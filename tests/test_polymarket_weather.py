@@ -1080,3 +1080,39 @@ def test_fetch_weather_bins_injected():
 
     bins = b.fetch_weather_bins(fetch=fake)
     assert len(bins) == 1 and bins[0]["city"] == "Paris"
+
+
+def test_scan_and_record_breadth(tmp_path):
+    import shoulder_book_breadth as b
+    import pandas as pd
+    from datetime import datetime, timezone
+    now = datetime(2026, 7, 22, 12, 0, tzinfo=timezone.utc)
+    end_next_day = pd.Timestamp("2026-07-23T22:00:00Z")   # ~34h out -> pre-day
+    end_soon     = pd.Timestamp("2026-07-22T20:00:00Z")   # ~8h out  -> NOT pre-day
+
+    def mk(cid, yes, end, q="Highest temperature in Paris on July 23 (30-31°C)?"):
+        return dict(condition_id=cid, market_id=cid[2:], city="Paris", kind="max",
+                    date_str="July 23", question=q, yes=yes, liquidity=5000, end=end)
+
+    bins = [
+        mk("0xSH", 0.15, end_next_day),   # shoulder [5,35), pre-day -> recorded (No)
+        mk("0xFV", 0.70, end_next_day),   # favorite [65,85), >12h  -> recorded (Yes)
+        mk("0xLATE", 0.15, end_soon),     # shoulder band but <24h  -> NOT recorded as shoulder
+        mk("0xMID", 0.50, end_next_day),  # neither band            -> nothing
+    ]
+    out = tmp_path / "breadth.csv"
+    n = b.scan_and_record_breadth(bins=bins, now_utc=now, out_path=out)
+    assert n == 2
+    df = pd.read_csv(out)
+    legs = set(zip(df["condition_id"], df["leg"]))
+    assert ("0xSH", "shoulder") in legs
+    assert ("0xFV", "favorite") in legs
+    assert ("0xLATE", "shoulder") not in legs
+    assert df[df["condition_id"] == "0xMID"].empty
+    # dedup: running again adds nothing
+    assert b.scan_and_record_breadth(bins=bins, now_utc=now, out_path=out) == 0
+    # recorded sides/prices
+    sh = df[df["condition_id"] == "0xSH"].iloc[0]
+    assert sh["side"] == "No" and abs(sh["entry_side_price"] - 0.85) < 1e-6
+    fv = df[df["condition_id"] == "0xFV"].iloc[0]
+    assert fv["side"] == "Yes" and abs(fv["entry_side_price"] - 0.70) < 1e-6
