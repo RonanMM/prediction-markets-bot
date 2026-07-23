@@ -1116,3 +1116,36 @@ def test_scan_and_record_breadth(tmp_path):
     assert sh["side"] == "No" and abs(sh["entry_side_price"] - 0.85) < 1e-6
     fv = df[df["condition_id"] == "0xFV"].iloc[0]
     assert fv["side"] == "Yes" and abs(fv["entry_side_price"] - 0.70) < 1e-6
+
+
+def test_settlement_outcome_and_freeze(tmp_path):
+    import shoulder_book_breadth as b
+    import pandas as pd
+
+    def fetch(url, params=None, label="API"):
+        mid = url.rstrip("/").split("/")[-1]
+        return {"111": {"closed": True,  "outcomePrices": "[\"1\",\"0\"]"},   # YES won
+                "222": {"closed": True,  "outcomePrices": "[\"0\",\"1\"]"},   # NO won
+                "333": {"closed": False, "outcomePrices": "[\"0.5\",\"0.5\"]"}}[mid]
+
+    assert b.settlement_outcome("111", fetch=fetch) == 1
+    assert b.settlement_outcome("222", fetch=fetch) == 0
+    assert b.settlement_outcome("333", fetch=fetch) is None
+
+    # grade_book fills settled_outcome once and freezes it
+    book = pd.DataFrame([
+        {**{c: "" for c in b._BCOLS}, "condition_id": "0xA", "market_id": "111",
+         "leg": "shoulder", "side": "No", "entry_side_price": 0.85,
+         "entry_yes_price": 0.15, "entered_at_utc": "2026-07-24T00:00:00+00:00"},
+    ])
+    out = tmp_path / "breadth.csv"
+    book.reindex(columns=b._BCOLS).to_csv(out, index=False)
+    g = b.grade_book(out_path=out, fetch=fetch)
+    assert int(g.iloc[0]["settled_outcome"]) == 1
+    # side "No" with YES-won => side lost
+    assert bool(g.iloc[0]["side_won"]) is False
+    # freeze: a fetch that would now say 0 must NOT overwrite the persisted 1
+    def fetch2(url, params=None, label="API"):
+        return {"closed": True, "outcomePrices": "[\"0\",\"1\"]"}
+    g2 = b.grade_book(out_path=out, fetch=fetch2)
+    assert int(g2.iloc[0]["settled_outcome"]) == 1

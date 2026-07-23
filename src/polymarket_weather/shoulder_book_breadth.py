@@ -159,3 +159,59 @@ def scan_and_record_breadth(bins=None, now_utc=None, out_path=_OUT, fetch=get_js
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
         book.reindex(columns=_BCOLS).to_csv(out_path, index=False)
     return len(added)
+
+
+def _market_dict(resp):
+    if isinstance(resp, list):
+        return resp[0] if resp else None
+    if isinstance(resp, dict) and "data" in resp and isinstance(resp["data"], list):
+        return resp["data"][0] if resp["data"] else None
+    return resp if isinstance(resp, dict) else None
+
+
+def settlement_outcome(market_id, fetch=get_json):
+    """Resolved outcome of a market from Polymarket's own settlement: 1 (YES won), 0 (NO won),
+    or None if not yet settled. Reads the terminal pinned outcomePrices via /markets/{id}."""
+    if not market_id or str(market_id) in ("", "nan", "None"):
+        return None
+    resp = fetch(f"{GAMMA}/markets/{market_id}", None, "Gamma")
+    mk = _market_dict(resp)
+    if not mk or not mk.get("closed"):
+        return None
+    try:
+        prices = [float(x) for x in json.loads(mk.get("outcomePrices", "[]"))]
+    except Exception:
+        return None
+    if not prices or max(prices) < 1.0 - _PIN:
+        return None
+    return 1 if prices[0] >= 1.0 - _PIN else 0
+
+
+def _is_unset(v):
+    return v is None or (isinstance(v, float) and pd.isna(v)) \
+        or str(v).strip() in ("", "nan", "None")
+
+
+def grade_book(book=None, out_path=_OUT, fetch=get_json) -> pd.DataFrame:
+    """Fill+freeze settled_outcome for any ungraded entry (looked up once, never re-fetched),
+    persist, and return the graded frame with side_won + net_edge (verified taker-fee model)."""
+    if book is None:
+        book = _load_book(out_path)
+    if book.empty:
+        return book
+    changed = False
+    for i, r in book.iterrows():
+        if _is_unset(r.get("settled_outcome")):
+            o = settlement_outcome(r.get("market_id"), fetch=fetch)
+            if o is not None:
+                book.at[i, "settled_outcome"] = o
+                changed = True
+    if changed:
+        book.reindex(columns=_BCOLS).to_csv(out_path, index=False)
+    graded = book[book["settled_outcome"].map(lambda v: not _is_unset(v))].copy()
+    if graded.empty:
+        return graded
+    graded["settled_outcome"] = graded["settled_outcome"].astype(float).astype(int)
+    graded["side_won"] = (graded["settled_outcome"] == 1) == (graded["side"] == "Yes")
+    graded["net_edge"] = _net_edge(graded["side_won"], graded["entry_side_price"].astype(float))
+    return graded
