@@ -1445,3 +1445,9 @@ def test_qrf_predictor_serves_gated_on_with_floor(tmp_path, monkeypatch):
                                     ens_df=ens_df, mm_df=mm_df, obs_df=obs_df, kind="max")
     assert dist2 is not None
     assert dist2.floor is None
+
+
+def test_m1_gate():
+    import evaluate_oos as ev
+    assert ev.m1_gate(0.130, 0.142) is True      # QRF beats ensemble
+    assert ev.m1_gate(0.150, 0.142) is False     # QRF worse -> gate fails
