@@ -1284,3 +1284,24 @@ def test_moment_match_recovers_shape():
     tq = stats.t(df=3, loc=10, scale=2).ppf(levels)
     _, _, nu_t = moment_match(levels, np.array(tq))
     assert nu_t < nu           # heavier tail => lower nu
+
+
+def test_intraday_running_max_no_leakage():
+    import pandas as pd, numpy as np
+    from qrf_features import intraday_running_max, build_row, FEATURE_COLS
+    tz = "Asia/Seoul"
+    obs = pd.DataFrame({
+        "valid_local": pd.to_datetime(["2026-07-09 08:00", "2026-07-09 12:00", "2026-07-09 16:00"]),
+        "temp_c": [22.0, 27.0, 31.0]})
+    tgt = pd.Timestamp("2026-07-09")
+    # as-of 13:00 local: only the 08:00 and 12:00 obs exist -> running max 27, NOT 31
+    fetch = pd.Timestamp("2026-07-09 13:00", tz=tz)
+    rm = intraday_running_max(obs, tgt, fetch, tz)
+    assert rm == 27.0
+    # a fabricated LATER obs must not change the as-of-13:00 result (no look-ahead)
+    obs2 = pd.concat([obs, pd.DataFrame({"valid_local": [pd.Timestamp("2026-07-09 14:30")], "temp_c": [40.0]})])
+    assert intraday_running_max(obs2, tgt, fetch, tz) == 27.0
+    # build_row yields exactly FEATURE_COLS
+    row = build_row({"ecmwf": 30.0, "gfs": 29.0, "icon": 31.0}, {"mean": 30.0, "std": 1.5, "p10": 28, "p50": 30, "p90": 32},
+                    running_max=27.0, is_same_day=1, lead=0, doy=190)
+    assert set(row) == set(FEATURE_COLS)
