@@ -1250,3 +1250,22 @@ def test_dashboard_completeness_guard():
     assert set(bd._missing_cities(degraded)) == {"Seoul", "London"}
     # empty / malformed payload -> all cities missing (never publishes nothing)
     assert set(bd._missing_cities({})) == set(bd.CITY_ORDER)
+
+
+def test_quantile_forest_calibrated_and_monotone():
+    import numpy as np
+    from predictors.qrf_core import QuantileForest
+    rng = np.random.default_rng(0)
+    # heteroscedastic: spread grows with x -> a parametric-fixed-sigma model can't fit this, QRF can
+    X = rng.uniform(0, 10, size=(4000, 1))
+    y = X[:, 0] + rng.normal(0, 0.5 + 0.4 * X[:, 0])
+    qf = QuantileForest(n_estimators=200, min_samples_leaf=40, random_state=0).fit(X, y)
+    qs = qf.predict_quantiles(X, [0.1, 0.5, 0.9])
+    assert qs.shape == (4000, 3)
+    assert np.all(qs[:, 0] <= qs[:, 1] + 1e-9) and np.all(qs[:, 1] <= qs[:, 2] + 1e-9)   # monotone
+    cov = np.mean((y >= qs[:, 0]) & (y <= qs[:, 2]))     # nominal 80% central coverage
+    assert 0.72 <= cov <= 0.88
+    # spread must widen with x (heteroscedastic learned)
+    lo = qf.predict_quantiles(np.array([[1.0]]), [0.1, 0.9])
+    hi = qf.predict_quantiles(np.array([[9.0]]), [0.1, 0.9])
+    assert (hi[0, 1] - hi[0, 0]) > (lo[0, 1] - lo[0, 0])
