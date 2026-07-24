@@ -200,14 +200,18 @@ def compute_series() -> dict:
         try:
             import config as _cfg
 
-            def _roi(df, recent=False):
+            def _roi(df):
                 b = df[(df["abs_edge"].astype(float) >= _cfg.MIN_EDGE) & (df["kelly"].astype(float) > 0)].copy()
-                if recent:   # rolling last 60 BETS — ROI's natural unit, so the count matches the toggle
-                    b = b.assign(_td=pd.to_datetime(b["target_date"], errors="coerce")).sort_values("_td").tail(60)
                 r = ev._roi_at_production(b)
                 return {"roi": round(float(r["roi"]), 4), "bets": int(r["bets"]), "wins": int(r["wins"])}
-            out["roi"] = {"model": {"all": _roi(cal), "recent": _roi(cal, True)},
-                          "ens":   {"all": _roi(ens), "recent": _roi(ens, True)}}
+            # "Recent" ROI is scoped to the SAME last-60 common markets the Brier toggle uses, so
+            # both "Last 60" views mean one thing. Bets are those placed WITHIN that market window
+            # (so recent bet counts are < 60 — the last 60 markets, of which N were bet).
+            recent_cids = set(cs.tail(60)["condition_id"])
+            out["roi"] = {
+                "model": {"all": _roi(cal), "recent": _roi(cal[cal["condition_id"].isin(recent_cids)])},
+                "ens":   {"all": _roi(ens), "recent": _roi(ens[ens["condition_id"].isin(recent_cids)])},
+            }
         except Exception as e:
             out["roi_error"] = f"{type(e).__name__}: {e}"
 
@@ -1104,7 +1108,7 @@ TEMPLATE = r"""<meta charset="utf-8">
     }
     var recent = roiWin === "recent";
     var brierLbl = 'Brier · accuracy <small>(' + (recent ? 'last 60 markets' : 'all markets') + ')</small>';
-    var roiLbl = 'ROI · in-sample <small>(' + (recent ? 'last 60 bets' : 'all bets placed') + ')</small>';
+    var roiLbl = 'ROI · in-sample <small>(' + (recent ? 'last 60 markets' : 'all bets placed') + ')</small>';
     tb.innerHTML =
       '<tr><td class="rowlbl">' + brierLbl + '</td>'
       + '<td class="num pos">' + b(s.market) + '</td><td class="num">' + b(s.ens) + '</td><td class="num">' + b(s.model) + '</td></tr>'
