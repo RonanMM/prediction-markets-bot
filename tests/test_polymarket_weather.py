@@ -1575,3 +1575,37 @@ def test_m1_gate():
     import evaluate_oos as ev
     assert ev.m1_gate(0.130, 0.142) is True      # QRF beats ensemble
     assert ev.m1_gate(0.150, 0.142) is False     # QRF worse -> gate fails
+
+
+def test_cdf_uses_callable_and_preserves_censoring():
+    import pmf
+    # a ramp CDF: 0 at 10, 1 at 30, linear between
+    ramp = lambda x: min(1.0, max(0.0, (x - 10.0) / 20.0))
+    # in-range: uses the callable, not the Student-t
+    assert abs(pmf._cdf(20.0, mu=25.0, sigma=3.0, nu=8.0, cdf=ramp) - 0.5) < 1e-9
+    # clamped to [0,1]
+    assert pmf._cdf(40.0, 25.0, 3.0, 8.0, cdf=ramp) == 1.0
+    assert pmf._cdf(0.0, 25.0, 3.0, 8.0, cdf=ramp) == 0.0
+    # floor/ceiling censoring still short-circuits BEFORE the callable
+    assert pmf._cdf(15.0, 25.0, 3.0, 8.0, floor=18.0, cdf=ramp) == 0.0     # below floor
+    assert pmf._cdf(31.0, 25.0, 3.0, 8.0, ceiling=30.0, cdf=ramp) == 1.0   # at/above ceiling
+    # REGRESSION: cdf=None reproduces the Student-t exactly
+    import scipy.stats as st
+    from pmf import _t_scale
+    got = pmf._cdf(24.0, 25.0, 3.0, 8.0)
+    exp = float(st.t.cdf((24.0 - 25.0) / _t_scale(3.0, 8.0), df=8.0))
+    assert abs(got - exp) < 1e-12
+
+
+def test_bin_prob_via_callable_sums_to_one():
+    import numpy as np, pmf
+    ramp = lambda x: min(1.0, max(0.0, (x - 10.0) / 20.0))
+    # bins every 1°C from 10..30 should capture ~all mass. Bins span (10.5, 29.5], so the
+    # analytically exact gap from the ramp's full [10,30] domain is 0.05 (2.5% in each excluded
+    # tail) -- a hard boundary equal to a naive `< 0.05` tolerance, which float64 rounding of
+    # 0.05 itself (not representable exactly) can tip either way. 0.06 keeps a safety margin
+    # above that boundary while still catching a real bug: if `cdf` were silently NOT threaded
+    # through `_bin_prob` (falling back to the Student-t), the same sum comes out ~0.939, a 0.061
+    # gap that still fails this assertion.
+    total = sum(pmf._bin_prob(t, 25.0, 3.0, 8.0, half_width=0.5, cdf=ramp) for t in range(11, 30))
+    assert abs(total - 1.0) < 0.06

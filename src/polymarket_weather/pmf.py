@@ -203,7 +203,7 @@ def _t_scale(sigma: float, nu: float) -> float:
 
 
 def _cdf(x: float, mu: float, sigma: float, nu: float,
-         floor: float = None, ceiling: float = None) -> float:
+         floor: float = None, ceiling: float = None, cdf=None) -> float:
     """Student-t CDF. `sigma` is a standard DEVIATION, converted to the t-scale via _t_scale
     so the served std is exactly sigma. A single Student-t branch is used for all nu (scipy's
     t → Gaussian as nu grows, and _t_scale → sigma), removing the old nu>30 Gaussian special
@@ -215,38 +215,45 @@ def _cdf(x: float, mu: float, sigma: float, nu: float,
         F_T(x) = 0 below the floor; a point mass of F_Z(f) sits AT the floor.
       * `ceiling` c (Tmin markets: the running observed daily min) — T = min(c, Z):
         F_T(x) = 1 at/above the ceiling; the point mass P(Z >= c) sits AT the ceiling.
+
+    `cdf`: optional callable x -> F(x), e.g. a QRF empirical CDF. When provided it REPLACES the
+    Student-t branch (still clamped to [0,1] and still subject to the floor/ceiling short-circuits
+    above, which run first and never consult `cdf`). Default None preserves the exact Student-t
+    behavior for every existing caller (EMOS/ensemble never pass it).
     """
     if floor is not None and x < floor:
         return 0.0
     if ceiling is not None and x >= ceiling:
         return 1.0
+    if cdf is not None:
+        return min(1.0, max(0.0, float(cdf(x))))
     return float(student_t.cdf((x - mu) / _t_scale(sigma, nu), df=nu))
 
 
 def _bin_prob(temp_c: float, mu: float, sigma: float, nu: float,
               half_width: float = 0.5, floor: float = None,
-              ceiling: float = None) -> float:
+              ceiling: float = None, cdf=None) -> float:
     """P(temp_c - half_width < actual <= temp_c + half_width).
     Use half_width=0.278 for Fahrenheit markets (0.5°F in °C)."""
     upper_bound = temp_c + half_width
     lower_bound = temp_c - half_width
-    return (_cdf(upper_bound, mu, sigma, nu, floor, ceiling)
-            - _cdf(lower_bound, mu, sigma, nu, floor, ceiling))
+    return (_cdf(upper_bound, mu, sigma, nu, floor, ceiling, cdf)
+            - _cdf(lower_bound, mu, sigma, nu, floor, ceiling, cdf))
 
 
 def _condition_prob(parsed: dict, mu: float, sigma: float, nu: float,
-                    floor: float = None, ceiling: float = None) -> float:
+                    floor: float = None, ceiling: float = None, cdf=None) -> float:
     c  = parsed["condition"]
     t  = parsed["temp_c"]
     hw = parsed.get("half_width", 0.5)
-    if c == "exact":  return _bin_prob(t, mu, sigma, nu, hw, floor, ceiling)
-    if c == "gte":    return 1.0 - _cdf(t - hw, mu, sigma, nu, floor, ceiling)
-    if c == "lte":    return _cdf(t + hw, mu, sigma, nu, floor, ceiling)
+    if c == "exact":  return _bin_prob(t, mu, sigma, nu, hw, floor, ceiling, cdf)
+    if c == "gte":    return 1.0 - _cdf(t - hw, mu, sigma, nu, floor, ceiling, cdf)
+    if c == "lte":    return _cdf(t + hw, mu, sigma, nu, floor, ceiling, cdf)
     # A3: a 'between X-Y°F' market resolves on the whole-°F ROUNDED max, so it is YES for any
     # true temp in [lo-hw, hi+hw) (hw = 0.5°F in °C) — widen by the rounding half-width, matching
     # the exact-bin convention. _cdf(hi) - _cdf(lo) (a 1°F-wide window) understated P by ~2x.
-    if c == "range":  return (_cdf(parsed["temp_hi"] + hw, mu, sigma, nu, floor, ceiling) -
-                              _cdf(parsed["temp_lo"] - hw, mu, sigma, nu, floor, ceiling))
+    if c == "range":  return (_cdf(parsed["temp_hi"] + hw, mu, sigma, nu, floor, ceiling, cdf) -
+                              _cdf(parsed["temp_lo"] - hw, mu, sigma, nu, floor, ceiling, cdf))
     return np.nan
 
 
@@ -257,7 +264,8 @@ def reconstruct_pmf(bins: list[MarketBin],
                     mu: float, sigma: float, nu: float,
                     temps_range: tuple = (-5, 40),
                     floor: float = None,
-                    ceiling: float = None) -> tuple[dict, dict, float]:
+                    ceiling: float = None,
+                    cdf=None) -> tuple[dict, dict, float]:
     """
     Build market PMF and forecast PMF over a shared temperature support,
     respecting gte/lte bins as constraints.
@@ -318,7 +326,7 @@ def reconstruct_pmf(bins: list[MarketBin],
                              sum(v for k, v in raw_mkt.items() if k >= max_gte_temp))
     else:
         # Estimate from forecast: probability beyond highest exact bin
-        upper_residual = max(0.0, 1.0 - _cdf(max(obs_temps) + 0.5, mu, sigma, nu, floor, ceiling))
+        upper_residual = max(0.0, 1.0 - _cdf(max(obs_temps) + 0.5, mu, sigma, nu, floor, ceiling, cdf))
 
     # Lower residual: P(< min_exact_temp) from lte bin or forecast tail
     if min_lte_temp is not None:
@@ -326,7 +334,7 @@ def reconstruct_pmf(bins: list[MarketBin],
         lower_residual = max(0.0, min_lte_bin.yes_prob -
                              sum(v for k, v in raw_mkt.items() if k <= min_lte_temp))
     else:
-        lower_residual = max(0.0, _cdf(min(obs_temps) - 0.5, mu, sigma, nu, floor, ceiling))
+        lower_residual = max(0.0, _cdf(min(obs_temps) - 0.5, mu, sigma, nu, floor, ceiling, cdf))
 
     # Total available probability for exact bins + estimated residuals
     total_prob = raw_sum + upper_residual + lower_residual
@@ -345,9 +353,9 @@ def reconstruct_pmf(bins: list[MarketBin],
             fc_raw[b.temp_c] = _condition_prob(
                 {"condition": "range", "temp_c": b.temp_c, "half_width": b.half_width,
                  "temp_lo": b.temp_lo, "temp_hi": b.temp_hi},
-                mu, sigma, nu, floor, ceiling)
+                mu, sigma, nu, floor, ceiling, cdf)
         else:
-            fc_raw[b.temp_c] = _bin_prob(b.temp_c, mu, sigma, nu, b.half_width, floor, ceiling)
+            fc_raw[b.temp_c] = _bin_prob(b.temp_c, mu, sigma, nu, b.half_width, floor, ceiling, cdf)
     fc_sum = sum(fc_raw.values()) + upper_residual + lower_residual
     fc_sum = max(fc_sum, sum(fc_raw.values()))
     forecast_pmf = {t: v / fc_sum for t, v in fc_raw.items()}
