@@ -196,7 +196,13 @@ def analyse_city(data_dir: Path, city: str,
                  use_calibrator: bool = True,
                  kelly_fraction: float = KELLY_FRACTION,
                  conflict_gating: bool = True,
-                 shrink_weight: float = SHRINK_WEIGHT) -> list[Opportunity]:
+                 shrink_weight: float = SHRINK_WEIGHT,
+                 ml_predictor_override=None) -> list[Opportunity]:
+    """ml_predictor_override: inject an already-constructed BasePredictor (e.g. QRFPredictor)
+    as the primary leg instead of the use_calibrator EMOS/Ensemble choice below. None (the
+    default) preserves the exact prior behavior for every existing caller — this is additive,
+    not a new tracker-generation flow: it just makes the one predictor-selection line pluggable
+    so polymarket_weather_analysis.py's --predictor qrf can reuse this whole function unchanged."""
 
     try:
         snap_df  = load_snapshots(data_dir, city)
@@ -252,7 +258,8 @@ def analyse_city(data_dir: Path, city: str,
     # Primary (calibrated) predictor:
     #   use_calibrator off → pure ensemble (primary == secondary, so the averaging is a no-op)
     #   default            → EMOS / Nonhomogeneous Regression (calibrated ensemble post-processing)
-    ml_predictor = EMOSPredictor() if use_calibrator else EnsemblePredictor()
+    ml_predictor = (ml_predictor_override if ml_predictor_override is not None
+                   else (EMOSPredictor() if use_calibrator else EnsemblePredictor()))
     ens_predictor = EnsemblePredictor()
 
     for (target_date_ts, fetch_bucket_ts), group in groups:

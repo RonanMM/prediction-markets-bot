@@ -31,6 +31,7 @@ from models import Opportunity
 from config import MIN_EDGE, MIN_LIQUIDITY, FEE_RATE, MAX_TOTAL_KELLY, KELLY_FRACTION, SHRINK_WEIGHT
 from reports import plot_pmf_comparison, plot_alpha_dashboard, plot_forecast_drift_all, plot_momentum_heatmap, print_report, opps_to_df
 from engine import analyse_city, WeatherBettingBot
+from predictors.qrf import QRFPredictor
 from data_loader import discover_cities
 
 warnings.filterwarnings("ignore")
@@ -66,6 +67,11 @@ def main():
              "Implies --live. Use with extreme caution.",
     )
     parser.add_argument("--disable-calibrator", dest="disable_calibrator", action="store_true", help="Disable the calibrator (EMOS) entirely and use the pure ensemble/student-t")
+    parser.add_argument("--predictor", choices=["qrf"], default=None,
+                        help="Force a specific primary predictor instead of the "
+                             "--disable-calibrator EMOS/ensemble choice. 'qrf' regenerates "
+                             "opportunities_evaluation_qrf.csv the same way --disable-calibrator "
+                             "regenerates the ensemble tracker (M1 gate, evaluate_oos.py).")
     parser.add_argument("--shrink_weight", type=float, default=None, help="Shrink model probability toward market: our_prob=w*model+(1-w)*market. Default uses config.SHRINK_WEIGHT.")
     parser.add_argument("--kelly_fraction", type=float, default=KELLY_FRACTION, help="Kelly fraction multiplier for sizing bets")
     parser.add_argument("--disable_conflict_gating", action="store_true", help="Disable conflict gating check between calibrator and Ensemble predictions")
@@ -93,6 +99,14 @@ def main():
           f"{'EXECUTE' if not dry_run else 'DRY RUN'}")
     print(f"{'═'*72}\n")
 
+    # --predictor qrf forces QRFPredictor as the primary leg. It self-gates per city
+    # (predictors/qrf.py: missing artifact or beats_ensemble=False -> predict_distribution
+    # returns None); engine.py's per-group try/except then logs "predictor failed" and skips
+    # that (date x snapshot) group rather than falling back to EMOS/ensemble mid-run — so an
+    # un-gated or not-yet-trained city simply contributes zero opportunities under --predictor
+    # qrf, never a crash and never a silently-wrong price.
+    ml_predictor_override = QRFPredictor() if args.predictor == "qrf" else None
+
     all_opps: list[Opportunity] = []
     for city in cities:
         print(f"── {city.upper()} ──")
@@ -103,7 +117,8 @@ def main():
                             kelly_fraction=args.kelly_fraction,
                             conflict_gating=not args.disable_conflict_gating,
                             shrink_weight=(args.shrink_weight if args.shrink_weight is not None
-                                           else SHRINK_WEIGHT))
+                                           else SHRINK_WEIGHT),
+                            ml_predictor_override=ml_predictor_override)
         if opps:
             print(f"  → {len(opps)} opportunities found")
         all_opps.extend(opps)
@@ -141,7 +156,12 @@ def main():
         opps_df.to_csv(output_dir / "opportunities_v4.csv", index=False)
         
         # Save to evaluation CSVs for the 10-day test (overwrites each time with full history)
-        eval_filename = "opportunities_evaluation_ensemble.csv" if args.disable_calibrator else "opportunities_evaluation_calibrated.csv"
+        if args.predictor == "qrf":
+            eval_filename = "opportunities_evaluation_qrf.csv"
+        elif args.disable_calibrator:
+            eval_filename = "opportunities_evaluation_ensemble.csv"
+        else:
+            eval_filename = "opportunities_evaluation_calibrated.csv"
         eval_path = output_dir / eval_filename
         opps_df.to_csv(eval_path, index=False)
         

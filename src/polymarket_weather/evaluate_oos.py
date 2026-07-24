@@ -55,6 +55,17 @@ def _brier(p, y):
     return sum((pi - yi) ** 2 for pi, yi in zip(p, y)) / len(p)
 
 
+def m1_gate(qrf_brier, ens_brier):
+    """M1 (megaplan): does the QRF forecaster beat the raw ensemble on Brier?
+
+    Pure comparison, no I/O — `main()` guards its call on the QRF tracker existing
+    (see the M1 GATE print below), so this is trivially safe to call once both
+    Briers are in hand. `<=` mirrors the self-gate already applied at serve time
+    (`predictors/qrf.py`'s `beats_ensemble`): ties count as a pass.
+    """
+    return qrf_brier <= ens_brier
+
+
 def _logloss(p, y):
     s = 0.0
     for pi, yi in zip(p, y):
@@ -346,6 +357,30 @@ def main():
                   f"(vs MODEL {_brier(m['forecast_prob'].tolist(), m['outcome'].tolist()):.4f} "
                   f"on the same {len(common)} markets)")
 
+    # QRF baseline (M1, docs/superpowers/specs/2026-07-24-qrf-forecaster-design.md) — opt-in:
+    # opportunities_evaluation_qrf.csv only exists once Task 7 has trained + served QRF at least
+    # once, so this whole block is guarded on the file existing. Until then `main()` must behave
+    # EXACTLY as before (evaluate_oos runs daily in the truth-eval workflow and on every dashboard
+    # build — a crash or spurious output here would break the live pipeline for every other city).
+    brier_qrf = None
+    if (_OUT / "opportunities_evaluation_qrf.csv").exists():
+        qrf = _graded_markets(_OUT / "opportunities_evaluation_qrf.csv")
+        if qrf is not None and not qrf.empty and brier_ens is not None:
+            common_q = set(ml["condition_id"]) & set(qrf["condition_id"]) & set(ens["condition_id"])
+            if common_q:
+                q = qrf[qrf["condition_id"].isin(common_q)].set_index("condition_id")
+                e2 = ens[ens["condition_id"].isin(common_q)].set_index("condition_id")
+                yq = q["outcome"].tolist()
+                brier_qrf = _brier(q["forecast_prob"].tolist(), yq)
+                brier_ens_paired = _brier(e2["forecast_prob"].tolist(), e2["outcome"].tolist())
+                print(f"    {'QRF':<10} {brier_qrf:>8.4f} "
+                      f"{_logloss(q['forecast_prob'].tolist(), yq):>10.4f}   "
+                      f"(vs ENSEMBLE {brier_ens_paired:.4f} on the same {len(common_q)} markets)")
+                print(f"\n  M1 GATE: QRF <= ensemble   "
+                      f"QRF {brier_qrf:.4f}  {'<=' if m1_gate(brier_qrf, brier_ens_paired) else '>'}  "
+                      f"ENSEMBLE {brier_ens_paired:.4f}   → "
+                      f"{'PASS' if m1_gate(brier_qrf, brier_ens_paired) else 'FAIL'}")
+
     # Per-city Brier (MODEL vs MARKET) — a pooled number can hide a city that's dragging us down.
     print("\n  Per-city Brier (MODEL vs MARKET, lower = better):")
     print(f"    {'city':<14} {'n':>4} {'model':>8} {'market':>8}")
@@ -412,6 +447,21 @@ def main():
             pe = sum(crps_e_by[k] for k in common) / len(common)
             print(f"    {'PAIRED':<10} MODEL {pm:>7.4f}  vs  ENSEMBLE {pe:>7.4f}   "
                   f"(n={len(common)}, → {'MODEL' if pm < pe else 'ENSEMBLE'} better)")
+
+    # QRF CRPS (M1) — same opt-in guard as the Brier block above: `_crps_by_key` already
+    # returns {} for a missing file, so this whole section is a silent no-op until Task 7
+    # trains + serves QRF and the tracker exists.
+    if (_OUT / "opportunities_evaluation_qrf.csv").exists():
+        crps_q_by = _crps_by_key(_OUT / "opportunities_evaluation_qrf.csv")
+        crps_q = (sum(crps_q_by.values()) / len(crps_q_by), len(crps_q_by)) if crps_q_by else None
+        if crps_q:
+            print(f"    {'QRF':<10} {crps_q[0]:>8.4f}   (over {crps_q[1]} city-date-kinds)")
+            common_qc = set(crps_q_by) & set(crps_e_by)
+            if common_qc:
+                pq = sum(crps_q_by[k] for k in common_qc) / len(common_qc)
+                peq = sum(crps_e_by[k] for k in common_qc) / len(common_qc)
+                print(f"    {'PAIRED (QRF)':<10} QRF {pq:>7.4f}  vs  ENSEMBLE {peq:>7.4f}   "
+                      f"(n={len(common_qc)}, → {'QRF' if pq < peq else 'ENSEMBLE'} better)")
 
     # Shrink-to-market recommendation: the w that would have minimized Brier on this graded set.
     sw = _best_shrink_weight(ml)

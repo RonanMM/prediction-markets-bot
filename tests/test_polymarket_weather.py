@@ -1250,3 +1250,315 @@ def test_dashboard_completeness_guard():
     assert set(bd._missing_cities(degraded)) == {"Seoul", "London"}
     # empty / malformed payload -> all cities missing (never publishes nothing)
     assert set(bd._missing_cities({})) == set(bd.CITY_ORDER)
+
+
+def test_quantile_forest_calibrated_and_monotone():
+    import numpy as np
+    from predictors.qrf_core import QuantileForest
+    rng = np.random.default_rng(0)
+    # heteroscedastic: spread grows with x -> a parametric-fixed-sigma model can't fit this, QRF can
+    X = rng.uniform(0, 10, size=(4000, 1))
+    y = X[:, 0] + rng.normal(0, 0.5 + 0.4 * X[:, 0])
+    qf = QuantileForest(n_estimators=200, min_samples_leaf=40, random_state=0).fit(X, y)
+    qs = qf.predict_quantiles(X, [0.1, 0.5, 0.9])
+    assert qs.shape == (4000, 3)
+    assert np.all(qs[:, 0] <= qs[:, 1] + 1e-9) and np.all(qs[:, 1] <= qs[:, 2] + 1e-9)   # monotone
+    cov = np.mean((y >= qs[:, 0]) & (y <= qs[:, 2]))     # nominal 80% central coverage
+    assert 0.72 <= cov <= 0.88
+    # spread must widen with x (heteroscedastic learned)
+    lo = qf.predict_quantiles(np.array([[1.0]]), [0.1, 0.9])
+    hi = qf.predict_quantiles(np.array([[9.0]]), [0.1, 0.9])
+    assert (hi[0, 1] - hi[0, 0]) > (lo[0, 1] - lo[0, 0])
+
+
+def test_moment_match_recovers_shape():
+    import numpy as np
+    from scipy import stats
+    from predictors.qrf_core import moment_match
+    levels = [0.05, 0.16, 0.25, 0.5, 0.75, 0.84, 0.95]
+    # a near-Gaussian sample -> high nu, sigma ~2, mu ~10
+    gq = stats.norm(10, 2).ppf(levels)
+    mu, sigma, nu = moment_match(levels, np.array(gq))
+    assert abs(mu - 10) < 0.2 and abs(sigma - 2) < 0.3 and nu >= 15
+    # a heavy-tailed sample (t, df=3) -> low nu
+    tq = stats.t(df=3, loc=10, scale=2).ppf(levels)
+    _, _, nu_t = moment_match(levels, np.array(tq))
+    assert nu_t < nu           # heavier tail => lower nu
+
+
+def test_intraday_running_max_no_leakage():
+    import pandas as pd, numpy as np
+    from qrf_features import intraday_running_max, build_row, FEATURE_COLS
+    tz = "Asia/Seoul"
+    obs = pd.DataFrame({
+        "valid_local": pd.to_datetime(["2026-07-09 08:00", "2026-07-09 12:00", "2026-07-09 16:00"]),
+        "temp_c": [22.0, 27.0, 31.0]})
+    tgt = pd.Timestamp("2026-07-09")
+    # as-of 13:00 local: only the 08:00 and 12:00 obs exist -> running max 27, NOT 31
+    fetch = pd.Timestamp("2026-07-09 13:00", tz=tz)
+    rm = intraday_running_max(obs, tgt, fetch, tz)
+    assert rm == 27.0
+    # a fabricated LATER obs must not change the as-of-13:00 result (no look-ahead)
+    obs2 = pd.concat([obs, pd.DataFrame({"valid_local": [pd.Timestamp("2026-07-09 14:30")], "temp_c": [40.0]})])
+    assert intraday_running_max(obs2, tgt, fetch, tz) == 27.0
+    # build_row yields exactly FEATURE_COLS
+    row = build_row({"ecmwf": 30.0, "gfs": 29.0, "icon": 31.0}, {"mean": 30.0, "std": 1.5, "p10": 28, "p50": 30, "p90": 32},
+                    running_max=27.0, is_same_day=1, lead=0, doy=190)
+    assert set(row) == set(FEATURE_COLS)
+
+
+def test_intraday_running_max_dst_fallback_no_crash():
+    """DST fall-back: a repeated local hour (e.g., 2025-11-02 01:30 occurs twice in America/New_York)
+    must not crash with AmbiguousTimeError. The function should handle ambiguous times gracefully."""
+    import pandas as pd
+    from qrf_features import intraday_running_max
+    from zoneinfo import ZoneInfo
+
+    tz = "America/New_York"
+    # 2025-11-02 is a DST fall-back date in America/New_York.
+    # At 2:00 AM EDT, clocks roll back to 1:00 AM EST, so 1:30 AM occurs twice.
+    obs = pd.DataFrame({
+        "valid_local": pd.to_datetime([
+            "2025-11-02 00:30",  # before the transition
+            "2025-11-02 01:30",  # ambiguous hour (occurs twice)
+            "2025-11-02 03:00",  # after the transition
+        ]),
+        "temp_c": [15.0, 14.0, 13.0]
+    })
+
+    tgt = pd.Timestamp("2025-11-02")
+    # fetch_time after all obs, on the same day, with explicit timezone
+    fetch = pd.Timestamp("2025-11-02 12:00", tz=ZoneInfo(tz))
+
+    # This should NOT raise AmbiguousTimeError; should return a finite float.
+    result = intraday_running_max(obs, tgt, fetch, tz)
+
+    # Should return a valid number (ideally the max of non-NaT observations)
+    # or NaN if all observations become NaT due to ambiguity, but not raise.
+    assert isinstance(result, float)
+    # If the function handled the ambiguous time gracefully, it should return
+    # a finite value representing the max of the valid observations.
+    assert result == result  # Not NaN check (NaN != NaN).
+
+
+def test_fit_city_gates_and_persists(tmp_path, monkeypatch):
+    import numpy as np, pandas as pd, json
+    import train_qrf
+    monkeypatch.setattr(train_qrf, "_MODELS_DIR", tmp_path)
+    rng = np.random.default_rng(1)
+    from qrf_features import FEATURE_COLS
+    X = pd.DataFrame(rng.normal(size=(600, len(FEATURE_COLS))), columns=FEATURE_COLS)
+    y = X["ens_mean"].values * 0 + rng.normal(20, 3, size=600)     # QRF learns sigma~3
+    # ens_holdout_crps is a CRPS-scale (°C) value, not a 0-1 Brier: a high one -> QRF should beat.
+    res = train_qrf.fit_city("seoul", X, y, ens_holdout_crps=5.0)
+    assert set(res) >= {"beats_ensemble", "holdout_crps", "n"}
+    assert (tmp_path / "seoul_qrf.joblib").exists()
+    meta = json.loads((tmp_path / "seoul_qrf_meta.json").read_text())
+    assert "beats_ensemble" in meta
+
+
+def test_train_qrf_loader_assembles_dateordered_and_gates(tmp_path, monkeypatch):
+    """Drive train_qrf()'s loader on a tiny in-memory fixture (no network): a wide
+    per-date leads_mm+truth frame -> date-ordered X/y -> ensemble CRPS proxy (same
+    formula) -> fit_city artifacts. Proves loader + CRPS-gate plumbing offline."""
+    import numpy as np, pandas as pd, json
+    import train_qrf
+    from qrf_features import FEATURE_COLS
+
+    monkeypatch.setattr(train_qrf, "_MODELS_DIR", tmp_path)
+    monkeypatch.setattr(train_qrf, "_MIN_ROWS", 20)   # keep the fixture small but valid
+
+    rng = np.random.default_rng(7)
+    dates = pd.date_range("2026-01-01", periods=40, freq="D")
+    seasonal = 20 + 5 * np.sin(2 * np.pi * dates.dayofyear / 365.0)
+    fixture = {"date_local": dates.strftime("%Y-%m-%d")}
+    # Real archives (fetch_historical_leads_mm.py / _cand.py) cap at LEADS = range(1, 5) —
+    # only leads 1-4 ever have fcst_tmax_lead{n}_{m} columns. Fabricating leads 5-7 here
+    # would hide the train/serve safety gap (QRF trained on 1-4 but served unbounded).
+    for n in range(1, 5):
+        for m in ("ecmwf", "gfs", "icon"):
+            fixture[f"fcst_tmax_lead{n}_{m}"] = seasonal + rng.normal(0, 1.0 + 0.2 * n, size=len(dates))
+    fixture["temp_max_c"] = seasonal + rng.normal(0, 1.0, size=len(dates))
+    wide = pd.DataFrame(fixture)
+    # feed the rows out of order to prove the loader re-sorts by date before the holdout split
+    wide = wide.sample(frac=1.0, random_state=1).reset_index(drop=True)
+
+    # unit-check the pure assembly helper: date-ordered rows, exact FEATURE_COLS, y aligned.
+    X, y = train_qrf._assemble_xy(wide)
+    assert list(X.columns) == FEATURE_COLS
+    assert len(X) == len(y) == 40 * 4                 # 40 dates x leads 1-4 (archive-limited)
+    # mm_mean finite everywhere; ens_* left NaN (no historical ensemble archive)
+    assert np.isfinite(X["mm_mean"].to_numpy()).all()
+    assert X["ens_mean"].isna().all()
+    assert (X["is_same_day"] == 0).all()
+
+    # ensemble baseline CRPS proxy equals the same closed-form on the same holdout rows.
+    ens_crps = train_qrf._ensemble_holdout_crps(X, y)
+    cut = train_qrf._holdout_cut(len(y))
+    mu = X["mm_mean"].to_numpy(float)
+    sigma = max(float(np.std(y[:cut] - mu[:cut])), 0.1)
+    assert ens_crps == train_qrf.crps_gaussian_proxy(y[cut:], mu[cut:], sigma)
+    assert np.isfinite(ens_crps) and ens_crps > 0
+
+    # full loader path: monkeypatch the on-disk reader, run one city, assert artifacts + meta.
+    monkeypatch.setattr(train_qrf, "_load_city_frame", lambda slug: wide)
+    results = train_qrf.train_qrf(cities=["Seoul"])
+    assert "seoul" in results
+    assert (tmp_path / "seoul_qrf.joblib").exists()
+    meta = json.loads((tmp_path / "seoul_qrf_meta.json").read_text())
+    assert set(meta) >= {"beats_ensemble", "holdout_crps", "ens_holdout_crps", "n", "max_lead"}
+    assert meta["n"] == 40 * 4
+    assert meta["ens_holdout_crps"] == ens_crps       # loader passed the same value it computed
+    # train/serve safety gap fix: the archive only ever produces leads 1-4, so max_lead
+    # must reflect the actual assembled data (computed), not the hopeful LEADS=range(1,8).
+    assert meta["max_lead"] == 4
+
+
+def test_qrf_predictor_gates_and_floors(tmp_path, monkeypatch):
+    import numpy as np, pandas as pd, json, joblib
+    from predictors import qrf as qmod
+    from predictors.qrf_core import QuantileForest
+    from qrf_features import FEATURE_COLS
+    monkeypatch.setattr(qmod, "_MODELS_DIR", tmp_path)
+    rng = np.random.default_rng(2)
+    X = rng.normal(size=(400, len(FEATURE_COLS))); y = rng.normal(20, 3, size=400)
+    joblib.dump(QuantileForest().fit(X, y), tmp_path / "seoul_qrf.joblib")
+    # gated OFF -> None (fallback)
+    (tmp_path / "seoul_qrf_meta.json").write_text(json.dumps({"beats_ensemble": False}))
+    p = qmod.QRFPredictor()
+    assert p.predict_distribution("Seoul", pd.Timestamp("2026-07-09"), pd.Timestamp("2026-07-09 13:00"),
+                                  0, pd.DataFrame(), kind="max") is None
+    # gated ON -> a TemperatureDistribution with a sane wide-ish sigma
+    (tmp_path / "seoul_qrf_meta.json").write_text(json.dumps({"beats_ensemble": True}))
+    # (feature assembly from the *_df args is exercised in the live path; here assert gate + type via a stub)
+
+    # kind="min" is out of v1 scope (no _qrf_min artifact) -> always None, gate or not.
+    assert p.predict_distribution("Seoul", pd.Timestamp("2026-07-09"), pd.Timestamp("2026-07-09 13:00"),
+                                  0, pd.DataFrame(), kind="min") is None
+
+    # missing artifact entirely (different city) -> None.
+    assert p.predict_distribution("London", pd.Timestamp("2026-07-09"), pd.Timestamp("2026-07-09 13:00"),
+                                  0, pd.DataFrame(), kind="max") is None
+
+
+def test_qrf_predictor_serves_gated_on_with_floor(tmp_path, monkeypatch):
+    """The brief's gate test scopes full feature-assembly-from-dfs to the live path
+    (Task 7). Because that assembly is genuinely exercisable with well-formed
+    fixtures, this test builds real (not mocked) daily_df/ens_df/mm_df/obs_df in the
+    exact schema `data_loader.py` produces, and drives predict_distribution's actual
+    code path end-to-end: EMOS's as-of helpers -> qrf_features.build_row ->
+    QuantileForest.predict_quantiles -> moment_match -> TemperatureDistribution."""
+    import numpy as np, pandas as pd, json, joblib
+    from predictors import qrf as qmod
+    from predictors.qrf_core import QuantileForest
+    from qrf_features import FEATURE_COLS
+
+    monkeypatch.setattr(qmod, "_MODELS_DIR", tmp_path)
+    rng = np.random.default_rng(3)
+    X = rng.normal(size=(400, len(FEATURE_COLS)))
+    y = rng.normal(20, 3, size=400)
+    joblib.dump(QuantileForest().fit(X, y), tmp_path / "seoul_qrf.joblib")
+    (tmp_path / "seoul_qrf_meta.json").write_text(json.dumps({"beats_ensemble": True}))
+
+    target_date = pd.Timestamp("2026-07-09")
+    fetch_same_day = pd.Timestamp("2026-07-09 13:00", tz="UTC")   # 22:00 KST, same local day
+    run_fetched_at = fetch_same_day - pd.Timedelta(hours=1)
+
+    daily_df = pd.DataFrame({
+        "date_local": [target_date],
+        "fetched_at_utc": [run_fetched_at],
+        "temp_max_c": [29.5],
+    })
+    mm_df = pd.DataFrame({
+        "date_local": [target_date],
+        "fetched_at_utc": [run_fetched_at],
+        "tmax_ecmwf": [29.0], "tmax_gfs": [28.5], "tmax_icon": [29.8],
+        "tmax_aifs": [np.nan], "tmax_gem": [29.2], "tmax_mf": [np.nan], "tmax_jma": [29.6],
+    })
+    ens_df = pd.DataFrame({
+        "date_local": [target_date],
+        "fetched_at_utc": [run_fetched_at],
+        "ens_mean": [29.3], "ens_std": [1.2], "ens_p10": [27.5], "ens_p90": [31.0],
+        "ens_spread": [3.5], "n_members": [40],
+        "ens_min_mean": [18.0], "ens_min_std": [0.8],
+    })
+    obs_df = pd.DataFrame({
+        "valid_local": pd.to_datetime(["2026-07-09 08:00", "2026-07-09 12:00"]),
+        "temp_c": [24.0, 27.0],
+    })
+
+    p = qmod.QRFPredictor()
+    dist = p.predict_distribution("Seoul", target_date, fetch_same_day, 0, daily_df,
+                                   ens_df=ens_df, mm_df=mm_df, obs_df=obs_df, kind="max")
+    assert dist is not None
+    assert dist.source == "qrf"
+    assert np.isfinite(dist.mu) and dist.sigma > 0 and np.isfinite(dist.nu)
+    # same-day: the running observed max (27.0, as-of 13:00 UTC / 22:00 KST) floors it.
+    assert dist.floor == 27.0
+
+    # A lead-1 bet (fetch the day BEFORE the target's station-local day) is not
+    # same-day -> no floor, regardless of obs_df content.
+    fetch_prior_day = pd.Timestamp("2026-07-08 13:00", tz="UTC")   # 22:00 KST on 07-08
+    dist2 = p.predict_distribution("Seoul", target_date, fetch_prior_day, 1, daily_df,
+                                    ens_df=ens_df, mm_df=mm_df, obs_df=obs_df, kind="max")
+    assert dist2 is not None
+    assert dist2.floor is None
+
+
+def test_qrf_predictor_respects_max_lead_bound(tmp_path, monkeypatch):
+    """Train/serve safety gap: the archived per-lead data only ever covers leads 1-4
+    (fetch_historical_leads_mm.py / _cand.py cap at range(1, 5)), so train_qrf.py's
+    self-gate (beats_ensemble) is validated ONLY on leads 1-4. QRFPredictor must not
+    extrapolate that guarantee to leads 5-7 (real '2d+' bucket traffic) -- with a
+    gated-ON artifact whose meta records max_lead=4, days_ahead beyond max_lead must
+    fall back to None (EMOS/ensemble), while days_ahead within range still serves."""
+    import numpy as np, pandas as pd, json, joblib
+    from predictors import qrf as qmod
+    from predictors.qrf_core import QuantileForest
+    from qrf_features import FEATURE_COLS
+
+    monkeypatch.setattr(qmod, "_MODELS_DIR", tmp_path)
+    rng = np.random.default_rng(3)
+    X = rng.normal(size=(400, len(FEATURE_COLS)))
+    y = rng.normal(20, 3, size=400)
+    joblib.dump(QuantileForest().fit(X, y), tmp_path / "seoul_qrf.joblib")
+    (tmp_path / "seoul_qrf_meta.json").write_text(json.dumps({"beats_ensemble": True, "max_lead": 4}))
+
+    target_date = pd.Timestamp("2026-07-09")
+    fetch_prior_day = pd.Timestamp("2026-07-08 13:00", tz="UTC")
+
+    daily_df = pd.DataFrame({
+        "date_local": [target_date],
+        "fetched_at_utc": [fetch_prior_day],
+        "temp_max_c": [29.5],
+    })
+    mm_df = pd.DataFrame({
+        "date_local": [target_date],
+        "fetched_at_utc": [fetch_prior_day],
+        "tmax_ecmwf": [29.0], "tmax_gfs": [28.5], "tmax_icon": [29.8],
+        "tmax_aifs": [np.nan], "tmax_gem": [29.2], "tmax_mf": [np.nan], "tmax_jma": [29.6],
+    })
+    ens_df = pd.DataFrame({
+        "date_local": [target_date],
+        "fetched_at_utc": [fetch_prior_day],
+        "ens_mean": [29.3], "ens_std": [1.2], "ens_p10": [27.5], "ens_p90": [31.0],
+        "ens_spread": [3.5], "n_members": [40],
+        "ens_min_mean": [18.0], "ens_min_std": [0.8],
+    })
+
+    p = qmod.QRFPredictor()
+    # days_ahead=6 exceeds max_lead=4 -> untested extrapolation regime -> safe fallback (None).
+    dist_far = p.predict_distribution("Seoul", target_date, fetch_prior_day, 6, daily_df,
+                                       ens_df=ens_df, mm_df=mm_df, kind="max")
+    assert dist_far is None
+    # days_ahead=1 is within the trained/gated range -> still serves normally.
+    dist_near = p.predict_distribution("Seoul", target_date, fetch_prior_day, 1, daily_df,
+                                        ens_df=ens_df, mm_df=mm_df, kind="max")
+    assert dist_near is not None
+    assert dist_near.source == "qrf"
+
+
+def test_m1_gate():
+    import evaluate_oos as ev
+    assert ev.m1_gate(0.130, 0.142) is True      # QRF beats ensemble
+    assert ev.m1_gate(0.150, 0.142) is False     # QRF worse -> gate fails
