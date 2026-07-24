@@ -1609,3 +1609,34 @@ def test_bin_prob_via_callable_sums_to_one():
     # gap that still fails this assertion.
     total = sum(pmf._bin_prob(t, 25.0, 3.0, 8.0, half_width=0.5, cdf=ramp) for t in range(11, 30))
     assert abs(total - 1.0) < 0.06
+
+
+def test_empirical_cdf_monotone_tails_and_recovery():
+    import numpy as np
+    from scipy import stats
+    from predictors.qrf_core import empirical_cdf_from_quantiles, Q_FINE
+    # quantiles of N(20, 3): the reconstructed CDF should track the Gaussian and be monotone
+    vals = stats.norm(20, 3).ppf(Q_FINE)
+    F = empirical_cdf_from_quantiles(Q_FINE, vals)
+    xs = np.linspace(5, 35, 100)
+    cs = np.array([F(x) for x in xs])
+    assert np.all(np.diff(cs) >= -1e-9)                 # monotone non-decreasing
+    assert cs[0] >= 0.0 and cs[-1] <= 1.0               # in range
+    assert F(20.0) == max(0.0, min(1.0, F(20.0))) and abs(F(20.0) - 0.5) < 0.05   # median ~0.5
+    # tails finite and heading to the bounds
+    assert F(-100.0) < 0.02 and F(100.0) > 0.98
+    # near the body it tracks the Gaussian
+    assert abs(F(23.0) - stats.norm(20, 3).cdf(23.0)) < 0.05
+    # degenerate: all-equal quantiles -> a step at the median, no crash
+    Fd = empirical_cdf_from_quantiles(Q_FINE, np.full(len(Q_FINE), 12.0))
+    assert Fd(11.9) < 0.5 <= Fd(12.1)
+
+
+def test_sample_crps_orders_correctly():
+    import numpy as np
+    from predictors.qrf_core import sample_crps
+    from scipy import stats
+    y = 20.0
+    tight = stats.norm(20, 1).ppf(np.linspace(.01, .99, 99))
+    wide = stats.norm(20, 5).ppf(np.linspace(.01, .99, 99))
+    assert sample_crps(tight, y) < sample_crps(wide, y)   # sharper+calibrated scores better
