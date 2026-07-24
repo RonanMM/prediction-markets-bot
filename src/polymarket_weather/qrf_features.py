@@ -17,11 +17,14 @@ def intraday_running_max(obs_df, target_date, fetch_time, tz):
         return float("nan")
     v = pd.to_datetime(obs_df["valid_local"])
     if v.dt.tz is None:
-        v = v.dt.tz_localize(ZoneInfo(tz))
+        v = v.dt.tz_localize(ZoneInfo(tz), ambiguous="NaT", nonexistent="NaT")
     day = pd.Timestamp(target_date).date()
     ft = pd.Timestamp(fetch_time)
     if ft.tz is None:
-        ft = ft.tz_localize(ZoneInfo(tz))
+        ft = ft.tz_localize(ZoneInfo(tz), ambiguous="NaT", nonexistent="NaT")
+    # If fetch_time localizes to NaT (rare), mask is all-False and we return NaN.
+    # If any obs timestamps become NaT due to ambiguity/nonexistence, they are excluded
+    # naturally: NaT < ft evaluates to False, so those rows don't contribute to the max.
     m = (v.dt.date == day) & (v < ft)
     return float(obs_df.loc[m.values, "temp_c"].max()) if m.any() else float("nan")
 

@@ -1305,3 +1305,37 @@ def test_intraday_running_max_no_leakage():
     row = build_row({"ecmwf": 30.0, "gfs": 29.0, "icon": 31.0}, {"mean": 30.0, "std": 1.5, "p10": 28, "p50": 30, "p90": 32},
                     running_max=27.0, is_same_day=1, lead=0, doy=190)
     assert set(row) == set(FEATURE_COLS)
+
+
+def test_intraday_running_max_dst_fallback_no_crash():
+    """DST fall-back: a repeated local hour (e.g., 2025-11-02 01:30 occurs twice in America/New_York)
+    must not crash with AmbiguousTimeError. The function should handle ambiguous times gracefully."""
+    import pandas as pd
+    from qrf_features import intraday_running_max
+    from zoneinfo import ZoneInfo
+
+    tz = "America/New_York"
+    # 2025-11-02 is a DST fall-back date in America/New_York.
+    # At 2:00 AM EDT, clocks roll back to 1:00 AM EST, so 1:30 AM occurs twice.
+    obs = pd.DataFrame({
+        "valid_local": pd.to_datetime([
+            "2025-11-02 00:30",  # before the transition
+            "2025-11-02 01:30",  # ambiguous hour (occurs twice)
+            "2025-11-02 03:00",  # after the transition
+        ]),
+        "temp_c": [15.0, 14.0, 13.0]
+    })
+
+    tgt = pd.Timestamp("2025-11-02")
+    # fetch_time after all obs, on the same day, with explicit timezone
+    fetch = pd.Timestamp("2025-11-02 12:00", tz=ZoneInfo(tz))
+
+    # This should NOT raise AmbiguousTimeError; should return a finite float.
+    result = intraday_running_max(obs, tgt, fetch, tz)
+
+    # Should return a valid number (ideally the max of non-NaT observations)
+    # or NaN if all observations become NaT due to ambiguity, but not raise.
+    assert isinstance(result, float)
+    # If the function handled the ambiguous time gracefully, it should return
+    # a finite value representing the max of the valid observations.
+    assert result == result  # Not NaN check (NaN != NaN).
