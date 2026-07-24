@@ -1174,7 +1174,7 @@ def test_report_breadth_gate_forward_only(tmp_path, capsys):
 def test_breadth_maker_path_and_fill(tmp_path):
     import shoulder_book_breadth as b
     import pandas as pd
-    from datetime import datetime, timezone, timedelta
+    from datetime import datetime, timezone, timedelta, date
     end = pd.Timestamp("2026-07-25T22:00:00Z")   # far future -> pre-day, >12h to end
 
     def mk(cid, yes):
@@ -1202,7 +1202,8 @@ def test_breadth_maker_path_and_fill(tmp_path):
         mid = url.rstrip("/").split("/")[-1]
         return {"SH": {"closed": True, "outcomePrices": "[\"0\",\"1\"]"},   # NO won -> shoulder wins
                 "FV": {"closed": True, "outcomePrices": "[\"1\",\"0\"]"}}[mid]  # YES won -> favorite wins
-    g = b.grade_book(out_path=out, fetch=fetch)
+    aft = date(2026, 7, 26)   # after the July-25 target so grading proceeds
+    g = b.grade_book(out_path=out, fetch=fetch, as_of=aft)
     assert bool(g[g.condition_id == "0xSH"].iloc[0]["maker_filled"]) is True
     assert bool(g[g.condition_id == "0xFV"].iloc[0]["maker_filled"]) is True
 
@@ -1210,8 +1211,33 @@ def test_breadth_maker_path_and_fill(tmp_path):
     out2 = tmp_path / "b2.csv"
     b.scan_and_record_breadth(bins=[mk("0xNF", 0.15)], now_utc=t1, out_path=out2)
     b.scan_and_record_breadth(bins=[mk("0xNF", 0.11)], now_utc=t2, out_path=out2)   # only falls
-    g2 = b.grade_book(out_path=out2, fetch=lambda u, p=None, l="API": {"closed": True, "outcomePrices": "[\"0\",\"1\"]"})
+    g2 = b.grade_book(out_path=out2, as_of=aft, fetch=lambda u, p=None, l="API": {"closed": True, "outcomePrices": "[\"0\",\"1\"]"})
     assert bool(g2.iloc[0]["maker_filled"]) is False
+
+
+def test_grade_book_skips_future_targets(tmp_path):
+    import shoulder_book_breadth as b
+    import pandas as pd
+    from datetime import date
+    rows = [
+        {**{c: "" for c in b._BCOLS}, "condition_id": "0xP", "market_id": "past",
+         "leg": "shoulder", "side": "No", "entry_side_price": 0.85, "entry_yes_price": 0.15,
+         "entered_at_utc": "2026-07-20T00:00:00+00:00", "target_date": "2026-07-20"},
+        {**{c: "" for c in b._BCOLS}, "condition_id": "0xF", "market_id": "future",
+         "leg": "shoulder", "side": "No", "entry_side_price": 0.85, "entry_yes_price": 0.15,
+         "entered_at_utc": "2026-07-23T00:00:00+00:00", "target_date": "2026-07-25"},
+    ]
+    out = tmp_path / "b.csv"
+    pd.DataFrame(rows).reindex(columns=b._BCOLS).to_csv(out, index=False)
+    looked_up = []
+
+    def fetch(url, params=None, label="API"):
+        looked_up.append(url.rstrip("/").split("/")[-1])
+        return {"closed": True, "outcomePrices": "[\"0\",\"1\"]"}   # NO won
+
+    b.grade_book(out_path=out, fetch=fetch, as_of=date(2026, 7, 24))
+    # only the past-dated market is looked up; the 07-25 future one is skipped
+    assert looked_up == ["past"]
 
 
 def test_dashboard_completeness_guard():

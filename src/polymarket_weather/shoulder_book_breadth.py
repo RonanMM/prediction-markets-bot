@@ -217,21 +217,30 @@ def _is_unset(v):
     return str(v).strip() in ("", "nan", "None", "<NA>")
 
 
-def grade_book(book=None, out_path=_OUT, fetch=get_json, lookup=True) -> pd.DataFrame:
+def grade_book(book=None, out_path=_OUT, fetch=get_json, lookup=True, as_of=None) -> pd.DataFrame:
     """Fill+freeze settled_outcome for any ungraded entry (looked up once, never re-fetched),
     persist, and return the graded frame with side_won + net_edge (verified taker-fee model).
 
     lookup=False skips all network calls and grades ONLY entries already frozen in the CSV —
     use this for read-time consumers (e.g. the dashboard) that must stay fast and offline;
-    a scheduled job (truth-eval) does the lookups and commits the frozen settlements."""
+    a scheduled job (truth-eval) does the lookups and commits the frozen settlements.
+
+    A market whose target day has not yet passed (target_date >= as_of, default today UTC) cannot
+    be settled, so it is NOT looked up — this keeps the daily sweep from firing hundreds of
+    pointless /markets/{id} calls on still-open future-dated entries."""
     if book is None:
         book = _load_book(out_path)
     if book.empty:
         return book
+    if as_of is None:
+        as_of = datetime.now(timezone.utc).date()
     changed = False
     if lookup:
         for i, r in book.iterrows():
             if _is_unset(r.get("settled_outcome")):
+                td = pd.to_datetime(r.get("target_date"), errors="coerce")
+                if pd.notna(td) and td.date() >= as_of:
+                    continue                                   # target day not over — can't be settled
                 o = settlement_outcome(r.get("market_id"), fetch=fetch)
                 if o is not None:
                     book.at[i, "settled_outcome"] = o
