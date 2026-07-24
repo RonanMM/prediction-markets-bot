@@ -1349,11 +1349,63 @@ def test_fit_city_gates_and_persists(tmp_path, monkeypatch):
     from qrf_features import FEATURE_COLS
     X = pd.DataFrame(rng.normal(size=(600, len(FEATURE_COLS))), columns=FEATURE_COLS)
     y = X["ens_mean"].values * 0 + rng.normal(20, 3, size=600)     # QRF learns sigma~3
-    res = train_qrf.fit_city("seoul", X, y, ens_holdout_brier=1.0)   # ensemble "brier" high -> QRF should beat
-    assert set(res) >= {"beats_ensemble", "holdout_brier", "n"}
+    # ens_holdout_crps is a CRPS-scale (°C) value, not a 0-1 Brier: a high one -> QRF should beat.
+    res = train_qrf.fit_city("seoul", X, y, ens_holdout_crps=5.0)
+    assert set(res) >= {"beats_ensemble", "holdout_crps", "n"}
     assert (tmp_path / "seoul_qrf.joblib").exists()
     meta = json.loads((tmp_path / "seoul_qrf_meta.json").read_text())
     assert "beats_ensemble" in meta
+
+
+def test_train_qrf_loader_assembles_dateordered_and_gates(tmp_path, monkeypatch):
+    """Drive train_qrf()'s loader on a tiny in-memory fixture (no network): a wide
+    per-date leads_mm+truth frame -> date-ordered X/y -> ensemble CRPS proxy (same
+    formula) -> fit_city artifacts. Proves loader + CRPS-gate plumbing offline."""
+    import numpy as np, pandas as pd, json
+    import train_qrf
+    from qrf_features import FEATURE_COLS
+
+    monkeypatch.setattr(train_qrf, "_MODELS_DIR", tmp_path)
+    monkeypatch.setattr(train_qrf, "_MIN_ROWS", 20)   # keep the fixture small but valid
+
+    rng = np.random.default_rng(7)
+    dates = pd.date_range("2026-01-01", periods=40, freq="D")
+    seasonal = 20 + 5 * np.sin(2 * np.pi * dates.dayofyear / 365.0)
+    fixture = {"date_local": dates.strftime("%Y-%m-%d")}
+    for n in range(1, 8):
+        for m in ("ecmwf", "gfs", "icon"):
+            fixture[f"fcst_tmax_lead{n}_{m}"] = seasonal + rng.normal(0, 1.0 + 0.2 * n, size=len(dates))
+    fixture["temp_max_c"] = seasonal + rng.normal(0, 1.0, size=len(dates))
+    wide = pd.DataFrame(fixture)
+    # feed the rows out of order to prove the loader re-sorts by date before the holdout split
+    wide = wide.sample(frac=1.0, random_state=1).reset_index(drop=True)
+
+    # unit-check the pure assembly helper: date-ordered rows, exact FEATURE_COLS, y aligned.
+    X, y = train_qrf._assemble_xy(wide)
+    assert list(X.columns) == FEATURE_COLS
+    assert len(X) == len(y) == 40 * 7                 # 40 dates x 7 leads
+    # mm_mean finite everywhere; ens_* left NaN (no historical ensemble archive)
+    assert np.isfinite(X["mm_mean"].to_numpy()).all()
+    assert X["ens_mean"].isna().all()
+    assert (X["is_same_day"] == 0).all()
+
+    # ensemble baseline CRPS proxy equals the same closed-form on the same holdout rows.
+    ens_crps = train_qrf._ensemble_holdout_crps(X, y)
+    cut = train_qrf._holdout_cut(len(y))
+    mu = X["mm_mean"].to_numpy(float)
+    sigma = max(float(np.std(y[:cut] - mu[:cut])), 0.1)
+    assert ens_crps == train_qrf.crps_gaussian_proxy(y[cut:], mu[cut:], sigma)
+    assert np.isfinite(ens_crps) and ens_crps > 0
+
+    # full loader path: monkeypatch the on-disk reader, run one city, assert artifacts + meta.
+    monkeypatch.setattr(train_qrf, "_load_city_frame", lambda slug: wide)
+    results = train_qrf.train_qrf(cities=["Seoul"])
+    assert "seoul" in results
+    assert (tmp_path / "seoul_qrf.joblib").exists()
+    meta = json.loads((tmp_path / "seoul_qrf_meta.json").read_text())
+    assert set(meta) >= {"beats_ensemble", "holdout_crps", "ens_holdout_crps", "n"}
+    assert meta["n"] == 40 * 7
+    assert meta["ens_holdout_crps"] == ens_crps       # loader passed the same value it computed
 
 
 def test_qrf_predictor_gates_and_floors(tmp_path, monkeypatch):
