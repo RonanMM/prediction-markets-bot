@@ -402,6 +402,19 @@ def test_emos_v2_uses_nearest_trained_lead(monkeypatch):
     assert pytest.approx(dist.mu) == 3.0 + 0.9 * 19.5
 
 
+def test_temperature_distribution_has_optional_cdf():
+    """Optional cdf field on TemperatureDistribution for QRF empirical distributions."""
+    from predictors.base import TemperatureDistribution
+    d = TemperatureDistribution(mu=20.0, sigma=2.0, nu=10.0, source="qrf")
+    assert d.cdf is None                       # default: parametric path
+    f = lambda x: 0.5
+    d2 = TemperatureDistribution(mu=20.0, sigma=2.0, nu=10.0, source="qrf", cdf=f)
+    assert d2.cdf(999) == 0.5                   # callable carried
+    # existing positional/keyword construction still works (floor/ceiling unaffected)
+    d3 = TemperatureDistribution(20.0, 2.0, 10.0, "emos_v2", floor=18.0)
+    assert d3.cdf is None and d3.floor == 18.0
+
+
 # ── Shrink-to-market weight sweep (WS3) ──────────────────────────────────────
 
 def test_best_shrink_weight_picks_the_more_accurate_source():
