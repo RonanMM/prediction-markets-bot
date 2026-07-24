@@ -5,6 +5,7 @@ No parametric shape is assumed in the LEARNING — the conditional spread/tails 
 from __future__ import annotations
 import numpy as np
 from sklearn.ensemble import RandomForestRegressor
+from scipy import stats as _stats
 
 
 class QuantileForest:
@@ -48,3 +49,34 @@ def _weighted_quantile(values, weights, q):
     cw = np.cumsum(w)
     cw /= cw[-1]
     return np.interp(q, cw, v)
+
+
+def moment_match(q_levels, q_values):
+    """Convert quantiles to Student-t parameters (mu, sigma, nu).
+
+    Given quantile levels and their values from a QRF (or any distribution),
+    extract Student-t parameters by:
+    - mu = median (50th quantile)
+    - sigma = spread from the central 68% interval (84th - 16th quantiles)
+    - nu = degrees of freedom chosen so the outer/inner tail ratio matches
+    """
+    q_levels = np.asarray(q_levels, float)
+    q_values = np.asarray(q_values, float)
+
+    def qv(p):
+        """Get quantile value at the closest available level."""
+        return float(q_values[int(np.argmin(np.abs(q_levels - p)))])
+
+    mu = qv(0.5)
+    sigma = max((qv(0.84) - qv(0.16)) / 2.0, 1e-3)
+
+    # empirical tail ratio: outer span / inner span
+    emp = (qv(0.95) - qv(0.05)) / max(qv(0.75) - qv(0.25), 1e-6)
+
+    # Student-t theoretical ratio as a function of nu; pick the nu whose ratio matches.
+    grid = np.array([3, 4, 5, 6, 8, 10, 15, 20, 30, 40], float)
+    ratios = np.array([(_stats.t(df=n).ppf(0.95) - _stats.t(df=n).ppf(0.05)) /
+                       (_stats.t(df=n).ppf(0.75) - _stats.t(df=n).ppf(0.25)) for n in grid])
+    nu = float(grid[int(np.argmin(np.abs(ratios - emp)))])
+
+    return mu, sigma, nu

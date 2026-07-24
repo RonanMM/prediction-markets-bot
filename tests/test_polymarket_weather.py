@@ -1269,3 +1269,18 @@ def test_quantile_forest_calibrated_and_monotone():
     lo = qf.predict_quantiles(np.array([[1.0]]), [0.1, 0.9])
     hi = qf.predict_quantiles(np.array([[9.0]]), [0.1, 0.9])
     assert (hi[0, 1] - hi[0, 0]) > (lo[0, 1] - lo[0, 0])
+
+
+def test_moment_match_recovers_shape():
+    import numpy as np
+    from scipy import stats
+    from predictors.qrf_core import moment_match
+    levels = [0.05, 0.16, 0.25, 0.5, 0.75, 0.84, 0.95]
+    # a near-Gaussian sample -> high nu, sigma ~2, mu ~10
+    gq = stats.norm(10, 2).ppf(levels)
+    mu, sigma, nu = moment_match(levels, np.array(gq))
+    assert abs(mu - 10) < 0.2 and abs(sigma - 2) < 0.3 and nu >= 15
+    # a heavy-tailed sample (t, df=3) -> low nu
+    tq = stats.t(df=3, loc=10, scale=2).ppf(levels)
+    _, _, nu_t = moment_match(levels, np.array(tq))
+    assert nu_t < nu           # heavier tail => lower nu
