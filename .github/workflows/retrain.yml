@@ -164,6 +164,11 @@ jobs:
       # `git add src/polymarket_weather/models` in the commit step below.
       - name: Train QRF forecaster
         working-directory: src/polymarket_weather
+        # First-run fault isolation: QRF is a NEW, self-gated forecaster (inert until it beats
+        # the ensemble on holdout). A crash here must never torpedo the valuable EMOS/W0.2
+        # retrain + trackers + commit that follow — QRF just stays untrained (its designed
+        # fallback). Remove once train_qrf has a few clean live runs.
+        continue-on-error: true
         run: python train_qrf.py
 
       - name: Regenerate eval tracker (calibrated model)
@@ -179,6 +184,7 @@ jobs:
       # self-gates per city, so an un-gated/not-yet-winning city simply contributes nothing.
       - name: Regenerate eval tracker (QRF)
         working-directory: src/polymarket_weather
+        continue-on-error: true          # same first-run isolation as the QRF training step
         run: python polymarket_weather_analysis.py --data_dir ./data --no_plots --predictor qrf
 
       - name: Arbiter + gate
