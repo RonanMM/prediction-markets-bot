@@ -1354,3 +1354,94 @@ def test_fit_city_gates_and_persists(tmp_path, monkeypatch):
     assert (tmp_path / "seoul_qrf.joblib").exists()
     meta = json.loads((tmp_path / "seoul_qrf_meta.json").read_text())
     assert "beats_ensemble" in meta
+
+
+def test_qrf_predictor_gates_and_floors(tmp_path, monkeypatch):
+    import numpy as np, pandas as pd, json, joblib
+    from predictors import qrf as qmod
+    from predictors.qrf_core import QuantileForest
+    from qrf_features import FEATURE_COLS
+    monkeypatch.setattr(qmod, "_MODELS_DIR", tmp_path)
+    rng = np.random.default_rng(2)
+    X = rng.normal(size=(400, len(FEATURE_COLS))); y = rng.normal(20, 3, size=400)
+    joblib.dump(QuantileForest().fit(X, y), tmp_path / "seoul_qrf.joblib")
+    # gated OFF -> None (fallback)
+    (tmp_path / "seoul_qrf_meta.json").write_text(json.dumps({"beats_ensemble": False}))
+    p = qmod.QRFPredictor()
+    assert p.predict_distribution("Seoul", pd.Timestamp("2026-07-09"), pd.Timestamp("2026-07-09 13:00"),
+                                  0, pd.DataFrame(), kind="max") is None
+    # gated ON -> a TemperatureDistribution with a sane wide-ish sigma
+    (tmp_path / "seoul_qrf_meta.json").write_text(json.dumps({"beats_ensemble": True}))
+    # (feature assembly from the *_df args is exercised in the live path; here assert gate + type via a stub)
+
+    # kind="min" is out of v1 scope (no _qrf_min artifact) -> always None, gate or not.
+    assert p.predict_distribution("Seoul", pd.Timestamp("2026-07-09"), pd.Timestamp("2026-07-09 13:00"),
+                                  0, pd.DataFrame(), kind="min") is None
+
+    # missing artifact entirely (different city) -> None.
+    assert p.predict_distribution("London", pd.Timestamp("2026-07-09"), pd.Timestamp("2026-07-09 13:00"),
+                                  0, pd.DataFrame(), kind="max") is None
+
+
+def test_qrf_predictor_serves_gated_on_with_floor(tmp_path, monkeypatch):
+    """The brief's gate test scopes full feature-assembly-from-dfs to the live path
+    (Task 7). Because that assembly is genuinely exercisable with well-formed
+    fixtures, this test builds real (not mocked) daily_df/ens_df/mm_df/obs_df in the
+    exact schema `data_loader.py` produces, and drives predict_distribution's actual
+    code path end-to-end: EMOS's as-of helpers -> qrf_features.build_row ->
+    QuantileForest.predict_quantiles -> moment_match -> TemperatureDistribution."""
+    import numpy as np, pandas as pd, json, joblib
+    from predictors import qrf as qmod
+    from predictors.qrf_core import QuantileForest
+    from qrf_features import FEATURE_COLS
+
+    monkeypatch.setattr(qmod, "_MODELS_DIR", tmp_path)
+    rng = np.random.default_rng(3)
+    X = rng.normal(size=(400, len(FEATURE_COLS)))
+    y = rng.normal(20, 3, size=400)
+    joblib.dump(QuantileForest().fit(X, y), tmp_path / "seoul_qrf.joblib")
+    (tmp_path / "seoul_qrf_meta.json").write_text(json.dumps({"beats_ensemble": True}))
+
+    target_date = pd.Timestamp("2026-07-09")
+    fetch_same_day = pd.Timestamp("2026-07-09 13:00", tz="UTC")   # 22:00 KST, same local day
+    run_fetched_at = fetch_same_day - pd.Timedelta(hours=1)
+
+    daily_df = pd.DataFrame({
+        "date_local": [target_date],
+        "fetched_at_utc": [run_fetched_at],
+        "temp_max_c": [29.5],
+    })
+    mm_df = pd.DataFrame({
+        "date_local": [target_date],
+        "fetched_at_utc": [run_fetched_at],
+        "tmax_ecmwf": [29.0], "tmax_gfs": [28.5], "tmax_icon": [29.8],
+        "tmax_aifs": [np.nan], "tmax_gem": [29.2], "tmax_mf": [np.nan], "tmax_jma": [29.6],
+    })
+    ens_df = pd.DataFrame({
+        "date_local": [target_date],
+        "fetched_at_utc": [run_fetched_at],
+        "ens_mean": [29.3], "ens_std": [1.2], "ens_p10": [27.5], "ens_p90": [31.0],
+        "ens_spread": [3.5], "n_members": [40],
+        "ens_min_mean": [18.0], "ens_min_std": [0.8],
+    })
+    obs_df = pd.DataFrame({
+        "valid_local": pd.to_datetime(["2026-07-09 08:00", "2026-07-09 12:00"]),
+        "temp_c": [24.0, 27.0],
+    })
+
+    p = qmod.QRFPredictor()
+    dist = p.predict_distribution("Seoul", target_date, fetch_same_day, 0, daily_df,
+                                   ens_df=ens_df, mm_df=mm_df, obs_df=obs_df, kind="max")
+    assert dist is not None
+    assert dist.source == "qrf"
+    assert np.isfinite(dist.mu) and dist.sigma > 0 and np.isfinite(dist.nu)
+    # same-day: the running observed max (27.0, as-of 13:00 UTC / 22:00 KST) floors it.
+    assert dist.floor == 27.0
+
+    # A lead-1 bet (fetch the day BEFORE the target's station-local day) is not
+    # same-day -> no floor, regardless of obs_df content.
+    fetch_prior_day = pd.Timestamp("2026-07-08 13:00", tz="UTC")   # 22:00 KST on 07-08
+    dist2 = p.predict_distribution("Seoul", target_date, fetch_prior_day, 1, daily_df,
+                                    ens_df=ens_df, mm_df=mm_df, obs_df=obs_df, kind="max")
+    assert dist2 is not None
+    assert dist2.floor is None
