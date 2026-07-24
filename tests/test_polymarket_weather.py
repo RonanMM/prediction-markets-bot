@@ -1571,6 +1571,68 @@ def test_qrf_predictor_respects_max_lead_bound(tmp_path, monkeypatch):
     assert dist_near.source == "qrf"
 
 
+def test_qrf_predictor_serves_empirical_cdf(tmp_path, monkeypatch):
+    """Task 4: predict_distribution must ALSO serve the empirical CDF built from the
+    fine quantile grid (qrf_core.Q_FINE), not just the moment-matched Student-t used
+    for mu/sigma/nu. Mirrors test_qrf_predictor_serves_gated_on_with_floor's exact
+    df-fixture schema/values (same city/dates/floor) -- only the new cdf assertions
+    are added here."""
+    import numpy as np, pandas as pd, json, joblib
+    from predictors import qrf as qmod
+    from predictors.qrf_core import QuantileForest
+    from qrf_features import FEATURE_COLS
+
+    monkeypatch.setattr(qmod, "_MODELS_DIR", tmp_path)
+    rng = np.random.default_rng(3)
+    X = rng.normal(size=(400, len(FEATURE_COLS)))
+    y = rng.normal(20, 3, size=400)
+    joblib.dump(QuantileForest().fit(X, y), tmp_path / "seoul_qrf.joblib")
+    (tmp_path / "seoul_qrf_meta.json").write_text(json.dumps({"beats_ensemble": True}))
+
+    target_date = pd.Timestamp("2026-07-09")
+    fetch_same_day = pd.Timestamp("2026-07-09 13:00", tz="UTC")   # 22:00 KST, same local day
+    run_fetched_at = fetch_same_day - pd.Timedelta(hours=1)
+
+    daily_df = pd.DataFrame({
+        "date_local": [target_date],
+        "fetched_at_utc": [run_fetched_at],
+        "temp_max_c": [29.5],
+    })
+    mm_df = pd.DataFrame({
+        "date_local": [target_date],
+        "fetched_at_utc": [run_fetched_at],
+        "tmax_ecmwf": [29.0], "tmax_gfs": [28.5], "tmax_icon": [29.8],
+        "tmax_aifs": [np.nan], "tmax_gem": [29.2], "tmax_mf": [np.nan], "tmax_jma": [29.6],
+    })
+    ens_df = pd.DataFrame({
+        "date_local": [target_date],
+        "fetched_at_utc": [run_fetched_at],
+        "ens_mean": [29.3], "ens_std": [1.2], "ens_p10": [27.5], "ens_p90": [31.0],
+        "ens_spread": [3.5], "n_members": [40],
+        "ens_min_mean": [18.0], "ens_min_std": [0.8],
+    })
+    obs_df = pd.DataFrame({
+        "valid_local": pd.to_datetime(["2026-07-09 08:00", "2026-07-09 12:00"]),
+        "temp_c": [24.0, 27.0],
+    })
+
+    p = qmod.QRFPredictor()
+    dist = p.predict_distribution("Seoul", target_date, fetch_same_day, 0, daily_df,
+                                   ens_df=ens_df, mm_df=mm_df, obs_df=obs_df, kind="max")
+    assert dist is not None
+    assert dist.source == "qrf"
+    # summary stats are unchanged (still sensible moment-matched values).
+    assert np.isfinite(dist.mu) and dist.sigma > 0 and np.isfinite(dist.nu)
+    assert dist.floor == 27.0
+
+    # NEW: the empirical CDF is also served, and it's a monotone probability.
+    assert dist.cdf is not None
+    lo, hi = dist.cdf(0.0), dist.cdf(50.0)
+    assert lo <= hi
+    assert 0.0 <= dist.cdf(20.0) <= 1.0
+    assert 0.0 <= lo <= 1.0 and 0.0 <= hi <= 1.0
+
+
 def test_m1_gate():
     import evaluate_oos as ev
     assert ev.m1_gate(0.130, 0.142) is True      # QRF beats ensemble
