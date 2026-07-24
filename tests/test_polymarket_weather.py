@@ -1339,3 +1339,18 @@ def test_intraday_running_max_dst_fallback_no_crash():
     # If the function handled the ambiguous time gracefully, it should return
     # a finite value representing the max of the valid observations.
     assert result == result  # Not NaN check (NaN != NaN).
+
+
+def test_fit_city_gates_and_persists(tmp_path, monkeypatch):
+    import numpy as np, pandas as pd, json
+    import train_qrf
+    monkeypatch.setattr(train_qrf, "_MODELS_DIR", tmp_path)
+    rng = np.random.default_rng(1)
+    from qrf_features import FEATURE_COLS
+    X = pd.DataFrame(rng.normal(size=(600, len(FEATURE_COLS))), columns=FEATURE_COLS)
+    y = X["ens_mean"].values * 0 + rng.normal(20, 3, size=600)     # QRF learns sigma~3
+    res = train_qrf.fit_city("seoul", X, y, ens_holdout_brier=1.0)   # ensemble "brier" high -> QRF should beat
+    assert set(res) >= {"beats_ensemble", "holdout_brier", "n"}
+    assert (tmp_path / "seoul_qrf.joblib").exists()
+    meta = json.loads((tmp_path / "seoul_qrf_meta.json").read_text())
+    assert "beats_ensemble" in meta
