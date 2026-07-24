@@ -17,10 +17,20 @@ holdout CRPS proxy to the ensemble baseline's holdout CRPS proxy — the SAME
 spread set to the honest TRAIN-portion residual std — so both learner and baseline set
 their parameters on train only and are scored on the identical holdout.
 
+⚠️ LEADS below is an ASPIRATIONAL range (1-7), not what the archives deliver. The per-model
+historical fetchers (`fetch_historical_leads_mm.py`, `_cand.py`) cap at `range(1, 5)` and the
+jma companion file only has `jma1..jma4` — so leads 5-7 never find a `fcst_tmax_lead{n}_{m}`
+column in `_assemble_xy` and are silently skipped (`forecasts` stays `{}`). In practice the QRF
+is trained and self-gated on leads **1-4 only**. `train_qrf()` computes the true max lead
+present in the assembled data (`X["lead"].max()`) and writes it as `max_lead` in the meta
+sidecar; `predictors/qrf.py` refuses to serve (`predict_distribution` returns None) for
+`days_ahead > max_lead`, so the untested 5-7 extrapolation regime falls back to EMOS/ensemble
+instead of silently inheriting a `beats_ensemble` guarantee that was never validated there.
+
 Leakage/alignment guarantees (mirroring train_calibrator + spec §4):
   * Features come only from previous-runs archives (already as-of the forecast issue
     time) — no target-day information.
-  * The temporal holdout splits by row index over date-ordered rows; all 7 leads of a
+  * The temporal holdout splits by row index over date-ordered rows; all leads of a
     given date are contiguous, so a date lands entirely in train OR entirely in holdout
     (bar the single boundary date) — no target-day leaks across the split.
   * The live ensemble spread (ens_mean/std/p10/p50/p90) has no per-lead historical
@@ -57,7 +67,9 @@ logger = logging.getLogger(__name__)
 _MODELS_DIR = Path(__file__).resolve().parent / "models"
 _Q = [0.05, 0.16, 0.25, 0.5, 0.75, 0.84, 0.95]
 
-LEADS = range(1, 8)
+LEADS = range(1, 8)     # aspirational upper bound the loader scans; the archives only ever
+                        # populate leads 1-4 (see module docstring) — the true trained/served
+                        # bound is computed per-city as `max_lead` in train_qrf(), not this constant.
 _TRAIN_FRAC = 0.75          # temporal holdout: earliest 75% train, latest 25% test
 _MIN_ROWS = 120             # per city; below this a QRF/holdout split is too small to gate
 
@@ -218,6 +230,12 @@ def train_qrf(cities=None):
     """Per city: load the archived per-lead multi-model forecasts + settlement truth, assemble
     date-ordered (X, y), compute the ensemble baseline's holdout CRPS proxy, then fit_city with
     the temporal-holdout self-gate. Writes models/{slug}_qrf.joblib + {slug}_qrf_meta.json.
+
+    After fit_city persists its meta, this also computes `max_lead` — the actual maximum
+    `lead` value present in the assembled training rows (NOT the aspirational LEADS constant;
+    see module docstring) — and adds it to the on-disk meta sidecar. That's the train/serve
+    safety bound predictors/qrf.py enforces: it must never be trusted to extrapolate the
+    `beats_ensemble` gate to leads the archive never actually trained/validated on.
     """
     if cities is None:
         from config import CITIES
@@ -236,10 +254,22 @@ def train_qrf(cities=None):
             continue
         ens_crps = _ensemble_holdout_crps(X, y)
         meta = fit_city(slug, X, y, ens_crps)
+
+        # Record the true trained/served lead bound (computed, not hardcoded): the max
+        # `lead` feature value actually present in the assembled rows. Loaded back from the
+        # just-written meta sidecar and rewritten, rather than threaded through fit_city's
+        # signature, to keep Task 4's fit_city test untouched.
+        max_lead = int(X["lead"].max()) if len(X) else 0
+        meta_path = _MODELS_DIR / f"{slug}_qrf_meta.json"
+        meta = json.loads(meta_path.read_text())
+        meta["max_lead"] = max_lead
+        meta_path.write_text(json.dumps(meta))
+
         results[slug] = meta
         logger.info(
             f"{city}: QRF n={meta['n']} holdout_crps={meta['holdout_crps']:.3f} "
-            f"vs ensemble {ens_crps:.3f} -> beats_ensemble={meta['beats_ensemble']}")
+            f"vs ensemble {ens_crps:.3f} -> beats_ensemble={meta['beats_ensemble']} "
+            f"max_lead={max_lead}")
     return results
 
 

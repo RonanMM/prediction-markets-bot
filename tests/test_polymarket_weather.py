@@ -1372,7 +1372,10 @@ def test_train_qrf_loader_assembles_dateordered_and_gates(tmp_path, monkeypatch)
     dates = pd.date_range("2026-01-01", periods=40, freq="D")
     seasonal = 20 + 5 * np.sin(2 * np.pi * dates.dayofyear / 365.0)
     fixture = {"date_local": dates.strftime("%Y-%m-%d")}
-    for n in range(1, 8):
+    # Real archives (fetch_historical_leads_mm.py / _cand.py) cap at LEADS = range(1, 5) —
+    # only leads 1-4 ever have fcst_tmax_lead{n}_{m} columns. Fabricating leads 5-7 here
+    # would hide the train/serve safety gap (QRF trained on 1-4 but served unbounded).
+    for n in range(1, 5):
         for m in ("ecmwf", "gfs", "icon"):
             fixture[f"fcst_tmax_lead{n}_{m}"] = seasonal + rng.normal(0, 1.0 + 0.2 * n, size=len(dates))
     fixture["temp_max_c"] = seasonal + rng.normal(0, 1.0, size=len(dates))
@@ -1383,7 +1386,7 @@ def test_train_qrf_loader_assembles_dateordered_and_gates(tmp_path, monkeypatch)
     # unit-check the pure assembly helper: date-ordered rows, exact FEATURE_COLS, y aligned.
     X, y = train_qrf._assemble_xy(wide)
     assert list(X.columns) == FEATURE_COLS
-    assert len(X) == len(y) == 40 * 7                 # 40 dates x 7 leads
+    assert len(X) == len(y) == 40 * 4                 # 40 dates x leads 1-4 (archive-limited)
     # mm_mean finite everywhere; ens_* left NaN (no historical ensemble archive)
     assert np.isfinite(X["mm_mean"].to_numpy()).all()
     assert X["ens_mean"].isna().all()
@@ -1403,9 +1406,12 @@ def test_train_qrf_loader_assembles_dateordered_and_gates(tmp_path, monkeypatch)
     assert "seoul" in results
     assert (tmp_path / "seoul_qrf.joblib").exists()
     meta = json.loads((tmp_path / "seoul_qrf_meta.json").read_text())
-    assert set(meta) >= {"beats_ensemble", "holdout_crps", "ens_holdout_crps", "n"}
-    assert meta["n"] == 40 * 7
+    assert set(meta) >= {"beats_ensemble", "holdout_crps", "ens_holdout_crps", "n", "max_lead"}
+    assert meta["n"] == 40 * 4
     assert meta["ens_holdout_crps"] == ens_crps       # loader passed the same value it computed
+    # train/serve safety gap fix: the archive only ever produces leads 1-4, so max_lead
+    # must reflect the actual assembled data (computed), not the hopeful LEADS=range(1,8).
+    assert meta["max_lead"] == 4
 
 
 def test_qrf_predictor_gates_and_floors(tmp_path, monkeypatch):
@@ -1497,6 +1503,59 @@ def test_qrf_predictor_serves_gated_on_with_floor(tmp_path, monkeypatch):
                                     ens_df=ens_df, mm_df=mm_df, obs_df=obs_df, kind="max")
     assert dist2 is not None
     assert dist2.floor is None
+
+
+def test_qrf_predictor_respects_max_lead_bound(tmp_path, monkeypatch):
+    """Train/serve safety gap: the archived per-lead data only ever covers leads 1-4
+    (fetch_historical_leads_mm.py / _cand.py cap at range(1, 5)), so train_qrf.py's
+    self-gate (beats_ensemble) is validated ONLY on leads 1-4. QRFPredictor must not
+    extrapolate that guarantee to leads 5-7 (real '2d+' bucket traffic) -- with a
+    gated-ON artifact whose meta records max_lead=4, days_ahead beyond max_lead must
+    fall back to None (EMOS/ensemble), while days_ahead within range still serves."""
+    import numpy as np, pandas as pd, json, joblib
+    from predictors import qrf as qmod
+    from predictors.qrf_core import QuantileForest
+    from qrf_features import FEATURE_COLS
+
+    monkeypatch.setattr(qmod, "_MODELS_DIR", tmp_path)
+    rng = np.random.default_rng(3)
+    X = rng.normal(size=(400, len(FEATURE_COLS)))
+    y = rng.normal(20, 3, size=400)
+    joblib.dump(QuantileForest().fit(X, y), tmp_path / "seoul_qrf.joblib")
+    (tmp_path / "seoul_qrf_meta.json").write_text(json.dumps({"beats_ensemble": True, "max_lead": 4}))
+
+    target_date = pd.Timestamp("2026-07-09")
+    fetch_prior_day = pd.Timestamp("2026-07-08 13:00", tz="UTC")
+
+    daily_df = pd.DataFrame({
+        "date_local": [target_date],
+        "fetched_at_utc": [fetch_prior_day],
+        "temp_max_c": [29.5],
+    })
+    mm_df = pd.DataFrame({
+        "date_local": [target_date],
+        "fetched_at_utc": [fetch_prior_day],
+        "tmax_ecmwf": [29.0], "tmax_gfs": [28.5], "tmax_icon": [29.8],
+        "tmax_aifs": [np.nan], "tmax_gem": [29.2], "tmax_mf": [np.nan], "tmax_jma": [29.6],
+    })
+    ens_df = pd.DataFrame({
+        "date_local": [target_date],
+        "fetched_at_utc": [fetch_prior_day],
+        "ens_mean": [29.3], "ens_std": [1.2], "ens_p10": [27.5], "ens_p90": [31.0],
+        "ens_spread": [3.5], "n_members": [40],
+        "ens_min_mean": [18.0], "ens_min_std": [0.8],
+    })
+
+    p = qmod.QRFPredictor()
+    # days_ahead=6 exceeds max_lead=4 -> untested extrapolation regime -> safe fallback (None).
+    dist_far = p.predict_distribution("Seoul", target_date, fetch_prior_day, 6, daily_df,
+                                       ens_df=ens_df, mm_df=mm_df, kind="max")
+    assert dist_far is None
+    # days_ahead=1 is within the trained/gated range -> still serves normally.
+    dist_near = p.predict_distribution("Seoul", target_date, fetch_prior_day, 1, daily_df,
+                                        ens_df=ens_df, mm_df=mm_df, kind="max")
+    assert dist_near is not None
+    assert dist_near.source == "qrf"
 
 
 def test_m1_gate():

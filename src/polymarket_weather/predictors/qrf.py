@@ -139,7 +139,17 @@ class QRFPredictor(BasePredictor):
         quantile ladder. Returns None (engine falls back to EMOS/ensemble) when:
           * kind != "max" (Tmin is out of v1 scope — no artifact exists for it), or
           * the city's {slug}_qrf.joblib / _qrf_meta.json is missing, or
-          * the city's meta["beats_ensemble"] is False (self-gate).
+          * the city's meta["beats_ensemble"] is False (self-gate), or
+          * days_ahead exceeds meta["max_lead"] (train/serve safety bound — see below).
+
+        `max_lead` guard: train_qrf.py's per-lead archives (fetch_historical_leads_mm.py /
+        _cand.py) only ever cover leads 1-4, so the `beats_ensemble` self-gate is validated
+        ONLY on leads 1-4 even though this predictor has no inherent bound on `days_ahead`.
+        Without this check, real "2d+" bucket traffic (leads 5-7) would silently inherit a
+        guarantee ("never served worse than the ensemble") that was never tested at those
+        leads. `max_lead` is written by train_qrf() from the actual assembled training data;
+        when it's absent from the meta (older/test artifacts written before this fix), no
+        restriction is applied so existing fixtures/behavior are unaffected.
         """
         if kind != "max":
             return None
@@ -147,6 +157,9 @@ class QRFPredictor(BasePredictor):
         city_slug = city.replace(" ", "_").lower()
         model, meta = _load_artifact(city_slug)
         if model is None:
+            return None
+        max_lead = meta.get("max_lead")
+        if max_lead is not None and days_ahead > max_lead:
             return None
 
         model_forecasts = _model_forecasts(mm_df, daily_df, target_date, fetch_time, kind)
