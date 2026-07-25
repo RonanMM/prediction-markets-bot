@@ -225,9 +225,12 @@ def _ensemble_holdout_crps(X: pd.DataFrame, y: np.ndarray) -> float:
 
     Baseline: mu = the multi-model deterministic mean (build_row's `mm_mean` column, always
     finite for an emitted row), sigma = std of the TRAIN-portion residuals (fit on train only,
-    exactly like the QRF). Scored with `crps_gaussian_proxy` on the holdout rows — identical
-    formula, identical rows — so `fit_city`'s `beats_ensemble = qrf_holdout <= this` is a fair,
-    unit-consistent (°C CRPS) comparison.
+    exactly like the QRF), scored on the SAME holdout rows. ⚠️ ESTIMATOR ASYMMETRY: this baseline
+    uses the analytic-Gaussian `crps_gaussian_proxy`, while `fit_city` now scores QRF with the
+    empirical-CDF `sample_crps` (see the module docstring and `fit_city`). Both are honest °C-CRPS
+    on identical rows, but they are DIFFERENT estimators — so `beats_ensemble = qrf_holdout <=
+    this` is CRPS-scale but not a fully consistent apples-to-apples swap. The real ensemble bar is
+    `evaluate_oos`'s M1 gate (QRF vs ensemble market-Brier), not this serving switch.
     """
     mu = X["mm_mean"].to_numpy(float)
     n = len(y)
