@@ -1370,6 +1370,23 @@ def test_fit_city_gates_and_persists(tmp_path, monkeypatch):
     assert "beats_ensemble" in meta
 
 
+def test_fit_city_gates_on_empirical(tmp_path, monkeypatch):
+    import numpy as np, pandas as pd, json
+    import train_qrf
+    monkeypatch.setattr(train_qrf, "_MODELS_DIR", tmp_path)
+    from qrf_features import FEATURE_COLS
+    rng = np.random.default_rng(5)
+    X = pd.DataFrame(rng.normal(20, 3, size=(600, len(FEATURE_COLS))), columns=FEATURE_COLS)
+    y = rng.normal(20, 3, size=600)
+    # ensemble baseline deliberately weak -> QRF should beat it on the empirical CRPS
+    res = train_qrf.fit_city("seoul", X, y, ens_holdout_crps=5.0)
+    assert res["beats_ensemble"] is True
+    meta = json.loads((tmp_path / "seoul_qrf_meta.json").read_text())
+    # the gate score is a plausible CRPS scale (sample-CRPS of a ~3σ spread is order ~1-2, not the
+    # Gaussian-proxy value); assert it's finite and positive (mechanism check, not a magic number)
+    assert meta["holdout_crps"] > 0 and np.isfinite(meta["holdout_crps"])
+
+
 def test_train_qrf_loader_assembles_dateordered_and_gates(tmp_path, monkeypatch):
     """Drive train_qrf()'s loader on a tiny in-memory fixture (no network): a wide
     per-date leads_mm+truth frame -> date-ordered X/y -> ensemble CRPS proxy (same
