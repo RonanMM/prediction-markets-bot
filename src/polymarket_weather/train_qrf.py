@@ -9,13 +9,19 @@ vector via qrf_features.build_row, y = observed daily Tmax. Rows are emitted in
 date order so fit_city's temporal holdout (train early / test late) is honest.
 
 The QRF is served only where it beats the raw ensemble on the city's holdout
-(meta['beats_ensemble']). The gate is on a CRPS scale (°C): fit_city compares the QRF's
-holdout CRPS proxy to the ensemble baseline's holdout CRPS proxy — the SAME
-`crps_gaussian_proxy` formula on the SAME held-out rows, using the ensemble's own
-(mu, sigma). The ensemble baseline here is the multi-model deterministic mean
-(build_row's `mm_mean`, the exact information the forest also sees) with a Gaussian
-spread set to the honest TRAIN-portion residual std — so both learner and baseline set
-their parameters on train only and are scored on the identical holdout.
+(meta['beats_ensemble']). The gate is on a CRPS scale (°C): fit_city scores the QRF's
+holdout as the mean empirical-CDF sample-CRPS (`predictors.qrf_core.sample_crps` over a
+fine quantile grid, `Q_FINE`) — not the moment-matched Student-t collapse, which a
+diagnostic proved lossy — against the ensemble baseline's holdout CRPS proxy
+(`_ensemble_holdout_crps`, still `crps_gaussian_proxy` on the ensemble's own (mu, sigma)).
+The two are different CRPS estimators (sample vs analytic-Gaussian) on the SAME held-out
+rows; both are honest CRPS-scale, but the comparison is not a fully consistent
+apples-to-apples estimator swap (see `fit_city`'s inline note — the real ensemble bar is
+`evaluate_oos`'s M1 gate, not this self-gate). The ensemble baseline here is the
+multi-model deterministic mean (build_row's `mm_mean`, the exact information the forest
+also sees) with a Gaussian spread set to the honest TRAIN-portion residual std — so both
+learner and baseline set their parameters on train only and are scored on the identical
+holdout.
 
 ⚠️ LEADS below is an ASPIRATIONAL range (1-7), not what the archives deliver. The per-model
 historical fetchers (`fetch_historical_leads_mm.py`, `_cand.py`) cap at `range(1, 5)` and the
@@ -58,14 +64,13 @@ import numpy as np
 import pandas as pd
 from scipy.stats import norm
 
-from predictors.qrf_core import QuantileForest, moment_match
+from predictors.qrf_core import QuantileForest, Q_FINE, sample_crps
 from qrf_features import BASE_MODELS, FEATURE_COLS, build_row
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 _MODELS_DIR = Path(__file__).resolve().parent / "models"
-_Q = [0.05, 0.16, 0.25, 0.5, 0.75, 0.84, 0.95]
 
 LEADS = range(1, 8)     # aspirational upper bound the loader scans; the archives only ever
                         # populate leads 1-4 (see module docstring) — the true trained/served
@@ -108,9 +113,16 @@ def fit_city(slug, X, y, ens_holdout_crps):
     n = len(y)
     cut = _holdout_cut(n)                                # temporal holdout (rows date-ordered)
     qf = QuantileForest().fit(X[:cut], y[:cut])
-    q = qf.predict_quantiles(X[cut:], _Q)
-    mm = np.array([moment_match(_Q, q[i]) for i in range(len(q))])   # (mu,sigma,nu) per row
-    holdout = crps_gaussian_proxy(y[cut:], mm[:, 0], mm[:, 1])
+    # Score the holdout on the empirical-CDF sample-CRPS over a fine quantile grid, NOT the
+    # moment-matched Student-t collapse (crps_gaussian_proxy on (mu,sigma) below) — the
+    # diagnostic proved the collapse is lossy and wrongly failed London/Chicago. NOTE: the
+    # ensemble baseline (_ensemble_holdout_crps) still uses crps_gaussian_proxy, a different
+    # (analytic-Gaussian) CRPS estimator — both are honest CRPS-scale (°C), but this makes
+    # `beats_ensemble` a slightly apples-to-oranges comparison. Left as-is deliberately: the
+    # real ensemble bar is evaluate_oos's M1 gate, not this self-gate, and a fully-consistent
+    # estimator swap is out of scope here (see task-5 report).
+    qfine = qf.predict_quantiles(X[cut:], Q_FINE)
+    holdout = float(np.mean([sample_crps(qfine[i], y[cut:][i]) for i in range(len(qfine))]))
     beats = holdout <= ens_holdout_crps
     qf_full = QuantileForest().fit(X, y)                # refit on all data for serving
     joblib.dump(qf_full, _MODELS_DIR / f"{slug}_qrf.joblib")
@@ -212,9 +224,12 @@ def _ensemble_holdout_crps(X: pd.DataFrame, y: np.ndarray) -> float:
 
     Baseline: mu = the multi-model deterministic mean (build_row's `mm_mean` column, always
     finite for an emitted row), sigma = std of the TRAIN-portion residuals (fit on train only,
-    exactly like the QRF). Scored with `crps_gaussian_proxy` on the holdout rows — identical
-    formula, identical rows — so `fit_city`'s `beats_ensemble = qrf_holdout <= this` is a fair,
-    unit-consistent (°C CRPS) comparison.
+    exactly like the QRF), scored on the SAME holdout rows. ⚠️ ESTIMATOR ASYMMETRY: this baseline
+    uses the analytic-Gaussian `crps_gaussian_proxy`, while `fit_city` now scores QRF with the
+    empirical-CDF `sample_crps` (see the module docstring and `fit_city`). Both are honest °C-CRPS
+    on identical rows, but they are DIFFERENT estimators — so `beats_ensemble = qrf_holdout <=
+    this` is CRPS-scale but not a fully consistent apples-to-apples swap. The real ensemble bar is
+    `evaluate_oos`'s M1 gate (QRF vs ensemble market-Brier), not this serving switch.
     """
     mu = X["mm_mean"].to_numpy(float)
     n = len(y)

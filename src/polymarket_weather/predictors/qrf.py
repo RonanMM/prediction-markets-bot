@@ -42,7 +42,7 @@ import numpy as np
 import pandas as pd
 
 from .base import BasePredictor, TemperatureDistribution
-from .qrf_core import moment_match
+from .qrf_core import moment_match, empirical_cdf_from_quantiles, Q_FINE
 from .emos import _latest_mm_mean, _latest_deterministic_mu, _city_tz
 from .ensemble import get_ensemble_params
 from qrf_features import BASE_MODELS, FEATURE_COLS, build_row, intraday_running_max
@@ -50,6 +50,13 @@ from qrf_features import BASE_MODELS, FEATURE_COLS, build_row, intraday_running_
 _MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 
 _Q_LEVELS = [0.05, 0.16, 0.25, 0.5, 0.75, 0.84, 0.95]
+
+# _Q_LEVELS's exact values all live in Q_FINE (0.01-step grid), so a single
+# predict_quantiles(Q_FINE) call can serve both: the 7-level summary is read back
+# out by nearest-index lookup instead of firing a second (expensive) leaf-weighting
+# pass over the same feature row.
+_Q_FINE_ARR = np.asarray(Q_FINE, dtype=float)
+_Q7_IDX = [int(np.argmin(np.abs(_Q_FINE_ARR - lvl))) for lvl in _Q_LEVELS]
 
 
 def _load_artifact(city_slug: str):
@@ -196,11 +203,17 @@ class QRFPredictor(BasePredictor):
             doy=doy,
         )
         X = np.array([[row[c] for c in FEATURE_COLS]], dtype=float)
-        q = model.predict_quantiles(X, _Q_LEVELS)[0]
-        mu, sigma, nu = moment_match(_Q_LEVELS, q)
+        # Single predict_quantiles call over the fine 99-level grid (Q_FINE) -- one
+        # leaf-weighting pass per row regardless of how many levels are requested, so
+        # deriving the 7-level summary from it (nearest Q_FINE index per _Q_LEVELS
+        # entry) avoids a second, redundant leaf-weighting call for the same row.
+        q_fine = model.predict_quantiles(X, Q_FINE)[0]
+        q7 = q_fine[_Q7_IDX]
+        mu, sigma, nu = moment_match(_Q_LEVELS, q7)
+        cdf = empirical_cdf_from_quantiles(Q_FINE, q_fine)
 
         # Intraday floor: same-day Tmax cannot end below what has already been
         # recorded. running_max == running_max is the NaN guard (NaN != NaN).
         floor = running_max if (is_same_day and running_max == running_max) else None
 
-        return TemperatureDistribution(mu=mu, sigma=sigma, nu=nu, source="qrf", floor=floor)
+        return TemperatureDistribution(mu=mu, sigma=sigma, nu=nu, source="qrf", floor=floor, cdf=cdf)

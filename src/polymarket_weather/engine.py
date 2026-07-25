@@ -437,7 +437,7 @@ def analyse_city(data_dir: Path, city: str,
 
         # ── Reconstruct PMF (α4/5) ─────────────────────────────────────────
         market_pmf, forecast_pmf, consistency = reconstruct_pmf(
-            market_bins, mu, sigma, nu, floor=dist_ml.floor)
+            market_bins, mu, sigma, nu, floor=dist_ml.floor, cdf=dist_ml.cdf)
 
         exact_bins = [b for b in market_bins if b.condition == "exact"]
         # α5 coherence + market mode use the full disjoint backbone (exact + range), matching
@@ -458,7 +458,7 @@ def analyse_city(data_dir: Path, city: str,
             # SAME same-day floor as the ML side — the running observed max is a model-free
             # fact, so an uncensored ensemble must not veto a bet the floor already settled.
             f_prob_ml = _bin_prob(b.temp_c, mu_ml, sigma_ml, nu_ml, b.half_width,
-                                  floor=dist_ml.floor)
+                                  floor=dist_ml.floor, cdf=dist_ml.cdf)
             f_prob_ens = _bin_prob(b.temp_c, mu_ens, sigma_ens, nu_ens, b.half_width,
                                    floor=dist_ml.floor)
 
@@ -489,7 +489,7 @@ def analyse_city(data_dir: Path, city: str,
             # re-thin the tails, so the calibrated distribution stands alone.
             our_prob_ml = f_prob_ml if bet_side == "Yes" else (1.0 - f_prob_ml)
             our_prob_ens = f_prob_ens if bet_side == "Yes" else (1.0 - f_prob_ens)
-            our_prob_model = (our_prob_ml if sigma_source.startswith("emos_v2")
+            our_prob_model = (our_prob_ml if sigma_source.startswith(("emos_v2", "qrf"))
                               else 0.5 * (our_prob_ml + our_prob_ens))
             their_prob = m_prob_raw if bet_side == "Yes" else (1.0 - m_prob_raw)
             # Shrink toward the market (w=1 → pure model). The market out-predicts the model, so
@@ -536,7 +536,8 @@ def analyse_city(data_dir: Path, city: str,
 
             parsed  = {"condition": b.condition, "temp_c": b.temp_c, "half_width": b.half_width,
                        "temp_lo": b.temp_lo, "temp_hi": b.temp_hi}
-            f_prob_ml = _condition_prob(parsed, mu_ml, sigma_ml, nu_ml, floor=dist_ml.floor)
+            f_prob_ml = _condition_prob(parsed, mu_ml, sigma_ml, nu_ml, floor=dist_ml.floor,
+                                        cdf=dist_ml.cdf)
             f_prob_ens = _condition_prob(parsed, mu_ens, sigma_ens, nu_ens, floor=dist_ml.floor)  # C2
 
             m_prob_raw = b.yes_prob
@@ -562,7 +563,7 @@ def analyse_city(data_dir: Path, city: str,
             # then shrink toward the market by shrink_weight. EMOS v2 stands alone (see above).
             our_prob_ml = f_prob_ml if bet_side == "Yes" else (1.0 - f_prob_ml)
             our_prob_ens = f_prob_ens if bet_side == "Yes" else (1.0 - f_prob_ens)
-            our_prob_model = (our_prob_ml if sigma_source.startswith("emos_v2")
+            our_prob_model = (our_prob_ml if sigma_source.startswith(("emos_v2", "qrf"))
                               else 0.5 * (our_prob_ml + our_prob_ens))
             their_prob = m_prob_raw if bet_side == "Yes" else (1.0 - m_prob_raw)
             our_prob = shrink_weight * our_prob_model + (1.0 - shrink_weight) * their_prob

@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 import pandas as pd
 from dataclasses import dataclass
+from typing import Callable
 
 @dataclass
 class TemperatureDistribution:
@@ -12,6 +13,8 @@ class TemperatureDistribution:
                             # the running observed daily max — Tmax cannot end below it.
     ceiling: float = None   # Censoring (°C): T = min(ceiling, Z). Same-day Tmin bets:
                             # the running observed daily min — Tmin cannot end above it.
+    cdf: "Callable[[float], float] | None" = None   # optional empirical CDF of the uncensored Z;
+                                                     # when set, pmf uses it instead of the Student-t
 
 class BasePredictor(ABC):
     @abstractmethod

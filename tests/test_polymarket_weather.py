@@ -402,6 +402,19 @@ def test_emos_v2_uses_nearest_trained_lead(monkeypatch):
     assert pytest.approx(dist.mu) == 3.0 + 0.9 * 19.5
 
 
+def test_temperature_distribution_has_optional_cdf():
+    """Optional cdf field on TemperatureDistribution for QRF empirical distributions."""
+    from predictors.base import TemperatureDistribution
+    d = TemperatureDistribution(mu=20.0, sigma=2.0, nu=10.0, source="qrf")
+    assert d.cdf is None                       # default: parametric path
+    f = lambda x: 0.5
+    d2 = TemperatureDistribution(mu=20.0, sigma=2.0, nu=10.0, source="qrf", cdf=f)
+    assert d2.cdf(999) == 0.5                   # callable carried
+    # existing positional/keyword construction still works (floor/ceiling unaffected)
+    d3 = TemperatureDistribution(20.0, 2.0, 10.0, "emos_v2", floor=18.0)
+    assert d3.cdf is None and d3.floor == 18.0
+
+
 # ── Shrink-to-market weight sweep (WS3) ──────────────────────────────────────
 
 def test_best_shrink_weight_picks_the_more_accurate_source():
@@ -1357,6 +1370,23 @@ def test_fit_city_gates_and_persists(tmp_path, monkeypatch):
     assert "beats_ensemble" in meta
 
 
+def test_fit_city_gates_on_empirical(tmp_path, monkeypatch):
+    import numpy as np, pandas as pd, json
+    import train_qrf
+    monkeypatch.setattr(train_qrf, "_MODELS_DIR", tmp_path)
+    from qrf_features import FEATURE_COLS
+    rng = np.random.default_rng(5)
+    X = pd.DataFrame(rng.normal(20, 3, size=(600, len(FEATURE_COLS))), columns=FEATURE_COLS)
+    y = rng.normal(20, 3, size=600)
+    # ensemble baseline deliberately weak -> QRF should beat it on the empirical CRPS
+    res = train_qrf.fit_city("seoul", X, y, ens_holdout_crps=5.0)
+    assert res["beats_ensemble"] is True
+    meta = json.loads((tmp_path / "seoul_qrf_meta.json").read_text())
+    # the gate score is a plausible CRPS scale (sample-CRPS of a ~3σ spread is order ~1-2, not the
+    # Gaussian-proxy value); assert it's finite and positive (mechanism check, not a magic number)
+    assert meta["holdout_crps"] > 0 and np.isfinite(meta["holdout_crps"])
+
+
 def test_train_qrf_loader_assembles_dateordered_and_gates(tmp_path, monkeypatch):
     """Drive train_qrf()'s loader on a tiny in-memory fixture (no network): a wide
     per-date leads_mm+truth frame -> date-ordered X/y -> ensemble CRPS proxy (same
@@ -1558,7 +1588,212 @@ def test_qrf_predictor_respects_max_lead_bound(tmp_path, monkeypatch):
     assert dist_near.source == "qrf"
 
 
+def test_qrf_predictor_serves_empirical_cdf(tmp_path, monkeypatch):
+    """Task 4: predict_distribution must ALSO serve the empirical CDF built from the
+    fine quantile grid (qrf_core.Q_FINE), not just the moment-matched Student-t used
+    for mu/sigma/nu. Mirrors test_qrf_predictor_serves_gated_on_with_floor's exact
+    df-fixture schema/values (same city/dates/floor) -- only the new cdf assertions
+    are added here."""
+    import numpy as np, pandas as pd, json, joblib
+    from predictors import qrf as qmod
+    from predictors.qrf_core import QuantileForest
+    from qrf_features import FEATURE_COLS
+
+    monkeypatch.setattr(qmod, "_MODELS_DIR", tmp_path)
+    rng = np.random.default_rng(3)
+    X = rng.normal(size=(400, len(FEATURE_COLS)))
+    y = rng.normal(20, 3, size=400)
+    joblib.dump(QuantileForest().fit(X, y), tmp_path / "seoul_qrf.joblib")
+    (tmp_path / "seoul_qrf_meta.json").write_text(json.dumps({"beats_ensemble": True}))
+
+    target_date = pd.Timestamp("2026-07-09")
+    fetch_same_day = pd.Timestamp("2026-07-09 13:00", tz="UTC")   # 22:00 KST, same local day
+    run_fetched_at = fetch_same_day - pd.Timedelta(hours=1)
+
+    daily_df = pd.DataFrame({
+        "date_local": [target_date],
+        "fetched_at_utc": [run_fetched_at],
+        "temp_max_c": [29.5],
+    })
+    mm_df = pd.DataFrame({
+        "date_local": [target_date],
+        "fetched_at_utc": [run_fetched_at],
+        "tmax_ecmwf": [29.0], "tmax_gfs": [28.5], "tmax_icon": [29.8],
+        "tmax_aifs": [np.nan], "tmax_gem": [29.2], "tmax_mf": [np.nan], "tmax_jma": [29.6],
+    })
+    ens_df = pd.DataFrame({
+        "date_local": [target_date],
+        "fetched_at_utc": [run_fetched_at],
+        "ens_mean": [29.3], "ens_std": [1.2], "ens_p10": [27.5], "ens_p90": [31.0],
+        "ens_spread": [3.5], "n_members": [40],
+        "ens_min_mean": [18.0], "ens_min_std": [0.8],
+    })
+    obs_df = pd.DataFrame({
+        "valid_local": pd.to_datetime(["2026-07-09 08:00", "2026-07-09 12:00"]),
+        "temp_c": [24.0, 27.0],
+    })
+
+    p = qmod.QRFPredictor()
+    dist = p.predict_distribution("Seoul", target_date, fetch_same_day, 0, daily_df,
+                                   ens_df=ens_df, mm_df=mm_df, obs_df=obs_df, kind="max")
+    assert dist is not None
+    assert dist.source == "qrf"
+    # summary stats are unchanged (still sensible moment-matched values).
+    assert np.isfinite(dist.mu) and dist.sigma > 0 and np.isfinite(dist.nu)
+    assert dist.floor == 27.0
+
+    # NEW: the empirical CDF is also served, and it's a monotone probability.
+    assert dist.cdf is not None
+    lo, hi = dist.cdf(0.0), dist.cdf(50.0)
+    assert lo <= hi
+    assert 0.0 <= dist.cdf(20.0) <= 1.0
+    assert 0.0 <= lo <= 1.0 and 0.0 <= hi <= 1.0
+
+
 def test_m1_gate():
     import evaluate_oos as ev
     assert ev.m1_gate(0.130, 0.142) is True      # QRF beats ensemble
     assert ev.m1_gate(0.150, 0.142) is False     # QRF worse -> gate fails
+
+
+def test_cdf_uses_callable_and_preserves_censoring():
+    import pmf
+    # a ramp CDF: 0 at 10, 1 at 30, linear between
+    ramp = lambda x: min(1.0, max(0.0, (x - 10.0) / 20.0))
+    # in-range: uses the callable, not the Student-t
+    assert abs(pmf._cdf(20.0, mu=25.0, sigma=3.0, nu=8.0, cdf=ramp) - 0.5) < 1e-9
+    # clamped to [0,1]
+    assert pmf._cdf(40.0, 25.0, 3.0, 8.0, cdf=ramp) == 1.0
+    assert pmf._cdf(0.0, 25.0, 3.0, 8.0, cdf=ramp) == 0.0
+    # floor/ceiling censoring still short-circuits BEFORE the callable
+    assert pmf._cdf(15.0, 25.0, 3.0, 8.0, floor=18.0, cdf=ramp) == 0.0     # below floor
+    assert pmf._cdf(31.0, 25.0, 3.0, 8.0, ceiling=30.0, cdf=ramp) == 1.0   # at/above ceiling
+    # REGRESSION: cdf=None reproduces the Student-t exactly
+    import scipy.stats as st
+    from pmf import _t_scale
+    got = pmf._cdf(24.0, 25.0, 3.0, 8.0)
+    exp = float(st.t.cdf((24.0 - 25.0) / _t_scale(3.0, 8.0), df=8.0))
+    assert abs(got - exp) < 1e-12
+
+
+def test_bin_prob_via_callable_sums_to_one():
+    import numpy as np, pmf
+    ramp = lambda x: min(1.0, max(0.0, (x - 10.0) / 20.0))
+    # bins every 1°C from 10..30 should capture ~all mass. Bins span (10.5, 29.5], so the
+    # analytically exact gap from the ramp's full [10,30] domain is 0.05 (2.5% in each excluded
+    # tail) -- a hard boundary equal to a naive `< 0.05` tolerance, which float64 rounding of
+    # 0.05 itself (not representable exactly) can tip either way. 0.06 keeps a safety margin
+    # above that boundary while still catching a real bug: if `cdf` were silently NOT threaded
+    # through `_bin_prob` (falling back to the Student-t), the same sum comes out ~0.939, a 0.061
+    # gap that still fails this assertion.
+    total = sum(pmf._bin_prob(t, 25.0, 3.0, 8.0, half_width=0.5, cdf=ramp) for t in range(11, 30))
+    assert abs(total - 1.0) < 0.06
+
+
+def test_empirical_cdf_monotone_tails_and_recovery():
+    import numpy as np
+    from scipy import stats
+    from predictors.qrf_core import empirical_cdf_from_quantiles, Q_FINE
+    # quantiles of N(20, 3): the reconstructed CDF should track the Gaussian and be monotone
+    vals = stats.norm(20, 3).ppf(Q_FINE)
+    F = empirical_cdf_from_quantiles(Q_FINE, vals)
+    xs = np.linspace(5, 35, 100)
+    cs = np.array([F(x) for x in xs])
+    assert np.all(np.diff(cs) >= -1e-9)                 # monotone non-decreasing
+    assert cs[0] >= 0.0 and cs[-1] <= 1.0               # in range
+    assert F(20.0) == max(0.0, min(1.0, F(20.0))) and abs(F(20.0) - 0.5) < 0.05   # median ~0.5
+    # tails finite and heading to the bounds
+    assert F(-100.0) < 0.02 and F(100.0) > 0.98
+    # near the body it tracks the Gaussian
+    assert abs(F(23.0) - stats.norm(20, 3).cdf(23.0)) < 0.05
+    # degenerate: all-equal quantiles -> a step at the median, no crash
+    Fd = empirical_cdf_from_quantiles(Q_FINE, np.full(len(Q_FINE), 12.0))
+    assert Fd(11.9) < 0.5 <= Fd(12.1)
+
+
+def test_sample_crps_orders_correctly():
+    import numpy as np
+    from predictors.qrf_core import sample_crps
+    from scipy import stats
+    y = 20.0
+    tight = stats.norm(20, 1).ppf(np.linspace(.01, .99, 99))
+    wide = stats.norm(20, 5).ppf(np.linspace(.01, .99, 99))
+    assert sample_crps(tight, y) < sample_crps(wide, y)   # sharper+calibrated scores better
+
+
+def test_engine_threads_ml_cdf_into_pricing(tmp_path):
+    """Final-review fix: analyse_city() must forward dist_ml.cdf into the Tmax pricing
+    calls (reconstruct_pmf / _bin_prob / _condition_prob), not just unpack mu/sigma/nu.
+    Before this fix the engine silently discarded a QRF-style empirical cdf at the
+    actual pricing sites, so the stored forecast_prob (which drives the M1 Brier gate)
+    was still the lossy Student-t moment match no matter what the predictor served.
+
+    Regression design: two analyse_city() runs against the SAME market snapshot, using
+    a stub ML predictor that returns the IDENTICAL (mu, sigma, nu, source) both times —
+    only `cdf` differs (a sharp step function vs None). If the engine ever again drops
+    `cdf` at a call site, both runs collapse to the same Student-t pricing and this test
+    fails (forecast_prob would be identical instead of ~1.0 vs ~0.2)."""
+    import json
+    import pandas as pd
+    from engine import analyse_city
+    from predictors.base import BasePredictor, TemperatureDistribution
+
+    city = "testcity_cdf"
+    (tmp_path / "polymarket").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "weather").mkdir(parents=True, exist_ok=True)
+
+    fetched_at = "2026-07-18T12:00:00Z"
+    snap = pd.DataFrame({
+        "condition_id":       ["cond1"],
+        "question":           ["Will the temperature be 20°C on July 20?"],
+        "outcome_probs_json": [json.dumps({"Yes": 0.30, "No": 0.70})],
+        "fetched_at_utc":     [fetched_at],
+        "end_date_iso":       ["2026-07-20T00:00:00Z"],
+        "liquidity_usdc":     [5000.0],
+        "volume_24h_usdc":    [100.0],
+        "volume_usdc":        [1000.0],
+    })
+    snap.to_csv(tmp_path / "polymarket" / f"{city}_snapshots.csv", index=False)
+
+    daily = pd.DataFrame({
+        "date_local":     ["2026-07-20"],
+        "fetched_at_utc": [fetched_at],
+        "temp_max_c":     [20.0],
+        "temp_min_c":     [15.0],
+    })
+    daily.to_csv(tmp_path / "weather" / f"{city}_daily.csv", index=False)
+
+    class _StubMLPredictor(BasePredictor):
+        """Always returns the SAME (mu, sigma, nu, source) — only `cdf` (ctor arg) varies,
+        isolating the wiring under test from every other pricing input."""
+        def __init__(self, cdf_fn):
+            self._cdf_fn = cdf_fn
+
+        def predict_distribution(self, city, target_date, fetch_time, days_ahead,
+                                  daily_df, ens_df=None, mm_df=None, obs_df=None,
+                                  nbm_df=None, **kwargs):
+            return TemperatureDistribution(mu=20.0, sigma=2.0, nu=8.0,
+                                           source="emos_v2_stub", cdf=self._cdf_fn)
+
+    # A step CDF: ~all mass sits exactly at 20C, sharply different from the Student-t(20,2,8)
+    # moment match (which spreads mass over the +-2C sigma).
+    step_cdf = lambda x: 0.0 if x < 20.0 else 1.0
+
+    common = dict(min_edge=0.0, min_liq=0.0, conflict_gating=False)
+    opps_with_cdf = analyse_city(tmp_path, city,
+                                 ml_predictor_override=_StubMLPredictor(step_cdf), **common)
+    opps_without_cdf = analyse_city(tmp_path, city,
+                                    ml_predictor_override=_StubMLPredictor(None), **common)
+
+    assert len(opps_with_cdf) == 1, "expected exactly one priced opportunity with cdf set"
+    assert len(opps_without_cdf) == 1, "expected exactly one priced opportunity with cdf=None"
+
+    opp_cdf, opp_no_cdf = opps_with_cdf[0], opps_without_cdf[0]
+    assert opp_cdf.condition_id == opp_no_cdf.condition_id == "cond1"
+
+    # Same bin, same (mu, sigma, nu) -- only the served cdf differs. If the engine were
+    # still dropping cdf at the pricing call sites, forecast_prob would be IDENTICAL here.
+    assert opp_cdf.forecast_prob != pytest.approx(opp_no_cdf.forecast_prob, abs=1e-9)
+    assert opp_cdf.forecast_prob > 0.9     # step cdf: ~all mass at the bin
+    assert opp_no_cdf.forecast_prob < 0.5  # Student-t moment match: mass spread out
+    assert opp_cdf.edge != pytest.approx(opp_no_cdf.edge, abs=1e-9)

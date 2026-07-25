@@ -80,3 +80,50 @@ def moment_match(q_levels, q_values):
     nu = float(grid[int(np.argmin(np.abs(ratios - emp)))])
 
     return mu, sigma, nu
+
+
+Q_FINE = [round(0.01 * k, 2) for k in range(1, 100)]     # 0.01..0.99
+
+
+def sample_crps(samples, y):
+    s = np.sort(np.asarray(samples, float)); n = len(s)
+    if n == 0:
+        return float("nan")
+    e1 = np.mean(np.abs(s - y))
+    i = np.arange(1, n + 1)
+    e2 = (2.0 / (n * n)) * np.sum((2 * i - n - 1) * s)    # E|X-X'| via sorted identity
+    return float(e1 - 0.5 * e2)
+
+
+def empirical_cdf_from_quantiles(levels, values):
+    """Semi-parametric CDF: linear-interp body between the outer knots, Gaussian tail beyond
+    each outer knot fit to that side's two outermost knots. Clamped to [0,1]; the degenerate
+    near-constant case collapses to a step at the median rather than crashing.
+
+    Assumes `values` is non-crossing (monotone in `levels`) — sorting by value only fixes the
+    x-ordering, not a level/value mapping that wasn't already monotonic, so crossing quantiles
+    could make the interpolated body non-monotone. `QuantileForest.predict_quantiles` guarantees
+    monotonicity today; a future caller passing crossing quantiles should sort/enforce it upstream."""
+    lv = np.asarray(levels, float); v = np.asarray(values, float)
+    order = np.argsort(v); v = v[order]; lv = lv[order]
+    lo_v, lo_p, hi_v, hi_p = v[0], lv[0], v[-1], lv[-1]
+    spread = hi_v - lo_v
+    if spread < 1e-6:                                     # degenerate -> step at the median
+        med = float(np.median(v))
+        return lambda x: 0.0 if x < med else 1.0
+    # Gaussian tail params: solve mu,sigma so the Gaussian CDF hits the two outer knots per side.
+    from scipy.stats import norm
+    def _tail(p1, x1, p2, x2):
+        z1, z2 = norm.ppf(p1), norm.ppf(p2)
+        sig = (x2 - x1) / (z2 - z1) if abs(z2 - z1) > 1e-9 else max(spread, 1e-3)
+        mu = x1 - z1 * sig
+        return mu, max(sig, 1e-3)
+    lmu, lsig = _tail(lv[0], v[0], lv[1], v[1])           # left tail
+    rmu, rsig = _tail(lv[-2], v[-2], lv[-1], v[-1])       # right tail
+    def F(x):
+        if x <= lo_v:
+            return float(min(lo_p, norm.cdf(x, lmu, lsig)))
+        if x >= hi_v:
+            return float(max(hi_p, norm.cdf(x, rmu, rsig)))
+        return float(np.interp(x, v, lv))                 # monotone body
+    return F
