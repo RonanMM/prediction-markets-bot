@@ -98,7 +98,12 @@ def sample_crps(samples, y):
 def empirical_cdf_from_quantiles(levels, values):
     """Semi-parametric CDF: linear-interp body between the outer knots, Gaussian tail beyond
     each outer knot fit to that side's two outermost knots. Clamped to [0,1]; the degenerate
-    near-constant case collapses to a step at the median rather than crashing."""
+    near-constant case collapses to a step at the median rather than crashing.
+
+    Assumes `values` is non-crossing (monotone in `levels`) — sorting by value only fixes the
+    x-ordering, not a level/value mapping that wasn't already monotonic, so crossing quantiles
+    could make the interpolated body non-monotone. `QuantileForest.predict_quantiles` guarantees
+    monotonicity today; a future caller passing crossing quantiles should sort/enforce it upstream."""
     lv = np.asarray(levels, float); v = np.asarray(values, float)
     order = np.argsort(v); v = v[order]; lv = lv[order]
     lo_v, lo_p, hi_v, hi_p = v[0], lv[0], v[-1], lv[-1]

@@ -1719,3 +1719,81 @@ def test_sample_crps_orders_correctly():
     tight = stats.norm(20, 1).ppf(np.linspace(.01, .99, 99))
     wide = stats.norm(20, 5).ppf(np.linspace(.01, .99, 99))
     assert sample_crps(tight, y) < sample_crps(wide, y)   # sharper+calibrated scores better
+
+
+def test_engine_threads_ml_cdf_into_pricing(tmp_path):
+    """Final-review fix: analyse_city() must forward dist_ml.cdf into the Tmax pricing
+    calls (reconstruct_pmf / _bin_prob / _condition_prob), not just unpack mu/sigma/nu.
+    Before this fix the engine silently discarded a QRF-style empirical cdf at the
+    actual pricing sites, so the stored forecast_prob (which drives the M1 Brier gate)
+    was still the lossy Student-t moment match no matter what the predictor served.
+
+    Regression design: two analyse_city() runs against the SAME market snapshot, using
+    a stub ML predictor that returns the IDENTICAL (mu, sigma, nu, source) both times —
+    only `cdf` differs (a sharp step function vs None). If the engine ever again drops
+    `cdf` at a call site, both runs collapse to the same Student-t pricing and this test
+    fails (forecast_prob would be identical instead of ~1.0 vs ~0.2)."""
+    import json
+    import pandas as pd
+    from engine import analyse_city
+    from predictors.base import BasePredictor, TemperatureDistribution
+
+    city = "testcity_cdf"
+    (tmp_path / "polymarket").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "weather").mkdir(parents=True, exist_ok=True)
+
+    fetched_at = "2026-07-18T12:00:00Z"
+    snap = pd.DataFrame({
+        "condition_id":       ["cond1"],
+        "question":           ["Will the temperature be 20°C on July 20?"],
+        "outcome_probs_json": [json.dumps({"Yes": 0.30, "No": 0.70})],
+        "fetched_at_utc":     [fetched_at],
+        "end_date_iso":       ["2026-07-20T00:00:00Z"],
+        "liquidity_usdc":     [5000.0],
+        "volume_24h_usdc":    [100.0],
+        "volume_usdc":        [1000.0],
+    })
+    snap.to_csv(tmp_path / "polymarket" / f"{city}_snapshots.csv", index=False)
+
+    daily = pd.DataFrame({
+        "date_local":     ["2026-07-20"],
+        "fetched_at_utc": [fetched_at],
+        "temp_max_c":     [20.0],
+        "temp_min_c":     [15.0],
+    })
+    daily.to_csv(tmp_path / "weather" / f"{city}_daily.csv", index=False)
+
+    class _StubMLPredictor(BasePredictor):
+        """Always returns the SAME (mu, sigma, nu, source) — only `cdf` (ctor arg) varies,
+        isolating the wiring under test from every other pricing input."""
+        def __init__(self, cdf_fn):
+            self._cdf_fn = cdf_fn
+
+        def predict_distribution(self, city, target_date, fetch_time, days_ahead,
+                                  daily_df, ens_df=None, mm_df=None, obs_df=None,
+                                  nbm_df=None, **kwargs):
+            return TemperatureDistribution(mu=20.0, sigma=2.0, nu=8.0,
+                                           source="emos_v2_stub", cdf=self._cdf_fn)
+
+    # A step CDF: ~all mass sits exactly at 20C, sharply different from the Student-t(20,2,8)
+    # moment match (which spreads mass over the +-2C sigma).
+    step_cdf = lambda x: 0.0 if x < 20.0 else 1.0
+
+    common = dict(min_edge=0.0, min_liq=0.0, conflict_gating=False)
+    opps_with_cdf = analyse_city(tmp_path, city,
+                                 ml_predictor_override=_StubMLPredictor(step_cdf), **common)
+    opps_without_cdf = analyse_city(tmp_path, city,
+                                    ml_predictor_override=_StubMLPredictor(None), **common)
+
+    assert len(opps_with_cdf) == 1, "expected exactly one priced opportunity with cdf set"
+    assert len(opps_without_cdf) == 1, "expected exactly one priced opportunity with cdf=None"
+
+    opp_cdf, opp_no_cdf = opps_with_cdf[0], opps_without_cdf[0]
+    assert opp_cdf.condition_id == opp_no_cdf.condition_id == "cond1"
+
+    # Same bin, same (mu, sigma, nu) -- only the served cdf differs. If the engine were
+    # still dropping cdf at the pricing call sites, forecast_prob would be IDENTICAL here.
+    assert opp_cdf.forecast_prob != pytest.approx(opp_no_cdf.forecast_prob, abs=1e-9)
+    assert opp_cdf.forecast_prob > 0.9     # step cdf: ~all mass at the bin
+    assert opp_no_cdf.forecast_prob < 0.5  # Student-t moment match: mass spread out
+    assert opp_cdf.edge != pytest.approx(opp_no_cdf.edge, abs=1e-9)

@@ -71,7 +71,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 _MODELS_DIR = Path(__file__).resolve().parent / "models"
-_Q = [0.05, 0.16, 0.25, 0.5, 0.75, 0.84, 0.95]
 
 LEADS = range(1, 8)     # aspirational upper bound the loader scans; the archives only ever
                         # populate leads 1-4 (see module docstring) — the true trained/served
