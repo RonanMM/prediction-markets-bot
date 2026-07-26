@@ -202,3 +202,4 @@ entered_at_utc,city,condition_id,question,target_date,leg,side,entry_side_price,
 2026-07-26T15:22:57.903551+00:00,London,0x2156baf644d1d0618c486967111601ad204706b46d6fc756ce2dc42bd28670f5,Will the highest temperature in London be 30°C on July 28?,2026-07-28,shoulder,No,0.68,0.32,core,3675.31
 2026-07-26T17:18:30.026135+00:00,London,0x0e4d2c00c9bb7c8a01617b3dd00d112a5592d978c6a2dde8963f0879d4b4edab,Will the lowest temperature in London be 16°C on July 27?,2026-07-27,favorite,Yes,0.65,0.65,fav_core,1127.31
 2026-07-26T17:18:30.026135+00:00,London,0xaa7e2cf61c78e3fcb4c0bfeae0d45180f3b7a755d549a9a134695b572bd7ea9c,Will the highest temperature in London be 31°C on July 28?,2026-07-28,shoulder,No,0.855,0.145,outer,3106.68
+2026-07-26T19:37:13.613217+00:00,HongKong,0xd2a2c0f5d2c4bdd4d46554b5ce0c6cec2dc5d0d643229afe227d9cc48ee48f77,Will the highest temperature in Hong Kong be 29°C on July 28?,2026-07-28,shoulder,No,0.685,0.315,core,4455.05
