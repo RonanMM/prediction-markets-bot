@@ -198,3 +198,5 @@ entered_at_utc,city,condition_id,question,target_date,leg,side,entry_side_price,
 2026-07-26T13:57:25.734677+00:00,Seoul,0x2f7bb43120c7bad8640d9d9e77842baad4f8de929ef4ac8d5434b696213d101e,Will the highest temperature in Seoul be 32°C on July 28?,2026-07-28,shoulder,No,0.81,0.19,outer,2471.31
 2026-07-26T13:57:25.734677+00:00,HongKong,0x1abe8fb4b613601eefcb6b6d755c863ce3a456a722c720b42cdc5689c1b1d1d7,Will the highest temperature in Hong Kong be 28°C on July 28?,2026-07-28,shoulder,No,0.875,0.125,outer,2764.68
 2026-07-26T13:57:25.734677+00:00,HongKong,0xa07ce5093451c639a209fbb6aa1adf54cbf4d62df8ff6771eac131f6e7aadec3,Will the highest temperature in Hong Kong be 28°C on July 27?,2026-07-27,shoulder,No,0.79,0.21,core,3197.39
+2026-07-26T15:22:57.903551+00:00,NYC,0x522aff97873a443450f031104e1d0aaa71d82d2221e8dbd243cede5b2327fc34,Will the highest temperature in New York City be between 86-87°F on July 27?,2026-07-27,shoulder,No,0.87,0.13,outer,4673.66
+2026-07-26T15:22:57.903551+00:00,London,0x2156baf644d1d0618c486967111601ad204706b46d6fc756ce2dc42bd28670f5,Will the highest temperature in London be 30°C on July 28?,2026-07-28,shoulder,No,0.68,0.32,core,3675.31
