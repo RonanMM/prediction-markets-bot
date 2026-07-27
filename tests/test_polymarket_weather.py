@@ -1380,6 +1380,70 @@ def test_dashboard_completeness_guard():
     assert set(bd._missing_cities({})) == set(bd.CITY_ORDER)
 
 
+_BOOK_REPORT_NOW = """STRUCTURE PAPER BOOK: 210 entries (151 graded, 59 awaiting truth)
+  Leg1 shoulder full [5,35)¢: n=150 (54 city-days) wr 86% | taker +0.023 CI[-0.023,+0.070] (150/150@+0.023v+0.020, CI spans 0) | maker 51/150 filled +0.072
+  Leg1 shoulder core [20,35)¢: n=62 (42 city-days) wr 79% | taker +0.049 CI[-0.038,+0.136] (62/80@+0.049v+0.030, CI spans 0) | maker 24/62 filled +0.108
+  Leg1b moderate shoulder [10,25)¢ — pre-reg 2026-07-23
+    context (incl. in-sample): n=68 wr 87% taker +0.017 | maker 26/68 +0.132
+    FORWARD gate (entered≥pre-reg): n=16 taker -0.042 [16/80@-0.042v+0.030] | maker 5/16 +0.174
+  Leg2 favorite core [65,75)¢: n=1 (1 city-day) wr 0% | taker -0.671 (1/80@-0.671v+0.030, 1/30 city-days) | maker 0 filled
+"""
+
+_BOOK_REPORT_OLD = """STRUCTURE PAPER BOOK: 210 entries (151 graded, 59 awaiting truth)
+  Leg1 shoulder full [5,35)¢: n=150 wr 86% | taker +0.023 | maker 51/150 filled +0.072
+  Leg1 shoulder core [20,35)¢: n=62 wr 79% | taker +0.049 | maker 24/62 filled +0.108
+  Leg2 favorite core [65,75)¢: n=1 wr 0% | taker -0.671 | maker 0 filled
+"""
+
+
+def test_shoulder_report_parse_survives_the_city_days_and_CI_columns():
+    """2026-07-27 regression: adding '(54 city-days)' and 'CI[...]' to the report line broke the
+    dashboard's n=(\\d+)\\s+wr regex, blanking Win rate and the Leg 1 edge on the published page
+    (SB_WR 87 -> '—', SB_FULL +0.030 -> '—') and silently reporting Leg 2 as 0 graded."""
+    import build_dashboard as bd
+    d = bd._parse_book_scalars(_BOOK_REPORT_NOW)
+    assert (d["sb_entries"], d["sb_graded"], d["sb_await"]) == ("210", "151", "59")
+    assert d["sb_wr"] == "86"                 # was blanked
+    assert d["sb_full"] == "+0.023"           # was blanked
+    assert d["sb_core"] == "+0.049"
+    assert d["sb_fav_graded"] == "1"          # was silently reported as 0
+    assert (d["sb_mod_fwd_n"], d["sb_mod_fwd"]) == ("16", "-0.042")
+    assert d["sb_mod_need"] == "80" and d["sb_mod_pass"] == "0"
+
+
+def test_shoulder_report_parse_still_reads_the_pre_amendment_format():
+    """The parser must not simply be re-pinned to today's format — older reports still parse."""
+    import build_dashboard as bd
+    d = bd._parse_book_scalars(_BOOK_REPORT_OLD)
+    assert d["sb_wr"] == "86" and d["sb_full"] == "+0.023" and d["sb_fav_graded"] == "1"
+
+
+def test_shoulder_report_parse_marks_a_passed_gate():
+    import build_dashboard as bd
+    passed = _BOOK_REPORT_NOW.replace("[16/80@-0.042v+0.030]", "[✅MOD-GATE]")
+    assert bd._parse_book_scalars(passed)["sb_mod_pass"] == "1"
+
+
+def test_leg1_row_shows_leg1_graded_count_not_the_whole_book():
+    """The '1 · sell shoulder' row bound SB_GRADED (every leg, 151) while Leg 1 itself had 150 —
+    the extra row is the single graded Leg 2 favourite."""
+    import build_dashboard as bd
+    import inspect
+    src = inspect.getsource(bd)
+    assert '"SB_FULL_N": G("sb_full_n"' in src              # exposed in the payload
+    assert '<td class="city">1 · sell shoulder</td><td class="num" data-bind="SB_FULL_N"' in src
+
+
+def test_breadth_full_band_maker_is_published_not_hidden():
+    """The breadth Leg 1 maker cell was a hardcoded dash while the data existed and was NEGATIVE
+    (447/603 filled, −0.0169). A book that hides its losing column is not a paper book."""
+    import build_dashboard as bd
+    import inspect
+    b = bd._breadth_binds()
+    assert "BK_FULL_MAKER" in b and "BK_FULL_MAKER_N" in b
+    assert 'data-bind="BK_FULL_MAKER"' in inspect.getsource(bd)
+
+
 def test_collect_lag_hours_measures_the_collector_not_the_publish_delay():
     """2026-07-27: the header said 'collector stale' while the collector had run 3h earlier.
     The pill was comparing the browser clock to the newest snapshot FROZEN IN THE PAYLOAD, so a

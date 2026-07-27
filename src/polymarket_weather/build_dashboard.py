@@ -86,26 +86,7 @@ def gather() -> dict:
     if e3:
         d["e3_n"], d["e3_roi"] = e3.group(1), e3.group(2)
 
-    hd = re.search(r"STRUCTURE PAPER BOOK:\s*(\d+)\s+entries\s+\((\d+)\s+graded,\s*(\d+)\s+awaiting", book)
-    if hd:
-        d["sb_entries"], d["sb_graded"], d["sb_await"] = hd.group(1), hd.group(2), hd.group(3)
-    full = re.search(r"shoulder full \[5,35\)¢:\s*n=(\d+)\s+wr\s+(\d+)%.*?taker\s+([+\-][\d.]+)", book)
-    if full:
-        d["sb_full_n"], d["sb_wr"], d["sb_full"] = full.group(1), full.group(2), full.group(3)
-    core = re.search(r"shoulder core \[20,35\)¢:.*?taker\s+([+\-][\d.]+)", book)
-    if core:
-        d["sb_core"] = core.group(1)
-    # Leg2 favourites — often "0 graded" this early; capture so the UI can say "pending" honestly.
-    fav = re.search(r"Leg2 favorite core.*?n=(\d+)\s+wr\s+(\d+)%.*?taker\s+([+\-][\d.]+)", book)
-    d["sb_fav_graded"] = fav.group(1) if fav else "0"
-    # Leg 1b moderate-shoulder FORWARD gate (pre-reg 2026-07-23) — forward-only progress.
-    mod = re.search(r"Leg1b moderate.*?FORWARD gate[^:]*:\s*n=(\d+)\s+taker\s+([+\-][\d.]+)\s+\[([^\]]+)\]",
-                    book, re.DOTALL)
-    if mod:
-        d["sb_mod_fwd_n"], d["sb_mod_fwd"] = mod.group(1), mod.group(2)
-        gm = re.match(r"(\d+)/(\d+)", mod.group(3))
-        d["sb_mod_need"] = gm.group(2) if gm else "80"
-        d["sb_mod_pass"] = "1" if "GATE" in mod.group(3) else "0"
+    d.update(_parse_book_scalars(book))
     # dispersion monitor — per-month spread calibration std(z) (1.0 = honest, >1.15 overconfident)
     d["disp"] = [{"m": m, "z": float(z)} for m, _n, z in
                  re.findall(r"Tmax (\d{4}-\d{2})\s+(\d+)\s+([\d.]+)", oos)]
@@ -380,6 +361,43 @@ def _fmt_span(d: dict) -> tuple[str, str]:
         return "—", "—"
 
 
+# Between "n=150" and "wr 86%" the report may carry a cluster count — "(54 city-days)", added by
+# the 2026-07-27 gate amendment. Optional so BOTH formats parse: pinning the parser to whatever
+# the report prints today is how this broke (the amendment blanked Win rate and the Leg 1 edge on
+# the published page, and silently showed Leg 2 as 0 graded, because `n=(\d+)\s+wr` stopped
+# matching). Anything the report adds between the two must stay optional here.
+_N_WR = r"n=(\d+)(?:\s*\([^)]*\))?\s+wr\s+(\d+)%"
+
+
+def _parse_book_scalars(book: str) -> dict:
+    """Scalars for the structure-book panel, parsed from `shoulder_book.py --report` text.
+
+    Kept a pure string->dict function so the report format is covered by tests instead of only
+    being exercised through a live subprocess in CI."""
+    d: dict = {}
+    hd = re.search(r"STRUCTURE PAPER BOOK:\s*(\d+)\s+entries\s+\((\d+)\s+graded,\s*(\d+)\s+awaiting", book)
+    if hd:
+        d["sb_entries"], d["sb_graded"], d["sb_await"] = hd.group(1), hd.group(2), hd.group(3)
+    full = re.search(rf"shoulder full \[5,35\)¢:\s*{_N_WR}.*?taker\s+([+\-][\d.]+)", book)
+    if full:
+        d["sb_full_n"], d["sb_wr"], d["sb_full"] = full.group(1), full.group(2), full.group(3)
+    core = re.search(r"shoulder core \[20,35\)¢:.*?taker\s+([+\-][\d.]+)", book)
+    if core:
+        d["sb_core"] = core.group(1)
+    # Leg2 favourites — often "0 graded" this early; capture so the UI can say "pending" honestly.
+    fav = re.search(rf"Leg2 favorite core.*?{_N_WR}.*?taker\s+([+\-][\d.]+)", book)
+    d["sb_fav_graded"] = fav.group(1) if fav else "0"
+    # Leg 1b moderate-shoulder FORWARD gate (pre-reg 2026-07-23) — forward-only progress.
+    mod = re.search(r"Leg1b moderate.*?FORWARD gate[^:]*:\s*n=(\d+)(?:\s*\([^)]*\))?\s+taker\s+"
+                    r"([+\-][\d.]+)(?:\s+CI\[[^\]]*\])?\s+\[([^\]]+)\]", book, re.DOTALL)
+    if mod:
+        d["sb_mod_fwd_n"], d["sb_mod_fwd"] = mod.group(1), mod.group(2)
+        gm = re.match(r"(\d+)/(\d+)", mod.group(3))
+        d["sb_mod_need"] = gm.group(2) if gm else "80"
+        d["sb_mod_pass"] = "1" if "GATE" in mod.group(3) else "0"
+    return d
+
+
 def _collect_lag_hours(last_collect_iso, generated_at_iso):
     """Hours between the newest market snapshot and the BUILD — i.e. how far behind the
     collector was when this payload was made. Returns None when unknown.
@@ -450,7 +468,8 @@ def _breadth_binds() -> dict:
     b = {"BK_ENTRIES": "0", "BK_CITIES": "0", "BK_GRADED": "0", "BK_AWAIT": "0",
          "BK_MOD_N": "0", "BK_MOD_NEED": "80", "BK_MOD_NET": "—", "BK_MOD_PASS": "0",
          "BK_MOD_MAKER": "—", "BK_MOD_MAKER_N": "0",
-         "BK_FULL_N": "0", "BK_FULL_NET": "—", "BK_WR": "—"}
+         "BK_FULL_N": "0", "BK_FULL_NET": "—", "BK_WR": "—",
+         "BK_FULL_MAKER": "—", "BK_FULL_MAKER_N": "0"}
     try:
         import shoulder_book_breadth as bb
         book = bb._load_book()
@@ -465,16 +484,29 @@ def _breadth_binds() -> dict:
                 b.update(BK_FULL_N=str(len(sh)),
                          BK_WR=f"{sh['side_won'].mean() * 100:.0f}",
                          BK_FULL_NET=f"{sh['net_edge'].mean():+.4f}".replace("-", "−"))
+                # Publish the full-band MAKER number too. It is currently negative (adverse
+                # selection: a resting sell-YES fills when the price ticks back up), which is
+                # exactly why it must be shown rather than dashed out.
+                if "maker_filled" in sh.columns:
+                    fl = sh[sh["maker_filled"].astype(bool)]
+                    if len(fl):
+                        mnet = (fl["side_won"].astype(float)
+                                - fl["entry_side_price"].astype(float)).mean()
+                        b.update(BK_FULL_MAKER_N=str(len(fl)),
+                                 BK_FULL_MAKER=f"{mnet:+.4f}".replace("-", "−"))
             st = bb.moderate_gate_stats(graded, prereg_date=bb.BREADTH_PREREG_DATE)
             if st:
-                f, ctx = st["forward"], st["context"]
+                f = st["forward"]
                 need_n, _ = bb.GATE_MOD_BREADTH
                 b.update(BK_MOD_N=str(f["n"]), BK_MOD_NEED=str(need_n),
                          BK_MOD_NET=(f"{f['taker']:+.4f}".replace("-", "−") if f["n"] else "—"),
                          BK_MOD_PASS="1" if f.get("gate_pass") else "0",
-                         BK_MOD_MAKER_N=str(ctx.get("maker_n", 0)),
-                         BK_MOD_MAKER=(f"{ctx['maker']:+.4f}".replace("-", "−")
-                                       if ctx.get("maker_n") else "—"))
+                         # maker from the FORWARD slice, matching the taker cell beside it.
+                         # (Identical today — the breadth book began on the pre-reg date — but
+                         # mixing forward taker with context maker in one row would drift apart.)
+                         BK_MOD_MAKER_N=str(f.get("maker_n", 0)),
+                         BK_MOD_MAKER=(f"{f['maker']:+.4f}".replace("-", "−")
+                                       if f.get("maker_n") else "—"))
     except Exception as e:
         b["BK_ERR"] = str(e)[:80]
     return b
@@ -519,6 +551,7 @@ def build_payload(d: dict, series: dict) -> dict:
             "BR_MARKET": G("br_market"), "BR_ENS": G("br_ens"), "BR_MODEL": G("br_model"),
             "N_MKTS": G("n_mkts"), "CRPS_MODEL": G("crps_model"), "CRPS_ENS": G("crps_ens"),
             "SB_FULL": G("sb_full"), "SB_CORE": G("sb_core"), "SB_AWAIT": G("sb_await"),
+            "SB_FULL_N": G("sb_full_n"),   # Leg 1 only — SB_GRADED counts every leg
             "SB_FAV_GRADED": G("sb_fav_graded", "0"),
             "SB_MOD_FWD_N": G("sb_mod_fwd_n", "0"), "SB_MOD_FWD": G("sb_mod_fwd", "—"),
             "SB_MOD_NEED": G("sb_mod_need", "80"), "SB_MOD_PASS": G("sb_mod_pass", "0"),
@@ -850,7 +883,7 @@ TEMPLATE = r"""<meta charset="utf-8">
         <div class="findsub">A leg must clear a pre-registered forward target — settlements holding positive expectancy out-of-sample — before it can trade. In-sample profit doesn't count.</div>
         <table class="data" style="margin-top:2px">
           <tr><th>Leg</th><th class="num">Graded</th><th class="num">Edge / contract</th><th>Status</th></tr>
-          <tr><td class="city">1 · sell shoulder</td><td class="num" data-bind="SB_GRADED">—</td><td class="num" id="sb_full_cell" data-bind="SB_FULL">—</td><td><span class="pill2 warn">paper</span></td></tr>
+          <tr><td class="city">1 · sell shoulder</td><td class="num" data-bind="SB_FULL_N">—</td><td class="num" id="sb_full_cell" data-bind="SB_FULL">—</td><td><span class="pill2 warn">paper</span></td></tr>
           <tr><td class="city">2 · buy favourite</td><td class="num" id="leg2n">—</td><td class="num" id="leg2edge">—</td><td><span class="pill2" id="leg2status">pending</span></td></tr>
           <tr><td class="city">1b · moderate [10–25¢]</td><td class="num" id="modn">—</td><td class="num" id="modedge">—</td><td><span class="pill2" id="modstatus">forward</span></td></tr>
         </table>
@@ -869,7 +902,7 @@ TEMPLATE = r"""<meta charset="utf-8">
       <table class="data" style="margin-top:10px">
         <tr><th>Leg</th><th class="num">Forward</th><th class="num">Taker net</th><th class="num">Maker net</th><th>Status</th></tr>
         <tr><td class="city">1b · moderate [10–25¢] · all cities</td><td class="num" id="bkmodn">—</td><td class="num" id="bkmodedge">—</td><td class="num" id="bkmodmaker">—</td><td><span class="pill2" id="bkmodstatus">forward</span></td></tr>
-        <tr><td class="city">1 · sell shoulder [5–35¢] · all cities</td><td class="num" id="bkfulln">—</td><td class="num" id="bkfulledge" data-bind="BK_FULL_NET">—</td><td class="num dim">—</td><td><span class="pill2 warn">paper</span></td></tr>
+        <tr><td class="city">1 · sell shoulder [5–35¢] · all cities</td><td class="num" id="bkfulln">—</td><td class="num" id="bkfulledge" data-bind="BK_FULL_NET">—</td><td class="num dim" data-bind="BK_FULL_MAKER">—</td><td><span class="pill2 warn">paper</span></td></tr>
       </table>
       <p class="cap" style="margin-top:12px"><b>Paper — no real money.</b> <b>Maker net</b> = filled-only, no spread/fee, rebate excluded (our 5-city + a 300k-contract study both find the moderate-band edge is bigger maker-side). Forward-only: only entries recorded on/after 2026-07-23 count toward the gate, so the hypothesis is never graded on the data that suggested it.</p>
     </div>
