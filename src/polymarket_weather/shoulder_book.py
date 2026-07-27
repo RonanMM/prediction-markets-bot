@@ -284,14 +284,44 @@ def scan_and_record() -> int:
     return len(added)
 
 
+def _load_price_history() -> pd.DataFrame:
+    """condition_id / t / yes from the CLOB price-history feed — the DENSE price path.
+
+    The market-snapshot store carries only ~2 observations per market over ~1.1h (it records
+    what the city search returned that cycle), while price history carries ~25 over ~24h for the
+    same markets. Fill detection needs the dense one: see _price_paths."""
+    frames = []
+    for slug in _SLUGS:
+        p = _SNAP_DIR / f"{slug}_price_history.csv"
+        if not p.exists():
+            continue
+        h = pd.read_csv(p)
+        h = h[h["outcome"].astype(str).str.lower() == "yes"].copy()
+        h["t"] = pd.to_datetime(h["timestamp_utc"], utc=True, format="mixed")
+        h["yes"] = pd.to_numeric(h["price"], errors="coerce")
+        frames.append(h[["condition_id", "t", "yes"]].dropna(subset=["yes"]))
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(
+        columns=["condition_id", "t", "yes"])
+
+
 def _price_paths(cids: set) -> dict:
-    """condition_id -> forward yes-price path (t, yes), for conservative maker-fill checks."""
-    snaps = _all_snapshots()
-    if snaps.empty:
+    """condition_id -> forward yes-price path (t, yes), for conservative maker-fill checks.
+
+    Unions the CLOB price history with the market snapshots. Snapshots ALONE were the source
+    until 2026-07-27, and that made the maker book unmeasurable rather than conservative: median
+    1 later observation per entry, 36% of entries with ZERO, so a resting order was judged over
+    roughly one price print of a 1-2 day life. The measured 5-city maker edge (+0.072 full band)
+    was an artifact of that blindness — a denser detector finds MORE fills, and fills are
+    adversely selected (a sell-YES fills when the price ticks up, i.e. on bins that just became
+    likelier to resolve YES). Union rather than replace: snapshots occasionally carry a market
+    the history feed missed, and duplicate (t, yes) rows collapse."""
+    frames = [df for df in (_load_price_history(), _all_snapshots()) if len(df)]
+    if not frames:
         return {}
-    snaps = snaps[snaps["condition_id"].isin(cids)]
+    allp = pd.concat([f[["condition_id", "t", "yes"]] for f in frames], ignore_index=True)
+    allp = allp[allp["condition_id"].isin(cids)].drop_duplicates(["condition_id", "t", "yes"])
     return {cid: g.sort_values("t")[["t", "yes"]].reset_index(drop=True)
-            for cid, g in snaps.groupby("condition_id")}
+            for cid, g in allp.groupby("condition_id")}
 
 
 def moderate_gate_stats(graded: pd.DataFrame, prereg_date: str = MOD_PREREG_DATE) -> dict:

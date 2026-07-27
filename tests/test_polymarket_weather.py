@@ -990,6 +990,37 @@ def test_reconstruct_pmf_consistency_nan_without_constraints():
     assert math.isnan(cons)
 
 
+def test_price_paths_unions_the_dense_price_history_with_snapshots(monkeypatch):
+    """2026-07-27 reconciliation: the maker-fill test walked the SNAPSHOT store, which carries a
+    median of 2 observations per market over ~1.1h — so 36% of entries had zero later prices and
+    could never fill, and measured maker P&L (+0.072) was an artifact of near-blindness. The CLOB
+    price history covers the same markets with ~25 observations over ~24h; paths must use both."""
+    import pandas as pd
+    import shoulder_book as sb
+    snap = pd.DataFrame({
+        "condition_id": ["0xA", "0xA"],
+        "t": pd.to_datetime(["2026-07-01T00:00:00Z", "2026-07-01T06:00:00Z"], utc=True),
+        "yes": [0.20, 0.22],
+    })
+    hist = pd.DataFrame({
+        "condition_id": ["0xA", "0xA", "0xB"],
+        # 03:00 sits BETWEEN the two snapshots and is higher than either — the kind of
+        # intra-gap move the snapshot store cannot see.
+        "t": pd.to_datetime(["2026-07-01T03:00:00Z", "2026-07-01T06:00:00Z",
+                             "2026-07-02T00:00:00Z"], utc=True),
+        "yes": [0.31, 0.22, 0.40],
+    })
+    monkeypatch.setattr(sb, "_all_snapshots", lambda: snap)
+    monkeypatch.setattr(sb, "_load_price_history", lambda: hist)
+    paths = sb._price_paths({"0xA", "0xB"})
+
+    a = paths["0xA"]
+    assert list(a["t"].dt.hour) == [0, 3, 6]          # merged and time-sorted
+    assert a["yes"].max() == 0.31                     # the intra-gap peak is now visible
+    assert len(a) == 3                                # 06:00 duplicate collapsed, not double-counted
+    assert "0xB" in paths                             # markets only in price history are covered
+
+
 def test_moderate_gate_stats():
     """Leg 1b: report-time moderate-shoulder [0.10,0.25) gate, forward-only (entered >=
     MOD_PREREG_DATE). Verifies band filter, forward-date filter, and taker gate math."""
