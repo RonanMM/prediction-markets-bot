@@ -299,10 +299,16 @@ Four workflows in `.github/workflows/`. All commit as `raincheck-collector`
 
 | workflow | trigger | runs | commits |
 |---|---|---|---|
-| `collect.yml` | every 2h (`13 */2 * * *`) | `main.py --collect-only` | `data/polymarket`, `data/weather`, `shoulder_paper.csv` |
+| `collect.yml` | hourly (`13 * * * *`) | `main.py --collect-only` | `data/polymarket`, `data/weather`, `shoulder_paper.csv` |
 | `truth-eval.yml` | daily 09:00 UTC | truth + obs refresh → regenerate tracker → **audit** → gate | `output/` trackers |
-| `dashboard.yml` | every 3h (`40 */3 * * *`) | truth + obs refresh → `build_dashboard.py` | **separate public repo** (below) |
+| `dashboard.yml` | every 2h (`40 */2 * * *`) | truth + obs refresh → `build_dashboard.py` | **separate public repo** (below) |
 | `retrain.yml` | **`workflow_dispatch` ONLY** | full fetch → rebuild targets → `train_calibrator.py` → both trackers → arbiter | `models/`, `output/` |
+
+⚠️ **Those crons are deliberately ~2× the cadence we want.** GitHub schedules are best-effort:
+measured 2026-07-27, the old every-2h collect cron delivered **3h49 gaps** (roughly every other
+slot, each 1-2h late) and dashboard runs fired **~3h after** their slot with some dropped. Runs
+are idempotent (append-only + dedupe on read) and the repo is public (free minutes), so
+over-scheduling is the fix. Judge health by the gap between *data* timestamps, never by the cron.
 
 `retrain.yml` is deliberately manual: model artifacts drive the paper bets, so new models get
 reviewed before they take effect. **It has no schedule — a retrain only happens when someone

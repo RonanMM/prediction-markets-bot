@@ -380,6 +380,25 @@ def _fmt_span(d: dict) -> tuple[str, str]:
         return "—", "—"
 
 
+def _collect_lag_hours(last_collect_iso, generated_at_iso):
+    """Hours between the newest market snapshot and the BUILD — i.e. how far behind the
+    collector was when this payload was made. Returns None when unknown.
+
+    Measured at build time on purpose. The pill used to compare the newest snapshot against the
+    LIVE browser clock, which silently added the dashboard's own publish delay to the collector's
+    lag: on 2026-07-27 it read "collector stale" (6.7h) when the collector had run 3h earlier and
+    the dashboard simply had not rebuilt since. Publish age is a separate number — the page
+    computes that one from generated_at, where it belongs."""
+    if not last_collect_iso or not generated_at_iso:
+        return None
+    try:
+        a = datetime.fromisoformat(str(last_collect_iso).replace("Z", "+00:00"))
+        b = datetime.fromisoformat(str(generated_at_iso).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return (b - a).total_seconds() / 3600.0
+
+
 def _last_commit_dt() -> datetime:
     """UTC datetime of the last data commit (what the numbers are 'through'); now() on failure."""
     try:
@@ -484,10 +503,13 @@ def build_payload(d: dict, series: dict) -> dict:
 
     commit_dt = _last_commit_dt()
     now = datetime.now(timezone.utc)
+    generated_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     return {
-        "generated_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "generated_at": generated_at,
         "data_through_iso": commit_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "last_collect_iso": series.get("last_collect_iso"),
+        # collector lag AS OF THIS BUILD — never mixed with how old the publish itself is
+        "collect_lag_hours": _collect_lag_hours(series.get("last_collect_iso"), generated_at),
         "bind": {
             "UPDATED": commit_dt.strftime("%Y-%m-%d %H:%M UTC"),
             "GATE_STATUS": G("gate_status"), "GATE_MKTS": G("gate_mkts"), "GATE_BETS": G("gate_bets"),
@@ -867,8 +889,8 @@ TEMPLATE = r"""<meta charset="utf-8">
   <section>
     <div class="shd"><span class="n">05</span><h2>System health</h2><span class="r">collection · data freshness</span></div>
     <div class="kpis" style="margin-top:0">
-      <div class="kpi g"><div class="k">Collector</div><div class="v" id="collectorbig">—</div><div class="s">last snapshot · 2-hourly</div></div>
-      <div class="kpi"><div class="k">Runs today</div><div class="v"><span data-bind="RUNS_TODAY">—</span><span style="font-size:12px;color:var(--faint)"> /12</span></div><div class="s">collection cycles</div></div>
+      <div class="kpi g"><div class="k">Collector</div><div class="v" id="collectorbig">—</div><div class="s">last snapshot · hourly cron</div></div>
+      <div class="kpi"><div class="k">Runs today</div><div class="v"><span data-bind="RUNS_TODAY">—</span><span style="font-size:12px;color:var(--faint)"> /24</span></div><div class="s">cycles · GitHub drops some</div></div>
       <div class="kpi"><div class="k">Data span</div><div class="v"><span data-bind="DATA_DAYS">—</span><span style="font-size:12px;color:var(--faint)"> d</span></div><div class="s" data-bind="SPAN">—</div></div>
       <div class="kpi"><div class="k">Data through</div><div class="v" style="font-size:14px" data-bind="UPDATED">—</div><div class="s">last commit</div></div>
     </div>
@@ -892,7 +914,7 @@ TEMPLATE = r"""<meta charset="utf-8">
   var SVGNS = "http://www.w3.org/2000/svg";
   var D = {};
   var lastSeriesJSON = "";
-  var lastGen = null, lastCollect = null, prevBind = null;
+  var lastGen = null, lastCollect = null, collectLagH = null, prevBind = null;
   var win = "all";       // verdict scoreboard window
   var roiWin = "all";    // ROI box window — independent of the verdict toggle
   var css = function (v) { return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); };
@@ -1252,7 +1274,17 @@ TEMPLATE = r"""<meta charset="utf-8">
   function tickClock() {
     var elm = document.querySelector("[data-ago]"); if (elm && lastGen) elm.textContent = "updated " + (fmtAgo(lastGen) || "—");
     var pill = document.getElementById("statuspill"), st = document.getElementById("statustext");
-    if (pill && st) { if (lastCollect) { var hrs = (Date.now() - Date.parse(lastCollect)) / 36e5, ok = hrs < 5; pill.className = "pill " + (ok ? "" : "warn"); st.textContent = ok ? "live" : "collector stale"; } }
+    // Two INDEPENDENT lags: the collector's (measured at build time, server-side) and this
+    // page's own publish age (live clock vs generated_at). Adding them together is what made a
+    // late rebuild read as "collector stale" on 2026-07-27.
+    if (pill && st) {
+      var pubH = lastGen ? (Date.now() - Date.parse(lastGen)) / 36e5 : null;
+      var colH = (collectLagH === null || collectLagH === undefined) ? null : collectLagH;
+      var label = "live", ok = true;
+      if (colH !== null && colH >= 5) { label = "collector stale"; ok = false; }
+      else if (pubH !== null && pubH >= 5) { label = "dashboard stale"; ok = false; }
+      if (colH !== null || pubH !== null) { pill.className = "pill " + (ok ? "" : "warn"); st.textContent = label; }
+    }
     var cb = document.getElementById("collectorbig"); if (cb && lastCollect) cb.textContent = fmtAgo(lastCollect) || "—";
   }
   function apply(P) {
@@ -1260,6 +1292,7 @@ TEMPLATE = r"""<meta charset="utf-8">
     applyBind(P.bind, P.html);
     lastGen = P.generated_at || null;
     lastCollect = P.last_collect_iso || (P.series && P.series.last_collect_iso) || null;
+    collectLagH = (typeof P.collect_lag_hours === "number") ? P.collect_lag_hours : null;
     var sj = JSON.stringify(P.series || {});
     if (sj !== lastSeriesJSON) { D = P.series || {}; lastSeriesJSON = sj; draw(); }
     document.body.classList.add("ready"); tickClock(); return true;

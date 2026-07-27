@@ -1380,6 +1380,32 @@ def test_dashboard_completeness_guard():
     assert set(bd._missing_cities({})) == set(bd.CITY_ORDER)
 
 
+def test_collect_lag_hours_measures_the_collector_not_the_publish_delay():
+    """2026-07-27: the header said 'collector stale' while the collector had run 3h earlier.
+    The pill was comparing the browser clock to the newest snapshot FROZEN IN THE PAYLOAD, so a
+    late dashboard rebuild was charged to the collector. Collector lag must be measured at BUILD
+    time (build clock - newest snapshot) and be independent of how old the publish is."""
+    import build_dashboard as bd
+    # collector ran 3h before the build -> 3.0, regardless of how stale the publish later gets
+    assert bd._collect_lag_hours("2026-07-27T11:41:00Z",
+                                 "2026-07-27T14:41:00Z") == pytest.approx(3.0)
+    # the real case: build at 10:30 over data through 07:51 -> 2.65h, NOT the 6.7h the pill showed
+    assert bd._collect_lag_hours("2026-07-27T07:51:00Z",
+                                 "2026-07-27T10:30:00Z") == pytest.approx(2.65, abs=0.02)
+    # unknown collector timestamp -> None (unknown is not "fresh")
+    assert bd._collect_lag_hours(None, "2026-07-27T10:30:00Z") is None
+
+
+def test_payload_carries_collect_lag_so_the_pill_can_tell_the_two_apart():
+    import build_dashboard as bd
+    import inspect
+    src = inspect.getsource(bd)
+    # the payload must expose the build-time collector lag...
+    assert '"collect_lag_hours"' in src
+    # ...and the pill must no longer derive collector staleness from the live browser clock
+    assert 'Date.now() - Date.parse(lastCollect)' not in src
+
+
 def test_quantile_forest_calibrated_and_monotone():
     import numpy as np
     from predictors.qrf_core import QuantileForest

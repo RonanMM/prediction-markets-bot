@@ -1,8 +1,9 @@
 # Build the status dashboard and publish it to the public GitHub Pages repo — free, auto-updating.
 #
-# The main repo stays PRIVATE; only the rendered index.html (curated, no raw data) is pushed to a
-# small PUBLIC repo that GitHub Pages serves. build_dashboard.py reads the live numbers from the
-# committed eval tracker + the honest-eval scripts, so the page always matches the real state.
+# Only the rendered index.html (curated, no raw data) is pushed to a small PUBLIC repo that
+# GitHub Pages serves. build_dashboard.py reads the live numbers from the committed eval tracker
+# + the honest-eval scripts, so the page always matches the real state. (The main repo was made
+# public 2026-07-25 for free Actions minutes; this split is kept for a clean, data-free page.)
 #
 # One-time setup (see the chat instructions):
 #   1. Create a PUBLIC repo:  RonanMM/prediction-markets-bot-dashboard  (empty)
@@ -15,7 +16,11 @@ name: dashboard
 
 on:
   schedule:
-    - cron: "40 */3 * * *"   # rebuild every 3h; numbers move slowly, this keeps it fresh & cheap
+    # Every 2h, targeting ~3h effective: GitHub delayed these runs ~2h45-3h05 and dropped slots
+    # outright (measured 2026-07-27 — the 10:27 run was the 07:40 slot). A late rebuild is not
+    # cosmetic: the page's freshness pill is computed from the payload, so a dropped slot used to
+    # read as "collector stale" even while the collector was fine.
+    - cron: "40 */2 * * *"
   workflow_dispatch: {}
 
 concurrency:

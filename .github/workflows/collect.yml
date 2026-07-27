@@ -1,13 +1,21 @@
 # Scheduled market + forecast snapshot collection — laptop-independent.
 #
-# Every 2 hours: run main.py --collect-only (Polymarket snapshots + price history,
+# Hourly: run main.py --collect-only (Polymarket snapshots + price history,
 # deterministic/multi-model/ensemble forecasts) and commit the appended CSVs. Market
 # snapshots are PERISHABLE — a price you didn't record is gone forever — which is why
 # this runs in CI rather than depending on a laptop being awake (see scripts/README.md
 # for the launchd agents, which remain as a local complement).
 #
-# Cost: ~2-3 min/run × 12 runs/day ≈ 700-1100 Actions minutes/month — inside the
-# 2,000-minute free tier for private repos.
+# ⚠️ The cron is deliberately 2× the cadence we actually want (~2h). GitHub schedules are
+# BEST-EFFORT: they are delayed under load and dropped outright. Measured 2026-07-27 on the
+# old "every 2h" cron: actual gaps of 3h49 (03:57 → 07:46 → 11:35), i.e. roughly every other
+# slot fired, each 1-2h late. Over-scheduling is the standard workaround — the extra runs are
+# cheap and idempotent (append-only + dedupe on read), so a slot that DOES fire costs little
+# and a slot that doesn't is covered by the next one. This matters because the whole current
+# plan is sample accrual for the structure book: half the cycles = half the accrual rate.
+#
+# Cost: ~5-6 min/run × up to 24 runs/day. The repo is PUBLIC, so Actions minutes are free
+# and unlimited; the only real cost is commit noise in the data history.
 #
 # All data files are append-only and deduped on read, so re-runs and overlaps with the
 # laptop collector are safe; the rebase-with-retry push handles concurrent commits.
@@ -16,7 +24,7 @@ name: collect
 
 on:
   schedule:
-    - cron: "13 */2 * * *"   # every 2h; offset from :00 to dodge GitHub's cron rush
+    - cron: "13 * * * *"   # hourly, targeting ~2h effective after GitHub's delays/drops (see above)
   workflow_dispatch: {}
 
 concurrency:
