@@ -32,6 +32,10 @@ PRE-REGISTERED FORWARD GATES (real orders only after a gate passes):
     [5,10)¢ with the OVER-priced moderate band. Sells only the moderate band; gate counts
     only entries recorded on/after the pre-reg date, so it is never graded on the discovery
     data. Maker reported, not gated.
+  AMENDMENT 2026-07-27 (tightening only, applies to ALL gates above): a gate also requires
+    the CLUSTERED 95% CI to exclude zero over ≥30 independent city-days. The full-band gate
+    was "met" on 2026-07-27 at n=150/+0.0234 with CI [-0.023,+0.070] — met and no-edge were
+    indistinguishable. See GATE_MIN_CLUSTERS for the evidence and the tightening-only rule.
 
 Usage (from src/polymarket_weather/; scan runs automatically each collector cycle via main.py):
     python shoulder_book.py            # record new entries, then print the report
@@ -93,6 +97,29 @@ MOD_LO, MOD_HI  = 0.10, 0.25
 MOD_PREREG_DATE = "2026-07-23"     # forward clock (UTC): gate counts entries entered_at_utc >= this
 GATE_MOD        = (80, 0.03)       # (min graded FORWARD entries, min mean net taker $/share)
 
+# ── GATE POWER AMENDMENT — pre-registered 2026-07-27. TIGHTENING ONLY. ──────────
+# On 2026-07-27 the Leg 1 full-band taker gate (150, +0.02) was MET: n=150, mean +0.0234.
+# It should not have counted as evidence. The thresholds above are point estimates with no
+# power requirement, and per-bet dispersion here is huge (sd ~0.345 on a ~0.15 mean edge):
+#   full band  n=150, 54 city-day clusters, mean +0.0234, clustered 95% CI [-0.023, +0.070].
+# Zero sits inside the interval, so "gate met" and "no edge" were indistinguishable. The
+# breadth book (independent, 49 cities, 603 graded, 98 clusters) put the same band at
+# +0.003 [-0.008, +0.015] and FLIPPED THE SIGN of the core band (+0.049 -> -0.028), which is
+# what noise looks like. Detecting a true 2¢ edge at 80% power needs ~1,760 INDEPENDENT bets.
+#
+# So every gate now additionally requires the clustered 95% CI to exclude zero:
+#     pass  <=>  n >= need_n  AND  mean >= need_e        (original, UNCHANGED)
+#                AND n_clusters >= GATE_MIN_CLUSTERS
+#                AND ci_lo > 0                            (new)
+# Bets on one city-day settle on ONE weather outcome, so a city-day is the unit of
+# independence, not a bin. This can only make a gate HARDER to pass — no existing threshold
+# was moved, and nothing that fails the old gate can pass the new one (see
+# test_gate_amendment_is_tightening_only). Amendments to gates are tightening-only by rule:
+# a threshold is never loosened to fit a result.
+GATE_MIN_CLUSTERS = 30             # min independent city-days; below this a CI is not meaningful
+_GATE_Z           = 1.96           # two-sided 95% (i.e. a one-sided 97.5% test that edge > 0)
+_CLUSTER_COLS     = ("city", "target_date")
+
 _SNAP_WINDOW_MIN = 60             # a "run" = rows within this window of the newest row
 
 _COLS = ["entered_at_utc", "city", "condition_id", "question", "target_date",
@@ -129,6 +156,51 @@ def _net_edge(side_won: pd.Series, side_price: pd.Series) -> pd.Series:
     exec_price = side_price + config.HALF_SPREAD
     fee = exec_price.map(config.taker_fee_per_share)
     return side_won.astype(float) - (exec_price + fee)
+
+
+def cluster_key(sub: pd.DataFrame) -> pd.Series:
+    """The unit of independence: one city-day = one weather outcome, however many bins were
+    traded on it. Falls back to one-cluster-per-row when the frame carries no city/target_date
+    (report-time slices in tests), which is exactly the iid assumption — never weaker."""
+    if all(c in sub.columns for c in _CLUSTER_COLS):
+        return sub["city"].astype(str) + "|" + sub["target_date"].astype(str)
+    return pd.Series([str(i) for i in range(len(sub))], index=sub.index)
+
+
+def clustered_mean_se(values, clusters) -> tuple[float, float, int]:
+    """Cluster-robust SE of the mean (returns mean, se, n_clusters). se is inf below 2 clusters.
+
+    This is about the correct unit of independence, NOT about being conservative: it can widen
+    or tighten the interval depending on the sign of the within-cluster correlation. On this
+    book it TIGHTENS (full band 0.0236 clustered vs 0.0282 iid) because bins on one city-day are
+    mutually exclusive — one bin winning forces its neighbours to lose, i.e. NEGATIVE correlation
+    — so the iid SE overstates uncertainty. It would widen for positively-correlated bets (e.g.
+    the same side of many bins on one hot day). Either way the iid number is the wrong one."""
+    v = pd.Series(list(values), dtype=float).reset_index(drop=True)
+    c = pd.Series(list(clusters)).reset_index(drop=True)
+    n = len(v)
+    if n == 0:
+        return 0.0, float("inf"), 0
+    m = float(v.mean())
+    sums = (v - m).groupby(c).sum()
+    g = int(len(sums))
+    if g < 2:
+        return m, float("inf"), g
+    var = float((sums ** 2).sum()) / (n ** 2) * (g / (g - 1))
+    return m, var ** 0.5, g
+
+
+def gate_verdict(values, clusters, need_n: int, need_e: float) -> dict:
+    """Pre-registered gate decision under the 2026-07-27 power amendment: a gate passes only
+    when the edge is both economically large (mean >= need_e, original) and statistically
+    real (clustered 95% CI excludes zero over >= GATE_MIN_CLUSTERS independent city-days)."""
+    mean, se, g = clustered_mean_se(values, clusters)
+    n = len(pd.Series(list(values)))
+    lo, hi = (mean - _GATE_Z * se, mean + _GATE_Z * se) if se != float("inf") else (
+        float("-inf"), float("inf"))
+    return {"n": n, "n_clusters": g, "mean": mean, "se": se, "ci_lo": lo, "ci_hi": hi,
+            "pass": bool(n >= need_n and mean >= need_e
+                         and g >= GATE_MIN_CLUSTERS and lo > 0)}
 
 
 def _maker_net(side_won, side_price):
@@ -241,9 +313,12 @@ def moderate_gate_stats(graded: pd.DataFrame, prereg_date: str = MOD_PREREG_DATE
     prereg = pd.Timestamp(prereg_date, tz="UTC")
 
     def _agg(sub: pd.DataFrame) -> dict:
+        v = gate_verdict(sub["_taker"], cluster_key(sub), *GATE_MOD) if len(sub) else {}
         d = {"n": int(len(sub)),
              "wr": float(sub["side_won"].mean()) if len(sub) else 0.0,
              "taker": float(sub["_taker"].mean()) if len(sub) else 0.0,
+             "n_clusters": v.get("n_clusters", 0), "se": v.get("se", float("inf")),
+             "ci_lo": v.get("ci_lo", float("-inf")), "ci_hi": v.get("ci_hi", float("inf")),
              "maker_n": 0, "maker": 0.0}
         if "maker_filled" in sub.columns and len(sub):
             f = sub[sub["maker_filled"].astype(bool)]
@@ -253,10 +328,51 @@ def moderate_gate_stats(graded: pd.DataFrame, prereg_date: str = MOD_PREREG_DATE
                                     - f["entry_side_price"].astype(float)).mean())
         return d
 
-    need_n, need_e = GATE_MOD
-    forward = _agg(inband[entered >= prereg])
-    forward["gate_pass"] = bool(forward["n"] >= need_n and forward["taker"] >= need_e)
+    fwd = inband[entered >= prereg]
+    forward = _agg(fwd)
+    # 2026-07-27 amendment: economic size AND clustered significance (see GATE_MIN_CLUSTERS).
+    forward["gate_pass"] = (gate_verdict(fwd["_taker"], cluster_key(fwd), *GATE_MOD)["pass"]
+                            if len(fwd) else False)
     return {"context": _agg(inband), "forward": forward}
+
+
+def _gate_line(name, sub, taker_gate, maker_gate) -> None:
+    """One reported band. Gates carry the 2026-07-27 amendment: the ✅ mark is awarded only
+    when the clustered CI also excludes zero, and the interval is always printed so a point
+    estimate can never be read as evidence on its own."""
+    n = len(sub)
+    if n == 0:
+        print(f"  {name}: 0 graded")
+        return
+    cl = cluster_key(sub)
+    te, wr = sub["net_edge"].mean(), sub["side_won"].mean()
+
+    def _mark(vals, clusters, gate, label):
+        v = gate_verdict(vals, clusters, *gate)
+        if v["pass"]:
+            return f"  ✅{label}"
+        need_n, need_e = gate
+        why = ""
+        if v["n_clusters"] < GATE_MIN_CLUSTERS:
+            why = f", {v['n_clusters']}/{GATE_MIN_CLUSTERS} city-days"
+        elif v["ci_lo"] <= 0:
+            why = ", CI spans 0"
+        return f" ({v['n']}/{need_n}@{v['mean']:+.3f}v{need_e:+.3f}{why})"
+
+    _, se, g = clustered_mean_se(sub["net_edge"], cl)
+    ci = f" CI[{te - _GATE_Z * se:+.3f},{te + _GATE_Z * se:+.3f}]" if se != float("inf") else ""
+    tstr = f"taker {te:+.3f}{ci}"
+    if taker_gate:
+        tstr += _mark(sub["net_edge"], cl, taker_gate, "TAKER-GATE")
+    filled = sub[sub["maker_filled"].astype(bool)] if "maker_filled" in sub.columns else sub.iloc[:0]
+    if len(filled):
+        mnet = (filled["side_won"].astype(float) - filled["entry_side_price"].astype(float))
+        mstr = f"maker {len(filled)}/{n} filled {mnet.mean():+.3f}"
+        if maker_gate:
+            mstr += _mark(mnet, cluster_key(filled), maker_gate, "MAKER-GATE")
+    else:
+        mstr = "maker 0 filled"
+    print(f"  {name}: n={n} ({g} city-day{'' if g == 1 else 's'}) wr {wr:.0%} | {tstr} | {mstr}")
 
 
 def report() -> None:
@@ -291,34 +407,11 @@ def report() -> None:
 
     graded["maker_filled"] = graded.apply(_fill, axis=1)
 
-    def _line(name, sub, taker_gate, maker_gate) -> None:
-        n = len(sub)
-        if n == 0:
-            print(f"  {name}: 0 graded")
-            return
-        te, wr = sub["net_edge"].mean(), sub["side_won"].mean()
-        tstr = f"taker {te:+.3f}"
-        if taker_gate:
-            need_n, need_e = taker_gate
-            tstr += ("  ✅TAKER-GATE" if (n >= need_n and te >= need_e)
-                     else f" ({n}/{need_n}@{te:+.3f}v{need_e:+.3f})")
-        filled = sub[sub["maker_filled"]]
-        if len(filled):
-            me = (filled["side_won"].astype(float) - filled["entry_side_price"].astype(float)).mean()
-            mstr = f"maker {len(filled)}/{n} filled {me:+.3f}"
-            if maker_gate:
-                need_n, need_e = maker_gate
-                mstr += ("  ✅MAKER-GATE" if (len(filled) >= need_n and me >= need_e)
-                         else f" ({len(filled)}/{need_n}@{me:+.3f}v{need_e:+.3f})")
-        else:
-            mstr = "maker 0 filled"
-        print(f"  {name}: n={n} wr {wr:.0%} | {tstr} | {mstr}")
-
     sh = graded[graded["leg"] == "shoulder"]
     fav = graded[graded["leg"] == "favorite"]
     # Full band: taker gate only — the maker fill is adversely selected here (see GATE_CORE_MAKER).
-    _line("Leg1 shoulder full [5,35)¢", sh, GATE_FULL, None)
-    _line("Leg1 shoulder core [20,35)¢", sh[sh["band"] == "core"], GATE_CORE, GATE_CORE_MAKER)
+    _gate_line("Leg1 shoulder full [5,35)¢", sh, GATE_FULL, None)
+    _gate_line("Leg1 shoulder core [20,35)¢", sh[sh["band"] == "core"], GATE_CORE, GATE_CORE_MAKER)
     # Leg 1b — moderate shoulder [0.10,0.25): report-time refinement, FORWARD-only gate.
     mod = moderate_gate_stats(sh)
     if mod:
@@ -331,10 +424,12 @@ def report() -> None:
               f"taker {c['taker']:+.3f} | maker {c['maker_n']}/{c['n']} {c['maker']:+.3f}")
         print(f"    FORWARD gate (entered≥pre-reg): n={f['n']} taker {f['taker']:+.3f} "
               f"[{gate}] | maker {f['maker_n']}/{f['n']} {f['maker']:+.3f}")
-    _line("Leg2 favorite core [65,75)¢", fav[fav["band"] == "fav_core"], GATE_FAV_CORE, None)
-    _line("Leg2 favorite outer [75,85)¢", fav[fav["band"] == "fav_outer"], None, None)
+    _gate_line("Leg2 favorite core [65,75)¢", fav[fav["band"] == "fav_core"], GATE_FAV_CORE, None)
+    _gate_line("Leg2 favorite outer [75,85)¢", fav[fav["band"] == "fav_outer"], None, None)
     print("  (pre-registered gates; taker crosses spread + 0.05·p·(1−p) fee; maker = filled-only, "
           "no fee/spread, rebate excluded; conservative fill; no real orders until a gate passes)")
+    print(f"  (2026-07-27 amendment: a gate also needs its clustered 95% CI above 0 over "
+          f"≥{GATE_MIN_CLUSTERS} city-days — a point estimate clearing the threshold is not evidence)")
 
 
 def _all_snapshots() -> pd.DataFrame:

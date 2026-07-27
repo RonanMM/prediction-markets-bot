@@ -25,7 +25,8 @@ import pandas as pd
 from http_util import get_json
 from pmf import parse_question_date
 from shoulder_book import (BAND_LO, BAND_HI, CORE_LO, FAV_LO, FAV_HI, FAV_CORE_HI,
-                           FAV_MIN_HOURS_TO_END, _net_edge, moderate_gate_stats)
+                           FAV_MIN_HOURS_TO_END, GATE_MIN_CLUSTERS, _net_edge,
+                           cluster_key, clustered_mean_se, moderate_gate_stats)
 
 GAMMA = "https://gamma-api.polymarket.com"
 BREADTH_PREREG_DATE = "2026-07-23"          # forward clock (go-live)
@@ -272,8 +273,12 @@ def _leg_line(graded, mask, label):
     if sub.empty:
         print(f"  {label}: 0 graded")
         return
-    line = (f"  {label}: n={len(sub)}  win={sub['side_won'].mean():.1%}  "
-            f"taker={sub['net_edge'].mean():+.4f}")
+    # 2026-07-27 amendment: never show a point estimate without its clustered interval.
+    mean, se, g = clustered_mean_se(sub["net_edge"], cluster_key(sub))
+    ci = (f"  CI[{mean - 1.96 * se:+.4f},{mean + 1.96 * se:+.4f}]"
+          if se != float("inf") else "")
+    line = (f"  {label}: n={len(sub)} ({g} city-day{'' if g == 1 else 's'})  "
+            f"win={sub['side_won'].mean():.1%}  taker={mean:+.4f}{ci}")
     if "maker_filled" in sub.columns:
         f = sub[sub["maker_filled"].astype(bool)]
         if len(f):
@@ -310,8 +315,11 @@ def report_breadth(out_path=_OUT, fetch=get_json) -> None:
         print(f"  Leg1b moderate [10,25) — pre-registered {BREADTH_PREREG_DATE}")
         print(f"    context (all graded):  n={c['n']}  wr {c['wr']:.1%}  taker {c['taker']:+.4f}  "
               f"maker {c['maker_n']}/{c['n']} {c['maker']:+.4f}")
-        print(f"    FORWARD gate:          n={f['n']}/{need_n}  taker {f['taker']:+.4f} "
+        print(f"    FORWARD gate:          n={f['n']}/{need_n} ({f['n_clusters']} city-days)  "
+              f"taker {f['taker']:+.4f} CI[{f['ci_lo']:+.4f},{f['ci_hi']:+.4f}] "
               f"v +{need_e:.3f}  [{mark}]  maker {f['maker_n']}/{f['n']} {f['maker']:+.4f}")
+        print(f"    (2026-07-27 amendment: gate also needs clustered 95% CI > 0 over "
+              f"≥{GATE_MIN_CLUSTERS} city-days)")
 
 
 if __name__ == "__main__":

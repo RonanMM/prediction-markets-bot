@@ -1058,6 +1058,121 @@ def test_moderate_gate_prereg_date_kwarg():
     assert sb.moderate_gate_stats(graded, prereg_date="2026-07-01")["forward"]["n"] == 2
 
 
+# ── Gate power amendment 2026-07-27 (clustered significance) ────────────────────
+
+def test_clustered_mean_se_treats_a_city_day_as_one_observation():
+    """Bets on the same city-day share ONE weather outcome, so they are not independent.
+    The clustered SE must reflect the number of city-days, not the number of bets."""
+    import pandas as pd
+    import shoulder_book as sb
+    # two city-days, 50 bets each: one day won big, the other lost big -> true mean 0
+    values = pd.Series([0.5] * 50 + [-0.5] * 50)
+    clusters = pd.Series(["NYC|2026-07-01"] * 50 + ["NYC|2026-07-02"] * 50)
+    mean, se, n_clusters = sb.clustered_mean_se(values, clusters)
+    assert n_clusters == 2
+    assert mean == pytest.approx(0.0)
+    # iid SE would be 0.5/sqrt(100) = 0.05 and would call this a precise zero;
+    # the clustered SE must be an order of magnitude larger (2 real observations).
+    assert se > 0.4
+
+
+def test_gate_verdict_fails_when_clustered_ci_includes_zero():
+    """The 2026-07-27 amendment. A point estimate clearing the threshold is NOT enough:
+    the clustered 95% CI must also exclude zero. This is the real 2026-07-27 case —
+    full band n=150, mean +0.023 >= +0.020, but CI [-0.023, +0.070]."""
+    import numpy as np
+    import pandas as pd
+    import shoulder_book as sb
+    rng = np.random.default_rng(0)
+    # 150 bets over 54 city-days, mean pinned at +0.023 with per-bet noise ~0.345
+    clusters = pd.Series([f"c{i % 54}" for i in range(150)])
+    values = pd.Series(rng.normal(0.023, 0.345, 150))
+    values = values - values.mean() + 0.023
+    v = sb.gate_verdict(values, clusters, need_n=150, need_e=0.020)
+    assert v["n"] == 150 and v["n_clusters"] == 54
+    assert v["mean"] >= 0.020                        # old gate would have PASSED
+    assert v["ci_lo"] < 0                            # but zero is inside the interval
+    assert v["pass"] is False
+
+
+def test_gate_verdict_passes_only_when_edge_is_both_large_and_significant():
+    import pandas as pd
+    import shoulder_book as sb
+    # 120 bets across 40 city-days, consistently ~+0.05 -> tight CI well above zero
+    clusters = pd.Series([f"c{i % 40}" for i in range(120)])
+    values = pd.Series([0.05, 0.06, 0.04] * 40)
+    v = sb.gate_verdict(values, clusters, need_n=100, need_e=0.03)
+    assert v["ci_lo"] > 0
+    assert v["pass"] is True
+
+
+def test_gate_verdict_requires_a_minimum_number_of_clusters():
+    """A huge, perfectly consistent edge over 3 city-days is still 3 observations."""
+    import pandas as pd
+    import shoulder_book as sb
+    clusters = pd.Series([f"c{i % 3}" for i in range(120)])
+    values = pd.Series([0.30] * 120)
+    v = sb.gate_verdict(values, clusters, need_n=100, need_e=0.03)
+    assert v["n_clusters"] == 3 < sb.GATE_MIN_CLUSTERS
+    assert v["pass"] is False
+
+
+def test_gate_amendment_is_tightening_only():
+    """The amendment may only ever make a gate HARDER to pass: anything passing the new
+    gate must also satisfy the original (n >= need_n and mean >= need_e)."""
+    import pandas as pd
+    import shoulder_book as sb
+    clusters = pd.Series([f"c{i % 40}" for i in range(120)])
+    # mean below the economic threshold, but extremely precise -> must still FAIL
+    values = pd.Series([0.010] * 120)
+    v = sb.gate_verdict(values, clusters, need_n=100, need_e=0.03)
+    assert v["ci_lo"] > 0 and v["mean"] < 0.03
+    assert v["pass"] is False
+
+
+def test_gate_line_withholds_the_taker_gate_when_the_edge_is_not_significant(capsys):
+    """The exact 2026-07-27 regression: n and mean both clear the pre-registered thresholds,
+    but the clustered CI spans zero, so the line must NOT print the ✅ gate mark."""
+    import numpy as np
+    import pandas as pd
+    import shoulder_book as sb
+    rng = np.random.default_rng(0)
+    n = 150
+    won = pd.Series(rng.random(n) < 0.86)
+    sub = pd.DataFrame({
+        "side_won": won,
+        "entry_side_price": [0.80] * n,
+        "entry_yes_price": [0.20] * n,
+        "city": [f"c{i % 54}" for i in range(n)],
+        "target_date": ["2026-07-01"] * n,
+    })
+    sub["net_edge"] = sb._net_edge(sub["side_won"], sub["entry_side_price"])
+    sb._gate_line("Leg1 shoulder full [5,35)¢", sub, (150, 0.02), None)
+    out = capsys.readouterr().out
+    assert "TAKER-GATE" not in out          # mean clears +0.02 but zero is inside the CI
+    assert "CI" in out                      # the interval is shown, not just the point estimate
+
+
+def test_moderate_gate_stats_reports_clustered_significance():
+    """moderate_gate_stats must carry the clustered fields through so the printed gate
+    and the pass/fail decision use the same numbers."""
+    import pandas as pd
+    import shoulder_book as sb
+    n = 120
+    graded = pd.DataFrame({
+        "entry_yes_price": [0.15] * n,
+        "entered_at_utc": ["2026-12-31T00:00:00+00:00"] * n,
+        "side_won": [True] * n,
+        "entry_side_price": [0.85] * n,
+        "city": [f"city{i % 40}" for i in range(n)],
+        "target_date": ["2026-12-30"] * n,
+    })
+    f = sb.moderate_gate_stats(graded)["forward"]
+    assert f["n_clusters"] == 40
+    assert "ci_lo" in f and "se" in f
+    assert f["gate_pass"] is True
+
+
 def test_parse_event_title_and_bins():
     import shoulder_book_breadth as b
     assert b.parse_event_title("Highest temperature in Paris on July 23?") == ("max", "Paris", "July 23")

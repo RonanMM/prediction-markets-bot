@@ -85,11 +85,40 @@ shoulder band ≥150 graded entries at ≥+2¢/share net (core ≥80 at ≥+3¢)
 ≥+3¢. In-sample this book earns ~8–11% per position with 1–2 day turnover, ~4–5 entries/day —
 the nearest-term realistic path to positive ROI, if the forward numbers hold.
 
+### ⚠️ 2026-07-27: the full-band gate was MET and it is NOT evidence — still no real money
+On 2026-07-27 Leg 1's full band hit its pre-registered gate: **n=150, mean +0.0234 ≥ +0.020**,
+forward-only (recording starts 2026-07-12, the pre-registration date, with zero prior entries).
+It does not establish an edge, for two independent reasons:
+
+1. **It is statistically indistinguishable from zero.** Over 54 independent city-days the
+   clustered 95% CI is **[−0.023, +0.070]** (t≈1.0). The gate thresholds were point estimates
+   with no power requirement; per-bet dispersion is ~0.345, so detecting a true 2¢ edge at 80%
+   power needs ~1,760 *independent* bets. "Gate met" and "no edge" look identical at n=150.
+2. **It fails to replicate out-of-sample.** The breadth book (`shoulder_book_breadth.py`, 49
+   cities, independent of the 5-city stream) grades the same band at **+0.003 [−0.008, +0.015]**
+   on 603 entries / 98 city-days — a tight zero. Worse, the **core band flips sign**: +0.049 in
+   the 5-city book vs **−0.028** in breadth. Two samples disagreeing about which band carries
+   the effect is what noise looks like, not a structural mispricing.
+
+**Gate amendment (pre-registered 2026-07-27, tightening only.)** Every gate now also requires
+its clustered 95% CI to exclude zero over ≥30 independent city-days — a city-day is one weather
+outcome, so it, not a bin, is the unit of independence. No existing threshold was moved and
+nothing that failed the old gate can pass the new one. Under the amendment **no gate is
+currently passed**, which is the honest state. (Note: clustering here *tightens* intervals
+rather than widening them, because bins on one day are mutually exclusive — the correction is
+about using the right unit, not about being conservative.)
+
+The one number still worth watching is breadth `outer` [5,20)¢ at +0.023 (t≈2.1) — but it is
+one of ~4 bands examined and all its graded entries fall in a 3-day window, so treat it as a
+hypothesis the accruing book will test, not a finding.
+
 ## Bottom line
 1. The evaluation machinery is now trustworthy end-to-end: settlement-faithful labels, a
    permanent settlement audit, honest costs, pre-committed gates.
 2. **Forecast betting: no edge, off.** Revisit after the settlement-truth retrain and the
    same-day obs overhaul (`docs/EDGE_MEGAPLAN.md` Book A / W1).
-3. **Structure betting: genuinely promising, in forward paper trials now.** Real money only
-   when a pre-registered gate passes — roughly 3–4 weeks of automatic collection.
+3. **Structure betting: unproven, still paper.** The full-band gate was met on 2026-07-27 and
+   does not count — CI spans zero and the 4×-larger breadth book replicates it at ~0 with the
+   core band's sign flipped (see above). Gates are now power-aware. Real money only when a gate
+   passes *under the amendment*; none does.
 4. Everything above regenerates from the four commands at the top of this file.

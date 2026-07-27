@@ -348,6 +348,20 @@ re-tuning (bottleneck is signal, not params), long-lead value betting (falsified
   a bucket that drops below market Brier on its rolling last-60 goes back to paper.
 - **Any new model change:** ships only with a paired Brier/CRPS win on the holdout AND no
   degradation of the per-bucket table. Gate constants stay in `data_status.py`.
+- **POWER AMENDMENT (pre-registered 2026-07-27, tightening only — applies to every gate here).**
+  A gate now passes only when its **clustered 95% CI excludes zero** over ≥30 independent
+  city-days, in addition to its existing (n, effect) thresholds. No threshold was moved, and
+  nothing failing an old gate can pass the new one (`shoulder_book.gate_verdict`,
+  `GATE_MIN_CLUSTERS`; 7 tests). **Why:** on 2026-07-27 §10b's full band MET its gate
+  (n=150, +0.0234 ≥ +0.020) with CI **[−0.023, +0.070]** — met and no-edge were
+  indistinguishable — while the independent breadth book (49 cities, 603 graded, 98 city-days)
+  put the same band at **+0.003 [−0.008, +0.015]** and **flipped the sign of the core band**
+  (+0.049 → −0.028). A pre-registered threshold stops post-hoc cherry-picking but says nothing
+  about POWER: detecting a true 2¢ edge at 80% power needs ~1,760 independent bets. State
+  future gates as (n, effect, significance), cluster on the true unit of independence (a
+  city-day = one weather outcome, not a bin), and require out-of-sample replication before a
+  pass counts. **Gate amendments are tightening-only and dated; a threshold is never loosened
+  to fit a result.** Under the amendment no structure gate currently passes.
 
 ## 9. Re-sequenced queue after the second wave (2026-07-12)
 
