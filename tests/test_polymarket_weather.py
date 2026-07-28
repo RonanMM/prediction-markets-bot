@@ -2318,3 +2318,63 @@ def test_city_rows_are_ordered_by_sample_size():
     import build_dashboard as bd
     rows = bd._city_rows(_city_frame())
     assert [r["n"] for r in rows] == sorted([r["n"] for r in rows], reverse=True)
+
+
+def test_pooled_gap_needs_no_ensemble_and_uses_every_gradable_market():
+    """2026-07-28: the dashboard's pooled gap was computed on the ensemble-paired common set
+    (261) while evaluate_oos — the arbiter — computed it on all gradable markets (401). Two
+    different answers to one question: +0.026 [+0.0084,+0.0434] vs +0.0211 [+0.0068,+0.0353].
+
+    Model-minus-market needs the model probability, the traded price and the outcome. The
+    ensemble is irrelevant, so requiring it to be present discarded 140 markets (68 of them Tmin,
+    which the ensemble structurally cannot price) and 18.7% of the precision for nothing. This
+    frame carries NO ensemble column at all — if _pooled_gap ever needs one, it is wrong."""
+    import pandas as pd
+    import build_dashboard as bd
+
+    df = pd.DataFrame({
+        "city":        ["Seoul"] * 4 + ["London"] * 2,
+        "target_date": ["2026-07-01"] * 2 + ["2026-07-02"] * 2 + ["2026-07-01"] * 2,
+        "b_model":     [0.20, 0.20, 0.30, 0.30, 0.10, 0.10],
+        "b_mkt":       [0.10, 0.10, 0.10, 0.10, 0.10, 0.10],
+    })
+    df["td"] = pd.to_datetime(df["target_date"])
+
+    g = bd._pooled_gap(df)
+    assert g["n"] == 6                       # every row scored
+    assert g["clusters"] == 3                # Seoul 7-1, Seoul 7-2, London 7-1
+    # mean of (b_model - b_mkt) = (.1+.1+.2+.2+0+0)/6
+    assert g["gap"] == pytest.approx(0.1, abs=1e-9)
+    assert g["lo"] < g["gap"] < g["hi"]
+
+
+def test_pooled_gap_clusters_by_city_day_not_by_row():
+    """Bins settling on one city-day share a single weather outcome, so they are one
+    observation. Treating them as independent shrinks the interval and manufactures
+    significance -- the whole reason stats_util exists."""
+    import pandas as pd
+    import build_dashboard as bd
+
+    # 20 rows, all one city-day: one cluster, so the interval must be undefined/infinite
+    df = pd.DataFrame({
+        "city": ["Seoul"] * 20, "target_date": ["2026-07-01"] * 20,
+        "b_model": [0.3] * 10 + [0.1] * 10, "b_mkt": [0.1] * 20,
+    })
+    df["td"] = pd.to_datetime(df["target_date"])
+    g = bd._pooled_gap(df)
+    assert g["n"] == 20 and g["clusters"] == 1
+    assert not (g["lo"] > 0), "a single city-day must never read as a significant result"
+
+
+def test_gap_kpi_number_comes_from_the_same_computation_as_its_interval():
+    """2026-07-28: the "Model - market" tile rendered `s.model - s.market` — the three-way
+    scoreboard's 261-market difference — while the CI directly beneath it came from the pooled
+    test's 401. The published tile read "+0.026   95% CI [+0.0068, +0.0353]": a point estimate
+    sitting OUTSIDE its own stated interval, which is not a thing that can be true.
+
+    Only caught by rendering the page and reading the DOM; the payload was correct throughout.
+    A number and its uncertainty must be one computation."""
+    import build_dashboard as bd
+    h = bd.render_shell({"series": {}, "generated_at": "2026-07-28T00:00:00Z"})
+    assert "(P && isFinite(P.gap)) ? P.gap : (s.model - s.market)" in h, \
+        "gap KPI must prefer the pooled gap so it matches the interval shown under it"

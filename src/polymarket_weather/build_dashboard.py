@@ -145,6 +145,30 @@ def _series_error(payload) -> "str | None":
     return str(err) if err else None
 
 
+def _pooled_gap(w) -> dict:
+    """Model-minus-market paired gap + clustered 95% interval. THE powered test.
+
+    Takes whatever frame it is given and scores every row, so hand it ALL gradable markets —
+    this question needs the model probability, the traded price and the outcome, and nothing
+    else. Restricting to the ensemble-paired common set (what the scoreboard needs) threw away
+    140 of 401 markets, 68 of them Tmin bins the ensemble structurally cannot price, and 18.7%
+    of the precision — for a comparison the ensemble takes no part in. It also disagreed with
+    evaluate_oos, the arbiter, which has always used the full set: +0.026 here vs +0.0211 there.
+
+    Paired per market so the market's own difficulty cancels; clustered by city-day because
+    every bin for a city on a date settles on ONE weather outcome.
+    """
+    import stats_util
+
+    iv = stats_util.interval(
+        w["b_model"] - w["b_mkt"],
+        stats_util.cluster_key(w.assign(target_date=w["td"].dt.strftime("%Y-%m-%d"))))
+    return {"gap": round(float(iv["mean"]), 4),
+            "lo": round(float(iv["mean"] - 1.96 * iv["se"]), 4),
+            "hi": round(float(iv["mean"] + 1.96 * iv["se"]), 4),
+            "n": int(iv["n"]), "clusters": int(iv["n_clusters"])}
+
+
 def _city_rows(c) -> list[dict]:
     """Per-city Brier for market / ensemble / model, all on the SAME markets.
 
@@ -235,21 +259,13 @@ def compute_series() -> dict:
         # a date settles on ONE weather outcome. Splitting into 15 buckets costs ~15x this sample,
         # which is why the per-bucket rows cannot conclude anything for years and this can.
         try:
-            import stats_util
-
-            def _pooled(w):
-                iv = stats_util.interval(
-                    w["b_model"] - w["b_mkt"],
-                    stats_util.cluster_key(w.assign(
-                        target_date=w["td"].dt.strftime("%Y-%m-%d"))))
-                return {"gap": round(float(iv["mean"]), 4),
-                        "lo": round(float(iv["mean"] - 1.96 * iv["se"]), 4),
-                        "hi": round(float(iv["mean"] + 1.96 * iv["se"]), 4),
-                        "n": int(iv["n"]), "clusters": int(iv["n_clusters"])}
-
-            # one entry per scoreboard window — the KPI tile follows the all/last-60 toggle,
-            # so its interval has to follow it too or the two describe different samples.
-            out["pooled"] = {"all": _pooled(cs), "recent": _pooled(cs.tail(60))}
+            # On ALL gradable markets (`cal`), NOT the ensemble-paired common set the scoreboard
+            # needs — see _pooled_gap. The tile and the 3-way scoreboard above it therefore run on
+            # different samples ON PURPOSE, and both label their own n; this is the one comparison
+            # that gains nothing from the ensemble's presence and loses 35% of the data to it.
+            # Matches evaluate_oos, the arbiter.
+            allm = cal.sort_values("td")
+            out["pooled"] = {"all": _pooled_gap(allm), "recent": _pooled_gap(allm.tail(60))}
         except Exception:
             pass
 
@@ -1237,12 +1253,26 @@ TEMPLATE = r"""<meta charset="utf-8">
             + "the ranking above could be chance.";
         pl.innerHTML += " (" + P.clusters + " independent city-days; bins settling on one day "
           + "count once, since they share a single weather outcome.)";
+        // The ranking above is a THREE-way comparison, so it can only use markets the ensemble
+        // also scored; this test needs no ensemble and uses every gradable market. Different n
+        // on purpose - say so, or the two look like they contradict each other.
+        var nRank = (D.score || {})[win] ? D.score[win].n : null;
+        if (nRank && nRank !== P.n) {
+          pl.innerHTML += " <span style='color:var(--faint)'>Model vs. market needs no ensemble, "
+            + "so it runs on all " + P.n + " gradable markets; the three-way ranking above is "
+            + "limited to the " + nRank + " that the ensemble also priced.</span>";
+        }
       }
     } else {
       if (ci) ci.textContent = "Brier gap";
       if (pl) pl.textContent = "";
     }
-    var mg = s.model - s.market;
+    // The KPI number and the interval printed beneath it MUST come from ONE computation. This
+    // was s.model - s.market (the three-way scoreboard, 261 markets) while k_gap_ci showed the
+    // pooled test's interval (401) — the tile read "+0.026  95% CI [+0.0068,+0.0353]", a point
+    // estimate sitting outside its own stated interval. Prefer the pooled gap; fall back to the
+    // scoreboard difference only when the pooled block is unavailable.
+    var mg = (P && isFinite(P.gap)) ? P.gap : (s.model - s.market);
     if (gapEl) gapEl.textContent = (mg >= 0 ? "+" : "−") + Math.abs(mg).toFixed(3);
     // verdictLine is a neutral static description; the ranked table (leader flagged) shows the standing.
     if (wl) wl.textContent = win === "recent" ? "the last " + s.n + " settled markets" : "all " + s.n + " common markets";
