@@ -55,6 +55,8 @@ import pandas as pd
 import config
 from grading import resolves_yes
 from pmf import parse_question, parse_question_date
+# Shared with evaluate_oos's E3 bucket gates — one estimator, one place.
+from stats_util import cluster_key, clustered_mean_se  # noqa: F401  (re-exported)
 
 _BASE = Path(__file__).resolve().parent
 _SNAP_DIR = _BASE / "data" / "polymarket"
@@ -116,9 +118,7 @@ GATE_MOD        = (80, 0.03)       # (min graded FORWARD entries, min mean net t
 # was moved, and nothing that fails the old gate can pass the new one (see
 # test_gate_amendment_is_tightening_only). Amendments to gates are tightening-only by rule:
 # a threshold is never loosened to fit a result.
-GATE_MIN_CLUSTERS = 30             # min independent city-days; below this a CI is not meaningful
-_GATE_Z           = 1.96           # two-sided 95% (i.e. a one-sided 97.5% test that edge > 0)
-_CLUSTER_COLS     = ("city", "target_date")
+from stats_util import MIN_CLUSTERS as GATE_MIN_CLUSTERS, Z as _GATE_Z  # noqa: E402
 
 _SNAP_WINDOW_MIN = 60             # a "run" = rows within this window of the newest row
 
@@ -156,38 +156,6 @@ def _net_edge(side_won: pd.Series, side_price: pd.Series) -> pd.Series:
     exec_price = side_price + config.HALF_SPREAD
     fee = exec_price.map(config.taker_fee_per_share)
     return side_won.astype(float) - (exec_price + fee)
-
-
-def cluster_key(sub: pd.DataFrame) -> pd.Series:
-    """The unit of independence: one city-day = one weather outcome, however many bins were
-    traded on it. Falls back to one-cluster-per-row when the frame carries no city/target_date
-    (report-time slices in tests), which is exactly the iid assumption — never weaker."""
-    if all(c in sub.columns for c in _CLUSTER_COLS):
-        return sub["city"].astype(str) + "|" + sub["target_date"].astype(str)
-    return pd.Series([str(i) for i in range(len(sub))], index=sub.index)
-
-
-def clustered_mean_se(values, clusters) -> tuple[float, float, int]:
-    """Cluster-robust SE of the mean (returns mean, se, n_clusters). se is inf below 2 clusters.
-
-    This is about the correct unit of independence, NOT about being conservative: it can widen
-    or tighten the interval depending on the sign of the within-cluster correlation. On this
-    book it TIGHTENS (full band 0.0236 clustered vs 0.0282 iid) because bins on one city-day are
-    mutually exclusive — one bin winning forces its neighbours to lose, i.e. NEGATIVE correlation
-    — so the iid SE overstates uncertainty. It would widen for positively-correlated bets (e.g.
-    the same side of many bins on one hot day). Either way the iid number is the wrong one."""
-    v = pd.Series(list(values), dtype=float).reset_index(drop=True)
-    c = pd.Series(list(clusters)).reset_index(drop=True)
-    n = len(v)
-    if n == 0:
-        return 0.0, float("inf"), 0
-    m = float(v.mean())
-    sums = (v - m).groupby(c).sum()
-    g = int(len(sums))
-    if g < 2:
-        return m, float("inf"), g
-    var = float((sums ** 2).sum()) / (n ** 2) * (g / (g - 1))
-    return m, var ** 0.5, g
 
 
 def gate_verdict(values, clusters, need_n: int, need_e: float) -> dict:

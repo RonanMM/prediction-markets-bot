@@ -28,6 +28,31 @@ from data_status import GATE_RESOLVED_MARKETS, GATE_OOS_BETS
 from pmf import _cdf, _t_scale
 from scipy.stats import t as student_t
 import config
+import stats_util
+
+
+def _gap_stats(sub, mkt_col: str) -> dict:
+    """Model-minus-market Brier gap for one bucket, with a clustered 95% interval.
+
+    PAIRED by construction: the difference is taken per market, so the market's own difficulty
+    cancels and only the disagreement is scored. Clustered by city-day because every bin for a
+    city on a date settles on ONE weather outcome (stats_util). gap < 0 = model better."""
+    y = sub["outcome"].to_numpy(dtype=float)
+    d = (sub["forecast_prob"].to_numpy(dtype=float) - y) ** 2 - \
+        (sub[mkt_col].to_numpy(dtype=float) - y) ** 2
+    out = stats_util.interval(d, stats_util.cluster_key(sub))
+    out["gap"] = out.pop("mean")
+    return out
+
+
+def _e3_gate_pass(g: dict, min_bets: int) -> bool:
+    """E3 forward gate under the 2026-07-27 power amendment (extended here to the bucket gates
+    on 2026-07-28). Beating the market on a point estimate is not evidence: Chicago|1d sat at
+    5 forward bets and 'passed' the old `model_brier <= market_brier` test. The gap interval
+    must sit entirely BELOW zero over enough independent city-days. Tightening only."""
+    return bool(g["n"] >= min_bets
+                and g["n_clusters"] >= stats_util.MIN_CLUSTERS
+                and g["ci_hi"] < 0)
 
 _OUT = Path(__file__).resolve().parent / "output"
 _EPS = 1e-6
@@ -396,13 +421,18 @@ def main():
     # being tracked either way. Forward gate = bets with target_date AFTER the nomination date, so
     # the in-sample selection that nominated the buckets cannot grade itself.
     ml["_bucket"] = [config.bucket_key(c, d) for c, d in zip(ml["city"], ml["days_ahead"])]
-    print("\n  E3 buckets (model vs market Brier; ON = execution-eligible, paper until gate):")
-    print(f"    {'bucket':<20} {'n':>4} {'model':>8} {'market':>8}  status")
+    print("\n  E3 buckets (model vs market Brier; gap<0 = model better; CI = clustered by "
+          "city-day):")
+    print(f"    {'bucket':<20} {'n':>4} {'model':>8} {'market':>8} {'gap':>8} "
+          f"{'95% CI':>19}  status")
     for bk, grp in sorted(ml.groupby("_bucket"), key=lambda kv: -len(kv[1])):
         yb = grp["outcome"].tolist()
         bm, bmk = _brier(grp["forecast_prob"].tolist(), yb), _brier(grp[mkt_col].tolist(), yb)
+        g = _gap_stats(grp, mkt_col)
+        ci = (f"[{g['ci_lo']:+.4f},{g['ci_hi']:+.4f}]" if g["se"] != float("inf") else "—")
         status = "ON (paper)" if bk in config.LIVE_BUCKETS else "off"
-        print(f"    {bk:<20} {len(grp):>4} {bm:>8.4f} {bmk:>8.4f}  {status}")
+        print(f"    {bk:<20} {len(grp):>4} {bm:>8.4f} {bmk:>8.4f} {g['gap']:>+8.4f} "
+              f"{ci:>19}  {status}")
     on = ml[ml["_bucket"].isin(config.LIVE_BUCKETS)]
     if not on.empty:
         yo = on["outcome"].tolist()
@@ -420,10 +450,18 @@ def main():
                 continue
             yf = fwd["outcome"].tolist()
             fm, fk = _brier(fwd["forecast_prob"].tolist(), yf), _brier(fwd[mkt_col].tolist(), yf)
-            met = len(fwd) >= config.E3_FORWARD_MIN_BETS and fm <= fk
+            g = _gap_stats(fwd, mkt_col)
+            met = _e3_gate_pass(g, config.E3_FORWARD_MIN_BETS)
+            ci = (f"[{g['ci_lo']:+.4f},{g['ci_hi']:+.4f}]" if g["se"] != float("inf") else "—")
+            why = ("" if met else
+                   (f"  ({g['n_clusters']}/{stats_util.MIN_CLUSTERS} city-days)"
+                    if g["n_clusters"] < stats_util.MIN_CLUSTERS else
+                    ("  (CI spans 0)" if g["ci_hi"] >= 0 else "")))
             print(f"      {bk:<20} {len(fwd):>4}/{config.E3_FORWARD_MIN_BETS}  "
-                  f"model {fm:.4f} vs market {fk:.4f}  → "
-                  f"{'✅ GATE PASSED — smallest real size OK' if met else 'pending'}")
+                  f"model {fm:.4f} vs market {fk:.4f}  gap {g['gap']:+.4f} {ci}  → "
+                  f"{'✅ GATE PASSED — smallest real size OK' if met else 'pending' + why}")
+        print(f"      (2026-07-28: gates also require the clustered 95% gap interval to sit "
+              f"BELOW 0 over ≥{stats_util.MIN_CLUSTERS} city-days — tightening only)")
 
     # Distribution-level CRPS (MODEL vs ENSEMBLE) — scores the whole temperature forecast, so it
     # rewards correct *calibration*, not just per-bin direction. Lower = better.

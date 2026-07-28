@@ -1091,6 +1091,46 @@ def test_moderate_gate_prereg_date_kwarg():
 
 # ── Gate power amendment 2026-07-27 (clustered significance) ────────────────────
 
+def test_clustered_stats_live_in_a_shared_module_and_shoulder_book_still_exposes_them():
+    """The E3 bucket gates need the same clustered inference as the structure gates, so the
+    estimator moves to stats_util. shoulder_book must keep re-exporting it (existing callers)."""
+    import stats_util
+    import shoulder_book as sb
+    assert stats_util.clustered_mean_se is sb.clustered_mean_se
+    assert stats_util.MIN_CLUSTERS == sb.GATE_MIN_CLUSTERS
+
+
+def test_bucket_gap_stats_are_paired_and_clustered():
+    """The per-bucket number is a PAIRED difference (model Brier - market Brier) on the same
+    markets, so the interval must be built on the per-market difference, clustered by city-day —
+    bins settling on one day share one weather outcome."""
+    import pandas as pd
+    import evaluate_oos as ev
+    # 3 city-days x 4 bins; model is uniformly 0.10 better on every market -> gap -0.10, tight CI
+    rows = []
+    for day in range(3):
+        for b in range(4):
+            rows.append({"city": "Seoul", "target_date": f"2026-07-0{day+1}",
+                         "outcome": 1, "forecast_prob": 0.8, "market_prob_raw": 0.6})
+    s = ev._gap_stats(pd.DataFrame(rows), "market_prob_raw")
+    assert s["n"] == 12 and s["n_clusters"] == 3
+    assert s["gap"] == pytest.approx(0.8**2 - 0.6**2 - 2 * (0.8 - 0.6), abs=1e-9) or s["gap"] < 0
+    assert s["ci_hi"] < 0            # model confidently better here
+
+
+def test_e3_forward_gate_requires_the_gap_interval_to_exclude_zero():
+    """Same 2026-07-27 amendment as the structure gates: beating the market on a point estimate
+    over a handful of bets is not evidence. Chicago|1d sat at 5 forward bets."""
+    import evaluate_oos as ev
+    tiny = {"n": 5, "n_clusters": 2, "gap": -0.068, "ci_lo": -0.20, "ci_hi": 0.06}
+    strong = {"n": 60, "n_clusters": 40, "gap": -0.02, "ci_lo": -0.035, "ci_hi": -0.005}
+    assert ev._e3_gate_pass(tiny, min_bets=40) is False        # too few, CI spans 0
+    assert ev._e3_gate_pass(strong, min_bets=40) is True
+    # a large sample whose interval still spans zero must NOT pass
+    spans = {"n": 60, "n_clusters": 40, "gap": -0.02, "ci_lo": -0.05, "ci_hi": 0.01}
+    assert ev._e3_gate_pass(spans, min_bets=40) is False
+
+
 def test_clustered_mean_se_treats_a_city_day_as_one_observation():
     """Bets on the same city-day share ONE weather outcome, so they are not independent.
     The clustered SE must reflect the number of city-days, not the number of bets."""
