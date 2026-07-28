@@ -791,6 +791,7 @@ TEMPLATE = r"""<meta charset="utf-8">
   .city .cn{font-size:13px;font-weight:600} .city .cc{font-size:10px;color:var(--faint);font-weight:400}
   .city .cb{font-size:10px;color:var(--muted);margin:6px 0 8px;font-family:var(--mono)}
 
+  .guidelink{display:inline-block;margin:0 0 16px;padding:8px 14px;border:1px solid var(--line);border-radius:3px;color:var(--ink);text-decoration:none;font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;transition:border-color .15s,color .15s}  .guidelink:hover,.guidelink:focus-visible{border-color:var(--good);color:var(--good)}
   footer{margin-top:46px;padding-top:16px;border-top:1px solid var(--line);font-size:10px;line-height:1.8;color:var(--faint);font-family:var(--mono)} footer b{color:var(--muted);font-weight:400}
   #errbar{display:none;margin:14px 0;padding:9px 13px;border-radius:8px;font-size:12px;color:var(--warn);background:rgba(250,178,25,.07);border:1px solid rgba(250,178,25,.3)}
   .flash{animation:flashbg 1.1s ease}
@@ -981,6 +982,7 @@ TEMPLATE = r"""<meta charset="utf-8">
   </section>
 
   <footer>
+    <a class="guidelink" href="./guide.html">Read the guide — every model we tried, and where each failed</a>
     <div><b>Truth</b> NWS CLI / IEM METAR / HKO · settlement-faithful grading · every prediction graded against the station reading it settles on, never the forecast grid</div>
     <div><b>Discipline</b> gate met, market still leads · nothing trades real money until its pre-registered forward gate passes · all trading shown is paper</div>
   </footer>

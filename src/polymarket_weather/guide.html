@@ -1,0 +1,1143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Raincheck — Every Model We Tried</title>
+<meta name="description" content="A post-mortem of every forecasting model tried in the Raincheck weather prediction-market project, and where each one failed.">
+<meta name="color-scheme" content="light dark">
+<style>*{margin:0}</style>
+</head>
+<body>
+
+<style>
+  :root {
+    --paper:        #f2f5f7;
+    --paper-2:      #e7ecf0;
+    --ink:          #101820;
+    --ink-2:        #43535f;
+    --ink-3:        #6b7b87;
+    --rule:         #ccd6dd;
+    --steel:        #2d4a63;
+    --cyan:         #14707f;
+    --fail:         #a83426;
+    --warn:         #8a6516;
+    --hold:         #2c6350;
+    --shadow:       0 1px 2px rgba(16,24,32,.06), 0 8px 24px rgba(16,24,32,.05);
+    --mono: ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+    --serif: "Iowan Old Style", "Charter", Charter, Georgia, "Times New Roman", serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper:   #0e1419;  --paper-2: #161f27;
+      --ink:     #e3ebf1;  --ink-2:   #a3b3c0;  --ink-3: #74858f;
+      --rule:    #26333d;  --steel:   #8fb4d0;  --cyan:  #4bb8c9;
+      --fail:    #e0715f;  --warn:    #d6a44a;  --hold:  #62b394;
+      --shadow:  0 1px 2px rgba(0,0,0,.4), 0 10px 30px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper:   #0e1419;  --paper-2: #161f27;
+    --ink:     #e3ebf1;  --ink-2:   #a3b3c0;  --ink-3: #74858f;
+    --rule:    #26333d;  --steel:   #8fb4d0;  --cyan:  #4bb8c9;
+    --fail:    #e0715f;  --warn:    #d6a44a;  --hold:  #62b394;
+    --shadow:  0 1px 2px rgba(0,0,0,.4), 0 10px 30px rgba(0,0,0,.35);
+  }
+  :root[data-theme="light"] {
+    --paper:   #f2f5f7;  --paper-2: #e7ecf0;
+    --ink:     #101820;  --ink-2:   #43535f;  --ink-3: #6b7b87;
+    --rule:    #ccd6dd;  --steel:   #2d4a63;  --cyan:  #14707f;
+    --fail:    #a83426;  --warn:    #8a6516;  --hold:  #2c6350;
+    --shadow:  0 1px 2px rgba(16,24,32,.06), 0 8px 24px rgba(16,24,32,.05);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--paper); color: var(--ink);
+    font-family: var(--serif); font-size: 17px; line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { display: grid; grid-template-columns: 232px minmax(0,1fr); gap: 44px;
+          max-width: 1160px; margin: 0 auto; padding: 0 28px 120px; }
+  @media (max-width: 900px) { .wrap { grid-template-columns: 1fr; gap: 0; padding: 0 20px 80px; } }
+
+  /* ---------- masthead ---------- */
+  header.mast { grid-column: 1 / -1; padding: 64px 0 30px; border-bottom: 2px solid var(--ink); }
+  .kicker { font-family: var(--mono); font-size: 11px; letter-spacing: .18em;
+            text-transform: uppercase; color: var(--cyan); margin: 0 0 16px; }
+  h1 { font-family: var(--mono); font-weight: 600; font-size: clamp(30px, 4.6vw, 46px);
+       line-height: 1.08; letter-spacing: -.015em; margin: 0 0 18px; text-wrap: balance; }
+  .standfirst { font-size: 20px; line-height: 1.55; color: var(--ink-2);
+                max-width: 62ch; margin: 0; }
+  .mast-meta { display: flex; flex-wrap: wrap; gap: 10px 26px; margin-top: 26px;
+               font-family: var(--mono); font-size: 11.5px; letter-spacing: .06em;
+               text-transform: uppercase; color: var(--ink-3); }
+
+  /* ---------- rail ---------- */
+  nav.rail { position: sticky; top: 0; align-self: start; padding-top: 40px; max-height: 100vh;
+             overflow-y: auto; font-family: var(--mono); font-size: 12px; }
+  @media (max-width: 900px) { nav.rail { position: static; max-height: none; padding: 28px 0 0; } }
+  nav.rail h2 { font-size: 10.5px; letter-spacing: .16em; text-transform: uppercase;
+                color: var(--ink-3); margin: 0 0 12px; font-weight: 600; }
+  nav.rail a { display: block; padding: 5px 0; color: var(--ink-2); text-decoration: none;
+               border-left: 2px solid transparent; padding-left: 11px; line-height: 1.4; }
+  nav.rail a:hover, nav.rail a:focus-visible { color: var(--cyan); border-left-color: var(--cyan); }
+  nav.rail .grp { margin-top: 20px; }
+
+  main { padding-top: 40px; min-width: 0; }
+
+  /* ---------- typography ---------- */
+  h2.sec { font-family: var(--mono); font-weight: 600; font-size: 13px; letter-spacing: .16em;
+           text-transform: uppercase; color: var(--cyan); margin: 0 0 6px;
+           padding-top: 56px; scroll-margin-top: 20px; }
+  h2.sec + .sec-title { font-family: var(--serif); font-size: clamp(24px,3vw,32px);
+           line-height: 1.2; margin: 0 0 20px; font-weight: 600; letter-spacing: -.01em;
+           text-wrap: balance; }
+  h3 { font-family: var(--mono); font-size: 15px; font-weight: 600; letter-spacing: -.005em;
+       margin: 34px 0 10px; }
+  p { max-width: 66ch; margin: 0 0 16px; }
+  a { color: var(--cyan); }
+  strong { font-weight: 600; }
+  code, .num { font-family: var(--mono); font-size: .88em; font-variant-numeric: tabular-nums; }
+  code { background: var(--paper-2); padding: .1em .38em; border-radius: 3px; }
+  hr.div { border: 0; border-top: 1px solid var(--rule); margin: 52px 0 0; }
+
+  .lead-note { border-left: 3px solid var(--cyan); padding: 4px 0 4px 18px; margin: 0 0 26px;
+               color: var(--ink-2); font-size: 16px; max-width: 62ch; }
+
+  /* ---------- verdict chips ---------- */
+  .chip { display: inline-block; font-family: var(--mono); font-size: 10.5px; font-weight: 600;
+          letter-spacing: .1em; text-transform: uppercase; padding: 3px 9px; border-radius: 2px;
+          border: 1px solid currentColor; white-space: nowrap; }
+  .c-fail { color: var(--fail); }
+  .c-warn { color: var(--warn); }
+  .c-hold { color: var(--hold); }
+  .c-base { color: var(--ink-3); }
+
+  /* ---------- model entry ---------- */
+  .entry { border-top: 1px solid var(--rule); padding: 30px 0 6px; }
+  .entry-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px 14px; margin-bottom: 4px; }
+  .entry-head .name { font-family: var(--mono); font-size: 17px; font-weight: 600; margin: 0; }
+  .entry-head .yr { font-family: var(--mono); font-size: 11.5px; color: var(--ink-3);
+                    letter-spacing: .06em; }
+  .entry .what { color: var(--ink-2); font-size: 16px; margin: 6px 0 18px; max-width: 64ch; }
+  .field { display: grid; grid-template-columns: 108px minmax(0,1fr); gap: 14px;
+           padding: 9px 0; border-top: 1px dotted var(--rule); align-items: start; }
+  @media (max-width: 620px) { .field { grid-template-columns: 1fr; gap: 3px; } }
+  .field > .lbl { font-family: var(--mono); font-size: 10.5px; letter-spacing: .11em;
+                  text-transform: uppercase; color: var(--ink-3); padding-top: 4px; }
+  .field > .val { margin: 0; max-width: 62ch; }
+  .field > .val p { margin: 0 0 10px; max-width: none; }
+  .field > .val p:last-child { margin-bottom: 0; }
+  .verdict-val { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; }
+
+  /* ---------- tables ---------- */
+  .tw { overflow-x: auto; margin: 22px 0 26px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14.5px; min-width: 460px; }
+  caption { text-align: left; font-family: var(--mono); font-size: 10.5px; letter-spacing: .11em;
+            text-transform: uppercase; color: var(--ink-3); padding-bottom: 9px; }
+  th, td { text-align: left; padding: 9px 14px 9px 0; border-bottom: 1px solid var(--rule);
+           vertical-align: top; }
+  th { font-family: var(--mono); font-size: 10.5px; letter-spacing: .09em; text-transform: uppercase;
+       color: var(--ink-3); font-weight: 600; border-bottom-color: var(--ink-2); }
+  td.n, th.n { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums;
+               padding-right: 0; }
+  tr.hi td { background: var(--paper-2); }
+  .t-fail { color: var(--fail); font-weight: 600; }
+  .t-hold { color: var(--hold); font-weight: 600; }
+
+  /* ---------- timeline ---------- */
+  .tl { list-style: none; margin: 26px 0 0; padding: 0; }
+  .tl > li { position: relative; padding: 0 0 30px 34px; border-left: 1px solid var(--rule); }
+  .tl > li:last-child { border-left-color: transparent; padding-bottom: 4px; }
+  .tl > li::before { content: ""; position: absolute; left: -6px; top: 5px; width: 11px; height: 11px;
+                     border-radius: 50%; background: var(--paper); border: 2px solid var(--fail); }
+  .tl .when { font-family: var(--mono); font-size: 11px; letter-spacing: .09em;
+              text-transform: uppercase; color: var(--ink-3); display: block; margin-bottom: 3px; }
+  .tl .tl-t { font-family: var(--mono); font-weight: 600; font-size: 15px; margin: 0 0 6px; }
+  .tl p { margin: 0 0 8px; }
+
+  /* ---------- callout ---------- */
+  .callout { background: var(--paper-2); border-left: 3px solid var(--steel);
+             padding: 18px 22px; margin: 26px 0; border-radius: 0 3px 3px 0; }
+  .callout .ct { font-family: var(--mono); font-size: 10.5px; letter-spacing: .12em;
+                 text-transform: uppercase; color: var(--steel); margin: 0 0 8px; font-weight: 600; }
+  .callout p { margin: 0 0 10px; max-width: 62ch; }
+  .callout p:last-child { margin: 0; }
+
+  /* ---------- stat row ---------- */
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(158px,1fr)); gap: 1px;
+           background: var(--rule); border: 1px solid var(--rule); margin: 26px 0; }
+  .stat { background: var(--paper); padding: 16px 18px; }
+  .stat .sv { font-family: var(--mono); font-size: 25px; font-weight: 600;
+              font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .stat .sl { font-family: var(--mono); font-size: 10.5px; letter-spacing: .09em;
+              text-transform: uppercase; color: var(--ink-3); margin-top: 7px; }
+  .stat .sn { font-size: 13.5px; color: var(--ink-2); margin-top: 5px; line-height: 1.4; }
+
+
+  dl.gloss { margin: 22px 0 0; }
+  dl.gloss dt { font-family: var(--mono); font-size: 14px; font-weight: 600; margin-top: 18px; }
+  dl.gloss dd { margin: 5px 0 0; color: var(--ink-2); max-width: 64ch; }
+
+  footer.end { grid-column: 1 / -1; border-top: 2px solid var(--ink); margin-top: 64px;
+               padding-top: 22px; font-family: var(--mono); font-size: 11.5px;
+               letter-spacing: .06em; color: var(--ink-3); }
+  a:focus-visible, summary:focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
+  @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+  html { scroll-behavior: smooth; }
+  .flow { display: flex; flex-wrap: wrap; align-items: stretch; gap: 8px; margin: 26px 0;
+          padding: 20px; background: var(--paper-2); border: 1px solid var(--rule); border-radius: 3px; }
+  .fstep { flex: 1 1 132px; background: var(--paper); border: 1px solid var(--rule);
+           border-radius: 3px; padding: 11px 13px; font-size: 13.5px; line-height: 1.35; }
+  .fstep em { color: var(--ink-3); font-style: normal; font-size: 12px;
+              font-family: var(--mono); }
+  .fstep .fk { display: block; font-family: var(--mono); font-size: 9.5px; letter-spacing: .12em;
+               text-transform: uppercase; color: var(--cyan); margin-bottom: 5px; }
+  .fstep.fcmp { border-color: var(--steel); border-width: 2px; }
+  .farr { align-self: center; color: var(--ink-3); font-size: 15px; }
+  @media (max-width: 760px) { .farr { display: none; } .fstep { flex-basis: 100%; } }
+  .backlink { display: inline-block; margin-top: 22px; font-family: var(--mono); font-size: 12px;
+              letter-spacing: .06em; text-transform: uppercase; color: var(--cyan);
+              text-decoration: none; border-bottom: 1px solid currentColor; padding-bottom: 2px; }
+  .backlink:hover { color: var(--ink); }
+
+</style>
+
+<div class="wrap">
+
+<header class="mast">
+  <p class="kicker">Raincheck · Post-mortem catalogue</p>
+  <h1>Every model we tried, and exactly where each one failed</h1>
+  <p class="standfirst">A weather-forecasting bot built to out-predict prediction markets. Twelve
+  distinct modelling approaches over four months. None of them beat the market — and the
+  reasons why turned out to be more interesting than a win would have been.</p>
+  <div class="mast-meta">
+    <span>Report compiled 28 July 2026</span>
+    <span>5 cities · 261 graded markets</span>
+    <span>Status: forecasting book OFF</span>
+  </div>
+  <a class="backlink" href="./index.html">&larr; Back to the live dashboard</a>
+</header>
+
+<nav class="rail">
+  <h2>Contents</h2>
+  <a href="#start">Start here</a>
+  <a href="#scoring">How you score a forecast</a>
+  <a href="#baselines">The baselines</a>
+  <div class="grp">
+    <h2>Model catalogue</h2>
+    <a href="#fam-cal">A · Calibration</a>
+    <a href="#fam-input">B · Better inputs</a>
+    <a href="#fam-cond">C · Conditioning</a>
+    <a href="#fam-shape">D · Distribution shape</a>
+    <a href="#fam-meta">E · Combination</a>
+  </div>
+  <div class="grp">
+    <h2>Beyond forecasting</h2>
+    <a href="#structure">F · Structure books</a>
+  </div>
+  <div class="grp">
+    <h2>Context</h2>
+    <a href="#rulers">The broken rulers</a>
+    <a href="#standing">Current standing</a>
+    <a href="#lessons">What it taught us</a>
+    <a href="#glossary">Glossary</a>
+  </div>
+</nav>
+
+<main>
+
+<h2 class="sec" id="start">Orientation</h2>
+<p class="sec-title">What this project is, for someone arriving cold</p>
+
+<p>Polymarket runs daily markets on the weather. A typical one asks: <em>“Will the highest
+temperature in London be 24°C on July 26?”</em> You can buy YES or NO at a price between 0 and 100
+cents, and the price behaves like a probability — a bin trading at 30¢ means the crowd thinks
+there's roughly a 30% chance it happens. When the day ends, the market settles against a named
+weather station's official reading. Winners get $1 per contract; losers get nothing.</p>
+
+<p>Each city-day is carved into about eleven mutually exclusive bins — 22°C, 23°C, 24°C and so on
+— plus separate markets for the day's <em>lowest</em> temperature. Exactly one bin can win.</p>
+
+<p>The premise of this project was simple and, on paper, reasonable: <strong>weather is one of the
+few things humans forecast well and publicly.</strong> National meteorological agencies run
+enormous physics simulations and publish the output free. If you take those forecasts, calibrate
+them properly against what the stations actually recorded, and convert them into probabilities
+for each temperature bin, you should be able to spot bins the crowd has mispriced.</p>
+
+<p>That is what was built, in roughly this shape:</p>
+
+<div class="flow" role="img" aria-label="Pipeline: agency forecasts, blended, calibrated, converted to bin probabilities, compared against the live market price; a large enough disagreement becomes a Kelly-sized bet, which is then settled against the station reading.">
+  <div class="fstep"><span class="fk">Source</span>Agency forecasts<br><em>ECMWF · GFS · ICON · GEM</em></div>
+  <div class="farr" aria-hidden="true">&rarr;</div>
+  <div class="fstep"><span class="fk">Blend</span>Multi-model mean</div>
+  <div class="farr" aria-hidden="true">&rarr;</div>
+  <div class="fstep"><span class="fk">Calibrate</span>Correct bias &amp; spread</div>
+  <div class="farr" aria-hidden="true">&rarr;</div>
+  <div class="fstep"><span class="fk">Convert</span>Probability per bin</div>
+  <div class="farr" aria-hidden="true">&rarr;</div>
+  <div class="fstep fcmp"><span class="fk">Compare</span>vs live market price</div>
+  <div class="farr" aria-hidden="true">&rarr;</div>
+  <div class="fstep"><span class="fk">Act</span>Bet, or pass</div>
+  <div class="farr" aria-hidden="true">&rarr;</div>
+  <div class="fstep"><span class="fk">Score</span>Settle vs station</div>
+</div>
+
+<p>Every stage of that pipeline works. Data arrives hourly, models train, probabilities are
+served, bets are recorded and graded against how the markets really settled. The machinery is
+sound. <strong>The premise is what failed:</strong> across 261 graded markets, the crowd's price
+is a better forecast than anything we built — and we can now say that with a confidence interval
+rather than a shrug.</p>
+
+<div class="stats">
+  <div class="stat"><div class="sv">0.1158</div><div class="sl">Market price</div>
+    <div class="sn">Brier score — lower is better</div></div>
+  <div class="stat"><div class="sv">0.1360</div><div class="sl">Raw ensemble</div>
+    <div class="sn">Physics forecast, uncalibrated</div></div>
+  <div class="stat"><div class="sv">0.1417</div><div class="sl">Our best model</div>
+    <div class="sn">Worse than the thing it improves on</div></div>
+  <div class="stat"><div class="sv">+0.0259</div><div class="sl">Gap, with interval</div>
+    <div class="sn">95% CI [+0.008, +0.043] — real, not noise</div></div>
+</div>
+
+<hr class="div">
+
+<h2 class="sec" id="scoring">Measurement</h2>
+<p class="sec-title">How you score a forecast — and why we stopped looking at profit</p>
+
+<p>Three numbers appear throughout this report. Understanding what each one can and cannot tell
+you is most of the story.</p>
+
+<h3>Brier score — the scoreboard</h3>
+<p>You said 30%; it happened. Your error is <code>(1 − 0.30)² = 0.49</code>. You said 30%; it
+didn't happen. Your error is <code>(0 − 0.30)² = 0.09</code>. Average that over every bin you
+priced, and you have the Brier score. <strong>Lower is better; 0 is perfect.</strong></p>
+<p>Its virtue is that it punishes both kinds of failure at once. A forecaster who hedges
+everything at 50% never looks stupid but never scores well. One who says 99% and is wrong takes
+an enormous hit. To score well you have to be both <em>right</em> and <em>appropriately
+confident</em>.</p>
+
+<h3>CRPS — the temperature-level score</h3>
+<p>Brier scores your answer to a yes/no question. CRPS scores the whole temperature
+distribution you produced, in degrees. It rewards a forecast whose spread honestly reflects its
+uncertainty. It matters here because a model can get <em>better at temperatures</em> while
+getting <em>worse at bin probabilities</em> — and, as you'll see in the QRF entries, that is
+exactly what happened.</p>
+
+<h3>ROI — the one that lies</h3>
+<p>Return on investment is what everybody wants to look at, and it is the least reliable number
+on the page. Over 213 bets this project has watched ROI read −22.5% one day and −8.7% the next,
+on essentially the same book, because a handful of large positions settled overnight. ROI blends
+forecast quality with bet selection, sizing luck, and which markets happened to resolve — so on
+a few hundred bets it is mostly noise.</p>
+
+<div class="callout">
+  <p class="ct">The rule this project runs on</p>
+  <p><strong>Read the Brier, not the ROI.</strong> A forecaster with a worse Brier can post a
+  positive ROI for weeks. If the model cannot out-predict the price, any profit is luck being
+  collected on borrowed time.</p>
+</div>
+
+<h3>What “beating the market” actually requires</h3>
+<p>It is not enough to forecast the weather well. The market price is <em>already</em> a good
+forecast — it aggregates everyone else's models, plus judgement. To profit, our probability has
+to be closer to the truth than the price, by enough to cover the spread crossed on entry and the
+fee paid on winnings. Being equally good is a losing position, because costs are real and edge
+is zero.</p>
+
+<hr class="div">
+
+<h2 class="sec" id="baselines">Reference points</h2>
+<p class="sec-title">The three things every model was measured against</p>
+
+<div class="entry">
+  <div class="entry-head"><p class="name">The market price</p>
+    <span class="chip c-base">Benchmark</span></div>
+  <p class="what">The live Polymarket price for each bin, taken as a probability. The thing we
+  are trying to beat.</p>
+  <div class="field"><span class="lbl">Score</span><div class="val">
+    <p>Brier <span class="num">0.1158</span> over 261 graded markets.</p></div></div>
+  <div class="field"><span class="lbl">Why it's hard</span><div class="val">
+    <p>Its prices turn out to be almost perfectly calibrated on exactly the bins our model
+    flagged as mispriced. Where we disagreed most strongly with the price, we were usually the
+    ones who were wrong.</p></div></div>
+</div>
+
+<div class="entry">
+  <div class="entry-head"><p class="name">Raw ensemble</p>
+    <span class="chip c-base">Baseline</span></div>
+  <p class="what">Open-Meteo's combined ICON + GFS + ECMWF ensemble — 122 separate physics
+  simulations of the same day, each started from slightly different initial conditions.</p>
+  <div class="field"><span class="lbl">Mechanism</span><div class="val">
+    <p>The spread <em>between</em> those 122 members is itself an uncertainty estimate: when the
+    simulations agree, the atmosphere is predictable; when they scatter, it isn't. Fit a
+    Student-t distribution to the member spread and you have bin probabilities, with no
+    learned parameters at all.</p></div></div>
+  <div class="field"><span class="lbl">Score</span><div class="val">
+    <p>Brier <span class="num">0.1360</span> · CRPS <span class="num">1.0753</span> °C.</p></div></div>
+  <div class="field"><span class="lbl">Significance</span><div class="val">
+    <p><strong>This is the number that matters most in the entire report.</strong> It is what
+    every model in Family A was built to improve on — and, four months in, nothing has. A
+    calibration layer that cannot beat the raw physics it is calibrating is doing damage, not
+    work.</p></div></div>
+</div>
+
+<div class="entry">
+  <div class="entry-head"><p class="name">NWP fallback</p>
+    <span class="chip c-base">Safety net</span></div>
+  <p class="what">A deliberately dumb predictor: the deterministic forecast plus a fixed
+  standard-deviation table by city and lead time.</p>
+  <div class="field"><span class="lbl">Role</span><div class="val">
+    <p>Used only when ensemble data is missing, so a feed outage degrades the forecast rather
+    than dropping the city. Never a contender; included here because it defines the floor.</p>
+  </div></div>
+</div>
+
+<hr class="div">
+
+<h2 class="sec" id="fam-cal">Family A</h2>
+<p class="sec-title">Calibration — teaching the physics forecast to know its own error</p>
+
+<p class="lead-note">The central idea of this family: raw weather models are biased and
+overconfident in known, learnable ways. A given station may run half a degree warm; a 3-day
+forecast is less certain than the ensemble spread suggests. Learn those corrections from
+history, apply them, and you get sharper, better-calibrated probabilities than the raw model.
+This is textbook, respected meteorology. It failed here five separate times.</p>
+
+<div class="entry">
+  <div class="entry-head"><p class="name">A1 · EMOS v1</p><span class="yr">retired 2026-07</span>
+    <span class="chip c-fail">Failed — trained on the wrong error</span></div>
+  <p class="what">Ensemble Model Output Statistics: a regression that maps the ensemble forecast
+  onto the observed temperature, learning both a bias correction and an honest spread.</p>
+  <div class="field"><span class="lbl">Mechanism</span><div class="val">
+    <p>Fit <code>mean = a + b × forecast</code> against history, and separately learn how wrong
+    that mean typically is, so the width of the predictive distribution reflects measured error
+    rather than the ensemble's own optimism.</p></div></div>
+  <div class="field"><span class="lbl">The flaw</span><div class="val">
+    <p>It was trained against <strong>ERA5 reanalysis</strong> — a scientific reconstruction of
+    past weather built <em>after the fact</em>, using observations that were not available when a
+    real forecast had to be made. Reanalysis is superb for climate research and completely wrong
+    for this: it made the forecasting problem look far easier than it is.</p></div></div>
+  <div class="field"><span class="lbl">Result</span><div class="val">
+    <p>The model understated live forecast error by <strong>2–3×</strong> at the lead times we
+    actually bet on. That produced exactly the pathology you would predict: distributions far too
+    narrow, extreme confidence on bins, and heavy losses when the real atmosphere landed in a tail
+    the model had priced at near-zero.</p></div></div>
+  <div class="field"><span class="lbl">Taught us</span><div class="val">
+    <p><strong>Train on what you will have at decision time, not on the best reconstruction
+    available later.</strong> This is the same failure as backtesting a trading strategy on
+    revised economic data. The fix drove the entire design of its successor.</p></div></div>
+</div>
+
+<div class="entry">
+  <div class="entry-head"><p class="name">A2 · EMOS v2</p><span class="yr">current default</span>
+    <span class="chip c-warn">Ships — still loses to both baselines</span></div>
+  <p class="what">The rebuilt calibrator, trained on <em>real archived forecasts</em>: the actual
+  predictions the agencies published on the day, recovered from Open-Meteo's Previous Runs
+  archive back to 2022.</p>
+  <div class="field"><span class="lbl">Mechanism</span><div class="val">
+    <p>A separate model is fitted for each <strong>lead time</strong> from 1 to 7 days, because a
+    1-day forecast and a 5-day forecast are different problems with different error sizes.
+    Per lead: <code>mean = a + b×input + seasonal term</code>, and
+    <code>sigma = max(ensemble spread + diurnal boost, measured residual error)</code>, with the
+    tail heaviness (Student-t <code>nu</code>) estimated from how often reality lands far out.</p>
+    <p>Two safeguards worth naming. The mean correction is <strong>self-gated</strong>: at each
+    lead it must beat the raw input on held-out data, or the raw input is served instead. The
+    sigma floor is <strong>never</strong> gated — it is the direct fix for v1's overconfidence,
+    so it is not allowed to be optimised away.</p>
+    <p>Training uses the earliest 80% of dates and validates on the most recent 20%, so the
+    coefficients in service today were fitted on data ending around August 2025 — comfortably
+    before the markets being scored.</p></div></div>
+  <div class="field"><span class="lbl">Result</span><div class="val">
+    <p>Brier <span class="num">0.1417</span> versus the market's <span class="num">0.1158</span>
+    and the raw ensemble's <span class="num">0.1360</span>. CRPS
+    <span class="num">1.0931</span> versus the ensemble's <span class="num">1.0753</span>.</p>
+    <p class="t-fail">It loses to the market, and it loses to the raw physics it is built on
+    top of.</p></div></div>
+  <div class="field"><span class="lbl">Diagnosis</span><div class="val">
+    <p>The failure is in the tails, not the centre. Calibration made the distribution
+    <em>sharper</em>, and sharpness is only a virtue when you are right. Bins the model priced in
+    the 0–10% band came in at 15.5% — it kept ruling out outcomes that then happened, and each of
+    those is expensive under Brier.</p></div></div>
+  <div class="field"><span class="lbl">Taught us</span><div class="val">
+    <p>Fixing the training data fixed the <em>diagnosis</em> but not the <em>disease</em>. A
+    calibration layer can only redistribute the information already in the forecast; if the
+    market has more information, no amount of correcting the physics closes that gap.</p></div></div>
+</div>
+
+<div class="entry">
+  <div class="entry-head"><p class="name">A3 · Random Forest calibrator</p><span class="yr">removed</span>
+    <span class="chip c-fail">Failed — net negative</span></div>
+  <p class="what">Replace the linear calibration with a machine-learning model that could learn
+  arbitrary non-linear corrections from the ensemble features.</p>
+  <div class="field"><span class="lbl">Rationale</span><div class="val">
+    <p>The relationship between ensemble output and observed temperature might not be linear —
+    perhaps the correction should differ in hot versus cold regimes, or by season, in ways a
+    straight line cannot express.</p></div></div>
+  <div class="field"><span class="lbl">Result</span><div class="val">
+    <p>Verified net-negative on held-out data and deleted. More flexibility bought more
+    overfitting, not more accuracy.</p></div></div>
+  <div class="field"><span class="lbl">Taught us</span><div class="val">
+    <p>The first appearance of a pattern that recurs throughout this catalogue: <strong>added
+    model complexity did not help.</strong> The constraint was never the flexibility of the
+    functional form.</p></div></div>
+</div>
+
+<div class="entry">
+  <div class="entry-head"><p class="name">A4 · Quantile Regression Forest — v1</p><span class="yr">2026-07-24</span>
+    <span class="chip c-fail">Failed gate M1 — 0.1713 vs 0.1685</span></div>
+  <p class="what">A fully non-parametric forecaster. Rather than assuming the temperature follows
+  a bell-shaped curve and estimating its parameters, learn the <em>shape</em> of the distribution
+  directly from data.</p>
+  <div class="field"><span class="lbl">Rationale</span><div class="val">
+    <p>Every model to this point assumed a Student-t distribution and argued about its width. But
+    the diagnosed failure was distributional — over-sharp, thin tails. If the assumed shape is
+    wrong, tuning its parameters cannot save it. A Quantile Regression Forest (Meinshausen, 2006)
+    makes no shape assumption at all: it grows a random forest, then reads the distribution of
+    training outcomes that land in the same leaves as the current case.</p></div></div>
+  <div class="field"><span class="lbl">The design flaw</span><div class="val">
+    <p>To fit the existing pipeline, the learned distribution was
+    <strong>moment-matched</strong> back to a Student-t: compute the QRF's mean, spread and
+    kurtosis, then serve the Student-t with those properties. In hindsight this discarded the
+    only thing that made the approach interesting — a non-parametric shape was collapsed back
+    into the parametric one it was meant to replace.</p></div></div>
+  <div class="field"><span class="lbl">Result</span><div class="val">
+    <p>QRF <span class="num">0.1713</span> versus ensemble <span class="num">0.1685</span>.
+    Failed. A follow-up diagnostic confirmed the collapse was lossy in all five cities: the raw
+    QRF quantiles scored <strong>3–11% better on CRPS</strong> than their own Student-t
+    approximation.</p></div></div>
+  <div class="field"><span class="lbl">Taught us</span><div class="val">
+    <p>The self-gate was scoring the wrong object. Two cities were rejected for being bad when it
+    was the collapse, not the forest, that was bad. <strong>Measure the thing you actually
+    serve.</strong></p></div></div>
+</div>
+
+<div class="entry">
+  <div class="entry-head"><p class="name">A5 · Quantile Regression Forest — v2 (empirical)</p>
+    <span class="yr">2026-07-25</span>
+    <span class="chip c-fail">Failed gate M1 — 0.1820 vs 0.1767</span></div>
+  <p class="what">The same forest, with the collapse removed: serve the learned distribution
+  directly.</p>
+  <div class="field"><span class="lbl">Mechanism</span><div class="val">
+    <p>A semi-parametric predictive distribution — 99 learned quantiles forming the body, with
+    Gaussian tails grafted beyond the outermost knots so probabilities stay well-defined at
+    extremes. This required threading an optional CDF function through the probability
+    machinery and the pricing engine, and letting QRF stand alone rather than being averaged with
+    the ensemble (averaging would have re-thinned the very tails the fix widened).</p></div></div>
+  <div class="field"><span class="lbl">Result</span><div class="val">
+    <p>The fix worked <em>on its own terms</em>. Per-city holdout CRPS, QRF versus ensemble:</p>
+    <div class="tw"><table>
+      <caption>QRF v2 self-gate — holdout CRPS, °C</caption>
+      <thead><tr><th>City</th><th class="n">QRF</th><th class="n">Ensemble</th><th>Gate</th></tr></thead>
+      <tbody>
+        <tr><td>Hong Kong</td><td class="n">0.698</td><td class="n">1.206</td><td class="t-hold">passes</td></tr>
+        <tr><td>Seoul</td><td class="n">0.771</td><td class="n">0.823</td><td class="t-hold">passes</td></tr>
+        <tr><td>New York</td><td class="n">0.975</td><td class="n">1.009</td><td class="t-hold">passes</td></tr>
+        <tr><td>London</td><td class="n">0.796</td><td class="n">0.733</td><td class="t-fail">fails</td></tr>
+        <tr><td>Chicago</td><td class="n">1.059</td><td class="n">1.025</td><td class="t-fail">fails</td></tr>
+      </tbody></table></div>
+    <p>Three of five cities now genuinely forecast temperatures better than the ensemble. And the
+    market-facing gate still failed: <span class="num">0.1820</span> versus
+    <span class="num">0.1767</span> — <em>worse</em> than v1.</p></div></div>
+  <div class="field"><span class="lbl">Taught us</span><div class="val">
+    <p><strong>The single most valuable finding in the catalogue: better temperature forecasts do
+    not automatically produce better bin probabilities.</strong> CRPS improved; Brier got worse.
+    Winning by a tenth of a degree in the middle of the distribution is worth little when the
+    question is which one-degree bucket the reading lands in — and the market is already
+    excellent at that.</p>
+    <p>QRF is now parked: merged, evaluation-only, self-gated off. It never touches production.</p>
+  </div></div>
+</div>
+
+<hr class="div">
+
+<h2 class="sec" id="fam-input">Family B</h2>
+<p class="sec-title">Better inputs — if calibration can't help, feed it a better forecast</p>
+
+<p class="lead-note">Different meteorological agencies run different physics on different grids.
+They fail in different ways, and errors that are independent partly cancel when averaged. This
+family is about sourcing: which forecasts go into the model in the first place.</p>
+
+<div class="entry">
+  <div class="entry-head"><p class="name">B1 · Multi-model blend</p><span class="yr">adopted</span>
+    <span class="chip c-hold">Works — best available input</span></div>
+  <p class="what">Average several agencies' deterministic forecasts, with the membership of that
+  average chosen per city by held-out accuracy.</p>
+  <div class="field"><span class="lbl">Mechanism</span><div class="val">
+    <p>Candidate models are scored per city and per lead time on paired common windows — the
+    same dates for every candidate, since the archives start at different times and an unfair
+    window would flatter whichever model has the easier history.</p></div></div>
+  <div class="field"><span class="lbl">What survived</span><div class="val">
+    <div class="tw"><table>
+      <caption>Selected blend membership, current models</caption>
+      <thead><tr><th>City</th><th>Models in the blend</th></tr></thead>
+      <tbody>
+        <tr><td>Seoul</td><td><code>ecmwf gfs icon jma gem aifs</code></td></tr>
+        <tr><td>London</td><td><code>ecmwf gfs icon gem mf aifs</code></td></tr>
+        <tr><td>New York</td><td><code>ecmwf gfs icon mf aifs</code></td></tr>
+        <tr><td>Chicago</td><td><code>ecmwf gfs icon gem</code></td></tr>
+        <tr><td>Hong Kong</td><td><code>ecmwf gfs icon gem</code></td></tr>
+      </tbody></table></div>
+    <p>Canada's GEM earned a place almost everywhere. Météo-France helped in the Atlantic cities.
+    ECMWF's AIFS — a machine-learning weather model rather than a physics one — gave Seoul 5–8%
+    at every lead. Japan's JMA helped Seoul and nowhere else, which is geographically sensible.
+    <strong>China's CMA and Australia's BOM were tested and rejected</strong> as neutral or
+    harmful.</p></div></div>
+  <div class="field"><span class="lbl">Result</span><div class="val">
+    <p>Genuinely the best input available, and all five cities now select it. But a better input
+    fed into a losing model produces a slightly less losing model — the blend improves the
+    forecast without closing the gap to the price.</p></div></div>
+  <div class="field"><span class="lbl">Operational note</span><div class="val">
+    <p>The blend is strictly all-or-nothing at serve time: if any member model is missing from
+    the live feed, the whole blend is skipped rather than silently computed from a different mix
+    of models than it was trained on. A deliberate anti-skew rule that costs coverage to protect
+    correctness.</p></div></div>
+</div>
+
+<div class="entry">
+  <div class="entry-head"><p class="name">B2 · NBM — the US National Blend of Models</p>
+    <span class="yr">tested, not selected</span>
+    <span class="chip c-fail">Lost to our own blend</span></div>
+  <p class="what">The US National Weather Service's official blended guidance, produced for the
+  exact airport stations two of our markets settle on.</p>
+  <div class="field"><span class="lbl">Rationale</span><div class="val">
+    <p>Our worst cities are the American ones. NBM is professional, station-specific guidance —
+    tuned by meteorologists for precisely these locations. It ought to have been better than
+    anything we assembled ourselves.</p></div></div>
+  <div class="field"><span class="lbl">Result</span><div class="val">
+    <p>It lost, and not narrowly. At Chicago O'Hare, lead-1 error of <span class="num">1.94</span>
+    °C versus our blend's <span class="num">1.19</span> °C. Similar at LaGuardia. Not selected.</p>
+  </div></div>
+  <div class="field"><span class="lbl">Taught us</span><div class="val">
+    <p>A genuinely useful negative result. It rules out the obvious explanation for the US
+    deficit: <strong>the American cities are not hard because our forecasts there are bad.</strong>
+    Professional station guidance did worse. Whatever makes Chicago and New York difficult — more
+    sophisticated market participants, more traded volume, sharper prices — is not something a
+    better temperature forecast fixes.</p></div></div>
+</div>
+
+<hr class="div">
+
+<h2 class="sec" id="fam-cond">Family C</h2>
+<p class="sec-title">Conditioning — using information the forecast doesn't contain</p>
+
+<p class="lead-note">A forecast issued at midnight is a prediction. By 2pm, part of that day has
+already happened, and the highest temperature <em>so far</em> is a fact. This family tried to
+exploit information that arrives after the forecast is made — the most promising idea in the
+project, and the one whose failure was most instructive.</p>
+
+<div class="entry">
+  <div class="entry-head"><p class="name">C1 · Intraday conditioning</p><span class="yr">built, live</span>
+    <span class="chip c-fail">Premise falsified</span></div>
+  <p class="what">On the target day itself, condition the forecast on hourly station observations
+  as they arrive.</p>
+  <div class="field"><span class="lbl">Mechanism</span><div class="val">
+    <p>Two mechanisms, both sound. First, a <strong>hard floor</strong>: if the station has
+    already recorded 24°C, the day's maximum cannot end below 24°C, so all probability below that
+    is removed and redistributed. Second, a per-city, per-hour regression
+    <code>Tmax = a + b×forecast + c×(running max)</code>, self-gated hour by hour.</p>
+    <p>It works exactly as physics says it should. By 2pm local the predictive spread roughly
+    halves. By 5pm it is around 0.4°C, with the running maximum carrying almost all the weight
+    (<code>c ≈ 0.95</code>) — by late afternoon the day has essentially already told you its
+    answer.</p></div></div>
+  <div class="field"><span class="lbl">The test</span><div class="val">
+    <p>If this were an edge, the model should beat the market <em>more</em> on same-day markets
+    once the running maximum is known. Split the same-day markets by whether that information was
+    available:</p>
+    <div class="tw"><table>
+      <caption>Same-day markets, split by whether the running maximum was known</caption>
+      <thead><tr><th>Regime</th><th class="n">n</th><th class="n">Model</th><th class="n">Market</th><th class="n">Gap</th></tr></thead>
+      <tbody>
+        <tr class="hi"><td>Running max known</td><td class="n">67</td><td class="n">0.165</td><td class="n">0.117</td><td class="n t-fail">+0.049</td></tr>
+        <tr><td>Morning, not yet known</td><td class="n">112</td><td class="n">0.136</td><td class="n">0.109</td><td class="n t-fail">+0.027</td></tr>
+      </tbody></table></div>
+    <p>The opposite of the prediction. The model does <strong>worse</strong> relative to the
+    market precisely when it has the extra information — and the market loses none of its edge.</p>
+  </div></div>
+  <div class="field"><span class="lbl">Taught us</span><div class="val">
+    <p>The running maximum is <strong>public information</strong>. Anyone trading these markets
+    can read the same METAR feed, and they price it at least as well as we do — faster, and with
+    fewer intermediate steps. Sophistication cannot beat information parity against a quicker
+    counterparty.</p>
+    <p>This killed the planned successor project (a QRF trained on intraday snapshots) before a
+    line of it was written — a read-only analysis costing an afternoon replaced a multi-week
+    build that the data says would have failed.</p></div></div>
+</div>
+
+<div class="entry">
+  <div class="entry-head"><p class="name">C2 · Dedicated minimum-temperature model</p>
+    <span class="yr">2026-07-04</span>
+    <span class="chip c-hold">Fixed a real defect</span></div>
+  <p class="what">About a fifth of these markets settle on the day's <em>lowest</em> temperature.
+  They were being priced off the maximum-temperature distribution.</p>
+  <div class="field"><span class="lbl">The defect</span><div class="val">
+    <p>The output was not slightly wrong, it was nonsense — the model priced bins at 0.2% that
+    the market had at 38%. Using a distribution built for daily highs to price daily lows is a
+    category error.</p></div></div>
+  <div class="field"><span class="lbl">Fix</span><div class="val">
+    <p>A parallel stack mirroring the maximum-temperature one end to end: its own per-lead
+    calibration, its own archived training data, its own live inputs, and intraday conditioning
+    with a <strong>ceiling</strong> rather than a floor (the overnight low can only go down, and
+    is largely locked in by mid-morning — London's spread is about 0.7°C by noon).</p>
+    <p>Where a city has no trained minimum-temperature model, those bins are skipped entirely
+    rather than mispriced. Silence beats confident nonsense.</p></div></div>
+  <div class="field"><span class="lbl">Result</span><div class="val">
+    <p>A correctness fix, not an edge. It stopped the model producing garbage on a fifth of the
+    market universe; it did not make that fifth profitable.</p></div></div>
+</div>
+
+<hr class="div">
+
+<h2 class="sec" id="fam-shape">Family D</h2>
+<p class="sec-title">Distribution shape — the diagnosed disease, and two attempts to treat it</p>
+
+<p class="lead-note">Across every diagnostic the failure looked the same: the model was too
+confident. Bins it priced at 27% happened 12% of the time; bins it priced at 86% happened 25% of
+the time. This family attacked the width and shape of the distribution directly.</p>
+
+<div class="entry">
+  <div class="entry-head"><p class="name">D1 · Student-t tails and the per-lead sigma floor</p>
+    <span class="yr">in service</span>
+    <span class="chip c-hold">Kept — the honest-width guarantee</span></div>
+  <p class="what">Replace the normal distribution with a heavier-tailed Student-t, and impose a
+  hard minimum on the spread at each lead time.</p>
+  <div class="field"><span class="lbl">Mechanism</span><div class="val">
+    <p>The tail-heaviness parameter is estimated from how often reality actually lands far from
+    the forecast. The sigma floor is the measured error at that lead on held-out data, and —
+    uniquely in the whole system — it is <strong>exempt from self-gating</strong>. Everything else
+    must prove it helps or be switched off; the floor may not be switched off, because it is the
+    direct remedy for the failure that killed EMOS v1.</p></div></div>
+  <div class="field"><span class="lbl">Result</span><div class="val">
+    <p>Retained. It prevents the catastrophic overconfidence of v1, without being sufficient to
+    produce an edge.</p></div></div>
+</div>
+
+<div class="entry">
+  <div class="entry-head"><p class="name">D2 · Widen the distribution when models disagree</p>
+    <span class="yr">tested 2026-07-11</span>
+    <span class="chip c-fail">Rejected — improved Brier, not ROI</span></div>
+  <p class="what">When the model and the market disagree sharply, treat that disagreement as
+  evidence of our own uncertainty and widen the predictive distribution accordingly.</p>
+  <div class="field"><span class="lbl">Rationale</span><div class="val">
+    <p>A large disagreement with a well-informed market is more likely to mean we have missed
+    something than that we have found something. Widening in those cases should reduce confident
+    errors.</p></div></div>
+  <div class="field"><span class="lbl">Result</span><div class="val">
+    <p>Brier improved. ROI did not. The pre-registered test required both, so it was rejected.</p>
+  </div></div>
+  <div class="field"><span class="lbl">Taught us</span><div class="val">
+    <p>The diagnosis was subtly wrong. Widening helps when a forecast is <em>right but
+    overconfident</em>. It cannot help when the forecast is <em>centred in the wrong place</em> —
+    a wider distribution around a wrong mean still bets on the wrong bin, just less
+    aggressively. <strong>The problem was the centre, not the spread.</strong></p></div></div>
+</div>
+
+<hr class="div">
+
+<h2 class="sec" id="fam-meta">Family E</h2>
+<p class="sec-title">Combination and selectivity — bet less, bet only where you're strong</p>
+
+<p class="lead-note">If the model cannot be made better everywhere, perhaps it can be trusted
+selectively — blended toward the price, or restricted to the situations where it historically did
+well. This family contains the project's most instructive self-inflicted wound.</p>
+
+<div class="entry">
+  <div class="entry-head"><p class="name">E1 · Maximum-selection between predictors</p>
+    <span class="yr">removed</span>
+    <span class="chip c-fail">Manufactured edge out of nothing</span></div>
+  <p class="what">Where two predictors disagreed, the engine took the <em>higher</em> of the two
+  probabilities.</p>
+  <div class="field"><span class="lbl">Why it's fatal</span><div class="val">
+    <p>Taking the maximum of two noisy estimates is not a forecast — it is a systematic upward
+    bias. Whichever predictor happened to be more optimistic about a bin won, every time. The
+    engine's "edge" was partly just this operator, and it grew with the noise in the inputs.</p>
+  </div></div>
+  <div class="field"><span class="lbl">Fix</span><div class="val">
+    <p>Replaced with a plain average, and measured edge dropped accordingly. That drop was the
+    point.</p></div></div>
+  <div class="field"><span class="lbl">Taught us</span><div class="val">
+    <p>A one-word choice in a combination rule — <code>max</code> instead of <code>mean</code> —
+    can invent an edge that survives every downstream check, because it corrupts the forecast
+    before any evaluation sees it.</p></div></div>
+</div>
+
+<div class="entry">
+  <div class="entry-head"><p class="name">E2 · Shrink toward the market</p><span class="yr">available</span>
+    <span class="chip c-warn">Damage limitation, not edge</span></div>
+  <p class="what">Serve a weighted blend of our probability and the market price:
+  <code>w × model + (1−w) × market</code>.</p>
+  <div class="field"><span class="lbl">Mechanism</span><div class="val">
+    <p>With <code>w = 1</code> you bet the pure model. As <code>w</code> falls you deviate from
+    the price only where the model disagrees strongly, and every position is sized down in
+    proportion.</p></div></div>
+  <div class="field"><span class="lbl">Result</span><div class="val">
+    <p>Because the market out-predicts the model, the Brier-minimising weight is below 1 — the
+    optimiser's advice is, in effect, <em>be more like the price</em>. It reduces losses. It
+    cannot create an edge, because a blend of a worse forecast and a better one is bounded by the
+    better one.</p></div></div>
+</div>
+
+<div class="entry">
+  <div class="entry-head"><p class="name">E3 · Per-bucket selectivity</p><span class="yr">rebuilt 2026-07-28</span>
+    <span class="chip c-fail">The pockets were noise</span></div>
+  <p class="what">Split every market into a bucket by city and horizon — <code>Seoul|1d</code>,
+  <code>Chicago|same-day</code>, fifteen in all — and bet only the buckets where the model
+  historically beat the price.</p>
+  <div class="field"><span class="lbl">Rationale</span><div class="val">
+    <p>Pooled performance can hide real local skill. Perhaps the model is genuinely good at Seoul
+    next-day and hopeless at New York same-day, in which case selective betting turns a losing
+    system into a winning one.</p></div></div>
+  <div class="field"><span class="lbl">What went wrong</span><div class="val">
+    <p>Two buckets were nominated by eyeballing in-sample numbers. Then confidence intervals were
+    added, and <strong>not one of the fifteen buckets had an interval excluding zero in the
+    model's favour</strong> — while four had intervals entirely on the wrong side.</p>
+    <p>The decisive test was a simulation. Take the real data, remove all edge — force the model
+    to be <em>exactly</em> as good as the market in every bucket — and ask what "pick the best
+    bucket" produces:</p>
+    <div class="tw"><table>
+      <caption>Zero-edge simulation, 5,000 runs — what the winning bucket looks like when nothing is real</caption>
+      <thead><tr><th>Quantity</th><th class="n">Value</th></tr></thead>
+      <tbody>
+        <tr><td>Best bucket's apparent gap, median</td><td class="n">−0.0459</td></tr>
+        <tr><td>Best bucket's apparent gap, 5th percentile</td><td class="n">−0.1836</td></tr>
+        <tr class="hi"><td><strong>Our actual best bucket</strong></td><td class="n">−0.0163</td></tr>
+        <tr><td>Hong Kong 2-day+ (n=5) wins the ranking</td><td class="n">33.9%</td></tr>
+        <tr><td>London 1-day (n=48) wins the ranking</td><td class="n">4.4%</td></tr>
+      </tbody></table></div>
+    <p><strong>Our best-looking bucket is less impressive than what pure noise typically
+    produces.</strong> And ranking by score systematically crowns the <em>smallest</em> bucket,
+    because small samples generate the most extreme numbers in both directions — the five-market
+    bucket wins a third of the time, the forty-eight-market bucket almost never.</p></div></div>
+  <div class="field"><span class="lbl">Rebuilt as</span><div class="val">
+    <p>All fifteen buckets are now nominated on identical prospective terms, each with its own
+    forward clock, and the pass threshold is corrected for the fact that fifteen things are being
+    tested at once. No human picks favourites; nothing is graded on the data that suggested it.</p>
+  </div></div>
+</div>
+
+<hr class="div">
+
+<h2 class="sec" id="structure">Family F</h2>
+<p class="sec-title">Structure books — trading the market's shape, with no forecast at all</p>
+
+<p class="lead-note">A different theory entirely. Forget predicting the weather: look for
+systematic mispricing in <em>how</em> the market prices its bins. Betting markets across many
+domains display favourite–longshot bias — crowds overpay for unlikely outcomes and underpay for
+likely ones. If temperature bins show it too, you can harvest it without any meteorology.</p>
+
+<div class="entry">
+  <div class="entry-head"><p class="name">F1 · Shoulder sell</p><span class="yr">since 2026-07-12</span>
+    <span class="chip c-warn">Unproven — interval spans zero</span></div>
+  <p class="what">Sell bins priced between 5¢ and 35¢ the day before — the plausible-looking
+  longshots two or three degrees off the forecast centre.</p>
+  <div class="field"><span class="lbl">Result</span><div class="val">
+    <p>159 settled contracts, <span class="num">+0.036</span> per contract, 87% win rate. And on
+    27 July it formally <strong>passed its pre-registered gate</strong> — the first thing in this
+    project ever to do so.</p>
+    <p class="t-fail">It should not have counted, for two independent reasons.</p></div></div>
+  <div class="field"><span class="lbl">Why it doesn't count</span><div class="val">
+    <p><strong>Underpowered.</strong> Over 54 independent city-days the interval was
+    <span class="num">[−0.023, +0.070]</span> — zero comfortably inside. The gate was a point
+    estimate with no power requirement, and per-bet dispersion here is enormous relative to the
+    edge: detecting a true 2¢ advantage at conventional power needs roughly
+    <strong>1,760 independent bets</strong>.</p>
+    <p><strong>It doesn't replicate.</strong> The breadth book (below) runs the same strategy
+    across 49 cities and puts the identical band at <span class="num">+0.005</span> — and
+    <em>flips the sign</em> of the sub-band that looked strongest. Two samples disagreeing about
+    which part carries the effect is what noise looks like.</p>
+    <p>The 87% win rate is worth understanding, because it is seductive and meaningless on its
+    own: wins average <span class="num">+0.157</span>, losses average
+    <span class="num">−0.800</span>. One loss cancels five wins. A strategy like this shows ~86%
+    wins whether it is profitable or quietly bleeding — only the average distinguishes them.</p>
+  </div></div>
+</div>
+
+<div class="entry">
+  <div class="entry-head"><p class="name">F2 · Favourite buy</p><span class="yr">since 2026-07-13</span>
+    <span class="chip c-warn">Barely any sample</span></div>
+  <p class="what">The mirror trade: buy YES on bins priced 65–85¢, the "boring" favourites the
+  same bias should leave underpriced.</p>
+  <div class="field"><span class="lbl">Result</span><div class="val">
+    <p>One graded contract, which lost. Nothing can be concluded. Entries are restricted to more
+    than 12 hours before the local day ends, and that window rarely coincides with prices in the
+    target band.</p></div></div>
+</div>
+
+<div class="entry">
+  <div class="entry-head"><p class="name">F3 · Breadth book — all 49 cities</p><span class="yr">since 2026-07-23</span>
+    <span class="chip c-warn">The powered replication — reads zero</span></div>
+  <p class="what">The same model-free legs extended from 5 cities to every active Polymarket
+  weather market, graded off Polymarket's own settlements.</p>
+  <div class="field"><span class="lbl">Why it exists</span><div class="val">
+    <p>The 5-city book accrues sample too slowly to settle anything, and needs an independent
+    check. Because these trades require no forecast, extending them costs nothing but code — no
+    per-city weather plumbing, no resolution anchors. It grades directly off how each market
+    paid out.</p></div></div>
+  <div class="field"><span class="lbl">Result</span><div class="val">
+    <p>947 settled contracts across 49 cities. Full band <span class="num">+0.005</span> per
+    contract, interval tight around zero. Decomposed by price band, the picture contradicts the
+    5-city story outright: the band that looked strongest there (25–35¢) is
+    <em>negative</em> here, and bins priced near 30¢ realise 30.2% — <strong>fairly priced</strong>,
+    so selling them merely donates the spread and fee.</p></div></div>
+  <div class="field"><span class="lbl">The one real finding</span><div class="val">
+    <p>Splitting by liquidity produces the only statistically significant result in the entire
+    structure programme, and it is a warning rather than an opportunity: in thin books (under
+    $1k liquidity), resting maker orders lose <span class="num">−0.064</span> per contract,
+    interval <span class="num">[−0.124, −0.005]</span>. That is adverse selection made visible —
+    your resting sell order fills precisely when the price is moving against you.
+    <strong>Don't make markets where nobody trades.</strong></p></div></div>
+</div>
+
+<hr class="div">
+
+<h2 class="sec" id="rulers">Chronology</h2>
+<p class="sec-title">Nine times the measuring instrument was broken</p>
+
+<p>This is the part of the project with the most transferable value. Every one of these was
+found <em>after</em> it had already produced numbers that were believed. Every single correction
+moved the result in the same direction — the model looked worse, the market looked better. Order
+matters here, because each fix changed the numbers the next stage was reasoning about.</p>
+
+<ol class="tl">
+  <li><span class="when">June 2026</span>
+    <p class="tl-t">Grading bets against our own forecast grid</p>
+    <p>Outcomes were graded using the same Open-Meteo grid the model forecast from. Prediction and
+    "truth" therefore shared the same errors, so the model was rewarded for being consistently
+    wrong. This produced the project's famous <strong>127.5% ROI</strong> — entirely fictional.
+    Grading against real station observations roughly halved measured returns.</p></li>
+
+  <li><span class="when">3 July 2026</span>
+    <p class="tl-t">The truth feed itself was corrupt</p>
+    <p>Meteostat, the historical weather source, was found to be up to <strong>9°C</strong> away
+    from official readings on recent dates. Every number computed against it was meaningless.
+    Replaced with National Weather Service climate reports, METAR summaries, and the Hong Kong
+    Observatory API.</p></li>
+
+  <li><span class="when">July 2026</span>
+    <p class="tl-t">Roughly 25 code bugs, one of them enormous</p>
+    <p>The largest silently excluded <strong>83% of US markets</strong> from grading. Others
+    leaked future data into the backtest. Each was individually plausible; collectively they made
+    every prior result unreliable.</p></li>
+
+  <li><span class="when">12 July 2026</span>
+    <p class="tl-t">We were reading the wrong thermometer</p>
+    <p>These markets do not settle on the National Weather Service climate report. They settle on
+    <strong>wunderground.com</strong>, whose daily extremes are computed from hourly observations
+    rather than continuous sensors — a difference that can be exactly 1°F at a bin boundary.
+    <strong>Four of sixty audited markets had been graded backwards.</strong> This destroyed the
+    project's most promising result: an apparent New York same-day edge that was, on corrected
+    labels, the mislabelled boundary days.</p></li>
+
+  <li><span class="when">20 July 2026</span>
+    <p class="tl-t">The correct thermometer, silently unused</p>
+    <p>The settlement-faithful grader needs an hourly observations file. When that file is
+    missing it returns nothing and the system falls back to the old source — <em>without
+    warning</em>. The file was gitignored and written only by one job, so three of four cloud
+    workflows had never once graded with it present. Where both sources existed they disagreed on
+    99 of 174 days, flipping 18 verdicts.</p></li>
+
+  <li><span class="when">27 July 2026</span>
+    <p class="tl-t">A gate that passed on a point estimate</p>
+    <p>The shoulder book cleared its pre-registered threshold. The threshold had no power
+    requirement, so "gate met" and "no edge whatsoever" were statistically indistinguishable.
+    Every gate in the project now additionally requires its confidence interval to exclude zero
+    across enough independent city-days.</p></li>
+
+  <li><span class="when">27 July 2026</span>
+    <p class="tl-t">A fill detector that could barely see</p>
+    <p>Maker-order profitability was measured against a price history containing a median of
+    <strong>one</strong> later observation per entry — 36% of entries had none at all and could
+    never register a fill. The apparent maker edge was an artifact of near-blindness. Rebuilt on
+    the dense price feed, fills rose from 34% to 55% and the apparent edge shrank.</p></li>
+
+  <li><span class="when">28 July 2026</span>
+    <p class="tl-t">A scoreboard comparing different markets</p>
+    <p>The published dashboard scored the model over 401 markets and the ensemble over the 246
+    they shared, then captioned it "on the same markets". On genuinely equal footing the model
+    was <span class="num">0.148</span>, not <span class="num">0.1369</span> — losing, not
+    winning.</p></li>
+
+  <li><span class="when">28 July 2026</span>
+    <p class="tl-t">A comparison frozen for days</p>
+    <p>The daily job rebuilt only one of the two files the headline comparison needs. The other
+    came from a manual job last run three days earlier, so the published verdict sat perfectly
+    still while looking perfectly healthy.</p></li>
+</ol>
+
+<div class="callout">
+  <p class="ct">The pattern worth taking away</p>
+  <p>Six of these nine were <strong>silent</strong>: no error, no failed job, no red run. A stale
+  file, a missing column, an unmounted element, a swallowed exception. The system reported
+  success while publishing something wrong.</p>
+  <p>The defence that now exists is not more tests but louder failure — builds that refuse to
+  publish when a city is ungradable or an exception was caught, rather than shipping a partial
+  page with a green tick.</p>
+</div>
+
+<hr class="div">
+
+<h2 class="sec" id="standing">Result</h2>
+<p class="sec-title">Where everything actually stands</p>
+
+<h3>The pooled test — the one with enough data to conclude</h3>
+<p>Splitting into fifteen buckets left every individual test too weak to decide anything. Pooled
+across all of them, comparing model against market <em>on the same markets</em> and counting each
+city-day once, the answer is unambiguous:</p>
+
+<div class="tw"><table>
+  <caption>Pooled model-minus-market Brier gap · positive means the model is worse</caption>
+  <thead><tr><th>Window</th><th class="n">Markets</th><th class="n">City-days</th><th class="n">Gap</th><th class="n">95% interval</th><th>Reading</th></tr></thead>
+  <tbody>
+    <tr class="hi"><td>All</td><td class="n">261</td><td class="n">143</td><td class="n t-fail">+0.0259</td><td class="n">[+0.0084, +0.0434]</td><td class="t-fail">model measurably worse</td></tr>
+    <tr><td>Last 60</td><td class="n">60</td><td class="n">32</td><td class="n">+0.0038</td><td class="n">[−0.0255, +0.0331]</td><td>indistinguishable</td></tr>
+  </tbody></table></div>
+
+<p>The whole interval sits above zero on the full record: this is a real gap, not sampling noise.
+On the most recent 60 markets the gap shrinks and the interval spans zero — worth watching, but
+60 markets is far too few to call it improvement.</p>
+
+<h3>Why pairing mattered more than more data</h3>
+<p>The same 261 markets, measured three ways. The estimate never changes; only the uncertainty
+does:</p>
+
+<div class="tw"><table>
+  <caption>Identical data, three methods — pairing is what made the answer conclusive</caption>
+  <thead><tr><th>Method</th><th class="n">Std. error</th><th class="n">95% interval</th><th>Verdict</th></tr></thead>
+  <tbody>
+    <tr><td>Two separate averages</td><td class="n">0.0195</td><td class="n">[−0.0123, +0.0641]</td><td>can't tell</td></tr>
+    <tr class="hi"><td>Paired per market</td><td class="n">0.0086</td><td class="n">[+0.0090, +0.0428]</td><td class="t-hold">conclusive</td></tr>
+    <tr><td>Paired + clustered by city-day</td><td class="n">0.0089</td><td class="n">[+0.0084, +0.0434]</td><td class="t-hold">conclusive</td></tr>
+  </tbody></table></div>
+
+<p>Comparing the two forecasters <em>on each individual market</em> rather than averaging them
+separately cut the uncertainty by more than half — because most variation between markets is
+shared difficulty. "Will London hit 24°C tomorrow?" is genuinely uncertain and both forecasters
+score badly; comparing on the same question cancels that out and leaves only who was closer.
+Clustering then counts a city-day once rather than eleven times, since all eleven bins settle on
+a single temperature reading.</p>
+
+<h3>By city</h3>
+<div class="tw"><table>
+  <caption>Brier by city, common set · lower is better</caption>
+  <thead><tr><th>City</th><th>Station</th><th class="n">n</th><th class="n">Market</th><th class="n">Ensemble</th><th class="n">Model</th></tr></thead>
+  <tbody>
+    <tr><td>Seoul</td><td><code>RKSI</code></td><td class="n">116</td><td class="n">0.1243</td><td class="n">0.1354</td><td class="n">0.1428</td></tr>
+    <tr><td>London</td><td><code>EGLC</code></td><td class="n">115</td><td class="n">0.1290</td><td class="n">0.1197</td><td class="n">0.1367</td></tr>
+    <tr><td>New York</td><td><code>KLGA</code></td><td class="n">82</td><td class="n">0.1250</td><td class="n">0.1345</td><td class="n">0.1615</td></tr>
+    <tr><td>Chicago</td><td><code>KORD</code></td><td class="n">70</td><td class="n">0.0818</td><td class="n">0.1340</td><td class="n">0.1096</td></tr>
+    <tr><td>Hong Kong</td><td><code>HKO</code></td><td class="n">18</td><td class="n">0.0712</td><td class="n">0.0625</td><td class="n">0.0978</td></tr>
+  </tbody></table></div>
+<p>The market wins in every city. Note Chicago: the market's <span class="num">0.0818</span> is
+the sharpest number on the board — its participants are pricing that station extremely well.</p>
+
+<div class="callout">
+  <p class="ct">Current status</p>
+  <p>The forecasting book is <strong>off</strong> and has never traded real money. The structure
+  books run on paper across 49 cities. All fifteen forecasting buckets are under prospective test
+  with corrected thresholds; none has passed. No real capital has been deployed at any point in
+  this project.</p>
+</div>
+
+<hr class="div">
+
+<h2 class="sec" id="lessons">Synthesis</h2>
+<p class="sec-title">Six things four months bought</p>
+
+<h3>1 · The market is not a naive counterparty</h3>
+<p>The persistent assumption behind every model here was that crowd prices are sloppy and a
+proper physics-based forecast should beat them. On 261 markets the price beat every model, every
+baseline, and every combination — in all five cities. Its prices are best calibrated precisely
+where we disagreed with them most.</p>
+
+<h3>2 · Better on one metric is not better on the metric that pays</h3>
+<p>QRF v2 forecasts temperatures genuinely better than the ensemble in three of five cities, and
+still prices bins worse. Degrees and probabilities are different currencies, and the exchange
+rate is not in your favour when the question is which one-degree bucket a reading lands in.</p>
+
+<h3>3 · Public information is not an edge</h3>
+<p>Intraday conditioning was the best idea in the project, and the market prices the running
+maximum at least as well as we do. Being able to read a feed everyone else can read is not an
+advantage — it is table stakes, and you are competing on speed.</p>
+
+<h3>4 · Splitting data to find pockets mostly finds noise</h3>
+<p>Fifteen buckets, ranked by score, systematically crowns the smallest one. In a simulation with
+no edge at all, the apparent best bucket looks <em>better</em> than our real best bucket. If you
+must slice, pre-register every slice and correct for how many you looked at.</p>
+
+<h3>5 · Every measurement error flattered us</h3>
+<p>Nine broken instruments, nine corrections, all in the same direction. That is not coincidence —
+a bug that makes results look worse gets investigated immediately, while one that makes them look
+better gets celebrated. <strong>Assume the next correction will also cost you.</strong></p>
+
+<h3>6 · Silent failure is the dominant bug class</h3>
+<p>The expensive errors here were not crashes. They were a stale file, a swallowed exception, an
+unmounted element, a comparison across mismatched samples — all reporting success. Systems that
+compute numbers need to fail <em>loudly</em> when an input is missing, because a plausible wrong
+number is far more dangerous than an obvious blank.</p>
+
+<div class="callout">
+  <p class="ct">The honest bottom line</p>
+  <p>Twelve modelling approaches, four data sources, three distributional families, two
+  book designs. The forecasting thread is closed: the model is measurably worse than the market,
+  and the pockets where it looked better do not survive contact with a confidence interval.</p>
+  <p>What remains is the model-free structure programme, accruing sample across 49 cities and so
+  far reading zero — with one significant finding, and it is a warning: don't provide liquidity
+  where none is wanted.</p>
+</div>
+
+<hr class="div">
+
+<h2 class="sec" id="glossary">Reference</h2>
+<p class="sec-title">Glossary</p>
+
+<dl class="gloss">
+  <dt>Bin</dt><dd>One temperature bucket in a market — "24°C" — settling YES or NO. About eleven
+  per city-day, mutually exclusive.</dd>
+
+  <dt>Brier score</dt><dd>Mean squared error of a probability forecast. Lower is better; 0 is
+  perfect. The project's scoreboard.</dd>
+
+  <dt>CRPS</dt><dd>Continuous Ranked Probability Score — the equivalent for a whole temperature
+  distribution, measured in degrees.</dd>
+
+  <dt>Ensemble</dt><dd>Many runs of a weather model from slightly different starting conditions.
+  Their spread is a physically meaningful uncertainty estimate.</dd>
+
+  <dt>EMOS</dt><dd>Ensemble Model Output Statistics — the standard statistical method for
+  correcting an ensemble's bias and spread against observations.</dd>
+
+  <dt>Lead time</dt><dd>How far ahead a forecast is made. A 1-day forecast and a 5-day forecast
+  are different problems and are modelled separately here.</dd>
+
+  <dt>METAR</dt><dd>The routine hourly weather report issued by airports. The raw material for
+  both settlement and intraday conditioning.</dd>
+
+  <dt>Clustering (city-day)</dt><dd>Treating all bins for one city on one date as a single
+  independent observation, because they all settle on one temperature reading.</dd>
+
+  <dt>Pre-registered gate</dt><dd>A success threshold committed to in writing <em>before</em>
+  seeing the data, so it cannot be moved afterwards to fit a result.</dd>
+
+  <dt>Forward bet</dt><dd>A market that settled <em>after</em> a hypothesis was written down.
+  The only kind that counts toward a gate.</dd>
+
+  <dt>Maker / taker</dt><dd>A maker posts a resting order and waits; a taker crosses the spread
+  for immediate execution. Makers pay lower fees but get filled selectively — often precisely
+  when the price is moving against them.</dd>
+
+  <dt>Favourite–longshot bias</dt><dd>The tendency across betting markets for unlikely outcomes
+  to be overpriced and likely ones underpriced. The premise of the structure books.</dd>
+</dl>
+
+</main>
+
+<footer class="end">
+  Raincheck · model post-mortem · compiled 28 July 2026 · all figures from settlement-faithful
+  grading on 261 common markets · no real capital deployed
+</footer>
+
+</div>
+
+</body>
+</html>

@@ -1563,6 +1563,29 @@ def test_shoulder_report_parse_marks_a_passed_gate():
 
 
 
+def test_dashboard_links_to_the_self_hosted_guide():
+    """The guide is published alongside index.html in the Pages repo, so the link must be
+    RELATIVE — a claude.ai artifact URL would be private and 404 for every other visitor."""
+    import build_dashboard as bd
+    import inspect
+    src = inspect.getsource(bd)
+    assert 'href="./guide.html"' in src
+    assert "claude.ai/code/artifact" not in src      # never link the private artifact
+
+
+def test_guide_page_is_standalone_and_dependency_free():
+    """It ships to plain GitHub Pages: no mermaid runtime, no external fonts or scripts, and its
+    own <head> (the artifact host supplies one; Pages does not)."""
+    import pathlib
+    p = pathlib.Path(__file__).resolve().parents[1] / "src/polymarket_weather/guide.html"
+    h = p.read_text(encoding="utf-8")
+    assert h.startswith("<!doctype html>") and "<head>" in h
+    assert "mermaid" not in h                       # would silently render as raw text
+    assert "https://" not in h.split("<body>")[0]   # no external assets in head
+    assert '<script' not in h                       # static document, no JS needed
+    assert 'href="./index.html"' in h               # back link to the dashboard
+
+
 def test_headline_briers_come_from_the_paired_common_set():
     """Coverage kept after deleting _scoreboard_html: the BR_* binds must still read the PAIRED
     numbers, not evaluate_oos's unpaired MODEL row (401 markets vs the ensemble's 246)."""
