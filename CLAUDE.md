@@ -302,7 +302,7 @@ Four workflows in `.github/workflows/`. All commit as `raincheck-collector`
 | `collect.yml` | hourly (`13 * * * *`) | `main.py --collect-only` | `data/polymarket`, `data/weather`, `shoulder_paper.csv` |
 | `truth-eval.yml` | daily 09:00 UTC | truth + obs refresh → regenerate tracker → **audit** → gate | `output/` trackers |
 | `dashboard.yml` | every 2h (`40 */2 * * *`) | truth + obs refresh → `build_dashboard.py` | **separate public repo** (below) |
-| `retrain.yml` | **`workflow_dispatch` ONLY** | full fetch → rebuild targets → `train_calibrator.py` → both trackers → arbiter | `models/`, `output/` |
+| `retrain.yml` | weekly (`20 4 * * 0`) + `workflow_dispatch` | full fetch → rebuild targets → `train_calibrator.py` → both trackers → arbiter | `models/`, `output/` |
 
 ⚠️ **Those crons are deliberately ~2× the cadence we want.** GitHub schedules are best-effort:
 measured 2026-07-27, the old every-2h collect cron delivered **3h49 gaps** (roughly every other
@@ -310,9 +310,13 @@ slot, each 1-2h late) and dashboard runs fired **~3h after** their slot with som
 are idempotent (append-only + dedupe on read) and the repo is public (free minutes), so
 over-scheduling is the fix. Judge health by the gap between *data* timestamps, never by the cron.
 
-`retrain.yml` is deliberately manual: model artifacts drive the paper bets, so new models get
-reviewed before they take effect. **It has no schedule — a retrain only happens when someone
-clicks it.** ⚠️ It is also timeout-constrained: run #1 (2026-07-17) was killed at
+`retrain.yml` runs **weekly (Sun 04:20 UTC)** as of 2026-07-28, plus manual dispatch. Weekly is
+cheaper than monthly, not dearer: the per-fetch archive cache is evicted after 7 days unused, so
+a monthly schedule would run COLD every time (full 2022→now refetch, ~3-4h) while weekly keeps it
+warm and pulls only the new week. **Retrain is NOT the measurement tool** — `truth-eval` (daily)
+regenerates the trackers and grades; retrain does so only as a side effect. ⚠️ Model artifacts now
+change under the E3 forward gates, so a gate's forward sample can span model versions — fine while
+everything is paper, revisit before any bucket goes live. ⚠️ It is also timeout-constrained: run #1 (2026-07-17) was killed at
 `timeout-minutes: 60`, so W0.2 did not land on that attempt. The heavy steps are
 `fetch_historical_leads*.py` (2022→now × leads 1–7 × models × 5 cities, Open-Meteo rate limits).
 Raise the timeout rather than assuming the run "just took a while".

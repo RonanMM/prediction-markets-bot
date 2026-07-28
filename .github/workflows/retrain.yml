@@ -15,6 +15,27 @@
 name: retrain
 
 on:
+  # WEEKLY (added 2026-07-28). Counter-intuitively this is CHEAPER than running it monthly:
+  # the per-fetch archive cache below is evicted after 7 days without access, so a monthly
+  # schedule would run COLD every single time (full 2022→now refetch, ~3-4h, heavy on
+  # Open-Meteo's free archive) while a weekly one keeps the cache warm and each run pulls
+  # only the new week (minutes). Sunday 04:20 UTC — quiet slot, and a whole day before the
+  # week's first collector-heavy period.
+  #
+  # What this does and does NOT do:
+  #   - DOES keep the served models current as the archives grow (the pending win is
+  #     daily_mm accumulating enough complete rows for the multi-model blend to serve more
+  #     than ~16% of them).
+  #   - Does NOT "track how the model is doing" — that is truth-eval.yml, daily. Retrain
+  #     regenerates the trackers as a side effect, which makes it LOOK like the measurement
+  #     tool, but using a multi-hour job to refresh a 5-minute daily measurement is the wrong
+  #     instrument.
+  #
+  # ⚠️ Model artifacts change under the E3 per-bucket FORWARD gates, so a gate's forward
+  # sample can now span more than one model version. Acceptable while everything is paper;
+  # revisit before any bucket goes live (see config.LIVE_BUCKETS / E3_NOMINATION_DATE).
+  schedule:
+    - cron: "20 4 * * 0"
   workflow_dispatch: {}
 
 concurrency:
