@@ -1091,6 +1091,26 @@ def test_moderate_gate_prereg_date_kwarg():
 
 # ── Gate power amendment 2026-07-27 (clustered significance) ────────────────────
 
+def test_minimum_detectable_edge_exposes_what_a_sample_can_actually_see():
+    """'31/40 bets' reads as 78% done when the interval actually needs ~400. The gate must report
+    the smallest edge its CURRENT sample could resolve, so progress can't be misread."""
+    import evaluate_oos as ev
+    assert ev._mde(0.0210, 2.94) == pytest.approx(0.0617, abs=0.001)
+    # more data -> a smaller edge becomes detectable
+    assert ev._mde(0.0105, 2.94) < ev._mde(0.0210, 2.94)
+
+
+def test_pooled_gap_is_reported_as_the_powered_test():
+    """Splitting into 15 buckets costs ~15x the sample. The pooled test is the one that has the
+    data, and it must be printed as such rather than buried under underpowered per-bucket rows."""
+    import evaluate_oos as ev
+    import inspect
+    src = inspect.getsource(ev)
+    assert "POOLED" in src
+    # and the bet-count floor must be labelled as non-binding, so 'n/40' isn't read as progress
+    assert "binding constraint" in src
+
+
 def test_every_bucket_is_nominated_with_its_own_forward_clock():
     """2026-07-28: replaces the hand-picked {Seoul|1d, Chicago|1d} with ALL buckets under test.
     Buckets nominated on 2026-07-12 keep that clock (their forward sample was earned honestly);

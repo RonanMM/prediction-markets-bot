@@ -1,6 +1,6 @@
 # Where things actually stand (plain English)
 
-Updated **2026-07-13**. For the full edge strategy and evidence see `docs/EDGE_MEGAPLAN.md`;
+Updated **2026-07-28**. For the full edge strategy and evidence see `docs/EDGE_MEGAPLAN.md`;
 for the technical reference see `CLAUDE.md`. Live numbers, anytime, from
 `src/polymarket_weather/`:
 
@@ -35,6 +35,32 @@ project has been burned by flattering measurements four separate times.
    (currently 60/61; the one standing miss is a Seoul data-source subtlety).
 
 ## Verdict on the forecasting strategy: no edge — it stays OFF
+
+### The pooled test (2026-07-28) — the one that actually has the sample
+Every earlier per-bucket hunt split the data 15 ways and left each test far too weak to
+conclude anything. Pooled across every city and horizon, on settlement-faithful labels and the
+RAW tradeable price:
+
+```
+n = 401 markets over 171 independent city-days
+model-minus-market Brier gap  +0.0211   95% CI [+0.0068, +0.0353]   t = 2.90
+→ the interval sits ENTIRELY ABOVE zero: the model is WORSE than the market, decisively
+```
+
+That is not "no edge found yet" — it is a positive finding that the model is measurably worse
+by ~2 Brier points. Three independent things agree: (1) this pooled interval; (2) only 4 of 15
+buckets even have a negative point estimate where chance alone predicts ~7.5; (3) a null-world
+simulation (model recentred to exactly market-equal, real sizes and correlations, 5,000 runs)
+produces a best-looking bucket of −0.046 median, while our real best is only −0.016 — the
+observed "pockets" are weaker than what pure noise generates.
+
+**Why the per-bucket gates will not settle this.** At the observed dispersion a bucket needs
+~418 forward bets to resolve a 0.02 Brier edge (~3 years at current volume); 67 for a 0.05 edge.
+The pre-committed 40-bet floor is therefore NOT the binding constraint — at n=40 only an edge
+larger than ~0.065 could ever clear the interval, and no bucket has ever shown that. The gates
+stay running (they cost nothing and would catch something real) but they are a lottery ticket,
+not a plan. `evaluate_oos.py` prints the pooled test first for this reason.
+
 The pre-committed gate is met (240 gradable markets / 354 graded bets as of 2026-07-13), so
 this is a real verdict, not a small-sample tease. Accuracy (Brier, lower = better):
 
@@ -58,8 +84,10 @@ market's prices are almost perfectly calibrated on exactly the bets we flag — 
 disagreements with it are our own errors. Two earlier "pockets" of apparent model edge (NYC
 same-day especially) evaporated under corrected labels: most of that edge was the mislabeled
 boundary days. Two marginal pockets (Seoul and Chicago next-day) remain nominated, paper-only,
-and must prove themselves on ≥40 *future* graded bets each before any real size (progress as
-of 2026-07-13: Seoul 1/40 — ahead of the market on that one bet — Chicago 0/40).
+and must prove themselves on future graded bets before any real size. **Superseded
+2026-07-28:** the hand-picked pair was replaced by ALL 15 city×horizon buckets under test, each
+with its own forward clock and a Bonferroni-corrected threshold (`config.E3_NOMINATIONS`), so no
+bucket is graded on the data that selected it and testing many cannot manufacture a winner.
 One known reason for model weakness is fixable: it was trained against the old truth feed, so
 retraining against settlement truth is the top queued model task.
 

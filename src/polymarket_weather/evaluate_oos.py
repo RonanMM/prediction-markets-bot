@@ -56,6 +56,17 @@ def _e3_gate_z(n_tests: int) -> float:
     return float(student_norm.ppf(1.0 - 0.025 / max(1, int(n_tests))))
 
 
+def _mde(se: float, z: float) -> float:
+    """Minimum detectable edge: the smallest |gap| this sample could resolve, = z·se.
+
+    Reported because 'n/40 bets' reads as nearly-done when the interval needs an order of
+    magnitude more. Measured 2026-07-28 on a typical bucket (se≈0.021 at n≈44): at the 40-bet
+    floor the MDE is ~0.065 Brier — larger than any gap ever observed here — so the floor is NOT
+    the binding constraint and never was. Detecting a realistic 0.02 edge needs ~418 forward bets
+    (~3 years at current volume); 0.05 needs ~67."""
+    return float(z) * float(se)
+
+
 def _e3_gate_pass(g: dict, min_bets: int, z: float = 1.96) -> bool:
     """E3 forward gate under the 2026-07-27 power amendment (extended to the bucket gates
     2026-07-28). Beating the market on a point estimate is not evidence: Chicago|1d sat at 5
@@ -448,6 +459,22 @@ def main():
         status = "ON (paper)" if bk in config.LIVE_BUCKETS else "off"
         print(f"    {bk:<20} {len(grp):>4} {bm:>8.4f} {bmk:>8.4f} {g['gap']:>+8.4f} "
               f"{ci:>19}  {status}")
+    # POOLED — the test that actually has the sample. Splitting into 15 buckets costs ~15x the
+    # data, and the per-bucket intervals show it: a realistic 0.02 edge needs ~418 forward bets
+    # per bucket (~3 years at current volume). Pooled across every bucket the question is already
+    # answered, so it is printed FIRST and the per-bucket rows read as hypotheses beneath it.
+    pooled = _gap_stats(ml, mkt_col)
+    plo = pooled["gap"] - 1.96 * pooled["se"]
+    phi = pooled["gap"] + 1.96 * pooled["se"]
+    verdict = ("MODEL WORSE than market (interval entirely above 0)" if plo > 0 else
+               "MODEL BETTER than market (interval entirely below 0)" if phi < 0 else
+               "indistinguishable from the market (interval spans 0)")
+    print("\n  POOLED model-vs-market — all buckets, the powered test:")
+    print(f"    n={pooled['n']} markets over {pooled['n_clusters']} city-days   "
+          f"gap {pooled['gap']:+.4f}  95% CI [{plo:+.4f},{phi:+.4f}]  "
+          f"t={pooled['gap']/pooled['se']:.2f}")
+    print(f"    -> {verdict}")
+
     # Every bucket is nominated and tested on identical prospective terms (config.E3_NOMINATIONS),
     # each against its OWN forward clock, at a threshold corrected for testing them all at once.
     noms = getattr(config, "E3_NOMINATIONS", {})
@@ -457,12 +484,12 @@ def main():
               f"(need ≥{config.E3_FORWARD_MIN_BETS} forward bets, ≥{stats_util.MIN_CLUSTERS} "
               f"city-days, and the gap interval entirely BELOW 0 at z={z:.2f} "
               f"[Bonferroni for {len(noms)} tests]):")
-        print(f"    {'bucket':<20} {'since':<11} {'fwd n':>6} {'gap':>9} {'interval':>21}  verdict")
+        print(f"    {'bucket':<20} {'since':<11} {'fwd n':>6} {'gap':>9} {'interval':>21} {'can see':>8}  verdict")
         rows = []
         for bk, since in noms.items():
             fwd = ml[(ml["_bucket"] == bk) & (ml["target_date"] > since)]
             if fwd.empty:
-                rows.append((bk, since, 0, None, None, "no forward bets yet"))
+                rows.append((bk, since, 0, None, None, "no forward bets yet", None))
                 continue
             g = _gap_stats(fwd, mkt_col)
             passed = _e3_gate_pass(g, config.E3_FORWARD_MIN_BETS, z)
@@ -475,13 +502,15 @@ def main():
                 why = f"pending ({g['n_clusters']}/{stats_util.MIN_CLUSTERS} city-days)"
             else:
                 why = "pending (interval includes 0)"
-            rows.append((bk, since, g["n"], g["gap"], (lo, hi), why))
-        for bk, since, n, gap, ci, why in sorted(rows, key=lambda r: (r[3] is None, r[3])):
+            rows.append((bk, since, g["n"], g["gap"], (lo, hi), why, _mde(g["se"], z)))
+        for bk, since, n, gap, ci, why, mde in sorted(rows, key=lambda r: (r[3] is None, r[3])):
             gtxt = f"{gap:+9.4f}" if gap is not None else f"{'—':>9}"
             ctxt = (f"[{ci[0]:+.4f},{ci[1]:+.4f}]" if ci and np.isfinite(ci[0]) else "—")
-            print(f"    {bk:<20} {since:<11} {n:>6} {gtxt} {ctxt:>21}  {why}")
-        print("    (gap<0 = model better. All buckets nominated 2026-07-28 except the two "
-              "2026-07-12 ones, whose forward sample predates any inspection.)")
+            mtxt = f"{mde:.3f}" if mde is not None and np.isfinite(mde) else "—"
+            print(f"    {bk:<20} {since:<11} {n:>6} {gtxt} {ctxt:>21} {mtxt:>8}  {why}")
+        print("    (gap<0 = model better. 'can see' = smallest edge this sample could resolve.")
+        print(f"     The {config.E3_FORWARD_MIN_BETS}-bet floor is NOT the binding constraint —"
+              " the interval is; at 40 bets only an edge >~0.065 could ever pass.)")
 
     on = ml[ml["_bucket"].isin(config.LIVE_BUCKETS)]
     if not on.empty:
