@@ -1494,6 +1494,18 @@ def test_grade_book_skips_future_targets(tmp_path):
     assert looked_up == ["past"]
 
 
+def test_series_error_blocks_publishing():
+    """compute_series wraps everything in one try/except and stashes the exception in
+    series['error']. Nothing checked it, so a NameError I introduced on 2026-07-28 silently
+    dropped every panel computed after it — the whole 'Recent settlements' table published as
+    'No settlements yet' while the run stayed green. A recorded error must fail the build."""
+    import build_dashboard as bd
+    assert bd._series_error({"series": {"error": "NameError: name 'nom_date' is not defined"}}) \
+        == "NameError: name 'nom_date' is not defined"
+    assert bd._series_error({"series": {}}) is None
+    assert bd._series_error({}) is None
+
+
 def test_dashboard_completeness_guard():
     import build_dashboard as bd
     # full set -> nothing missing

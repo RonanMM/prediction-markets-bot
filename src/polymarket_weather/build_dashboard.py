@@ -120,6 +120,31 @@ def _bin_label(q: str) -> str:
     return kind + core.strip()
 
 
+def config_forward_min() -> int:
+    """The pre-registered forward-bet floor (non-binding since 2026-07-28 — the
+    clustered interval is what actually gates; see evaluate_oos._mde)."""
+    try:
+        import config as cfg
+        return int(getattr(cfg, "E3_FORWARD_MIN_BETS", 40))
+    except Exception:
+        return 40
+
+
+def _series_error(payload) -> "str | None":
+    """The exception compute_series swallowed, if any.
+
+    compute_series wraps its whole body in one try/except and records the failure in
+    series["error"]. Nothing checked it, so on 2026-07-28 a NameError silently dropped
+    every panel computed after the failure point — "Recent settlements" published as
+    "No settlements yet" while the workflow stayed green. Same shape as the truth
+    outage that _missing_cities was written for: a partial page must fail loudly."""
+    try:
+        err = (payload or {}).get("series", {}).get("error")
+    except AttributeError:
+        return None
+    return str(err) if err else None
+
+
 def compute_series() -> dict:
     out: dict = {"acc": [], "roll": [], "city": [], "calib": [], "growth": [],
                  "heartbeat": [], "buckets": [], "recent": [], "equity": []}
@@ -284,8 +309,7 @@ def compute_series() -> dict:
                 buckets.append(row)
             buckets.sort(key=lambda r: (not r["nom"], -r["n"]))
         out["buckets"] = buckets
-        out["gate_fwd_n"] = 40
-        out["nom_date"] = nom_date.strftime("%b %-d")
+        out["gate_fwd_n"] = config_forward_min()
 
         # recent settlements feed — the last 60 graded markets, newest first
         rec = cal.sort_values("td").tail(60)
@@ -678,6 +702,16 @@ def main() -> None:
     # Completeness guard: never publish a degraded dashboard. A transient truth outage that drops
     # whole cities must FAIL LOUDLY (red run + last-good copy preserved), not silently ship half a
     # dataset. Override with DASHBOARD_ALLOW_PARTIAL=1 only for deliberate local/partial builds.
+    # A swallowed compute_series exception means panels are missing but the page still renders
+    # and the workflow still exits 0 — exactly how the 2026-07-28 NameError shipped an empty
+    # "Recent settlements" table. Treat it like a truth outage: refuse, keep the last good copy.
+    serr = _series_error(payload)
+    if serr and os.environ.get("DASHBOARD_ALLOW_PARTIAL") != "1":
+        sys.stderr.write(
+            f"::error::dashboard build INCOMPLETE — compute_series failed with {serr}. Panels "
+            f"after the failure point would publish empty. Refusing; last good copy kept. Set "
+            f"DASHBOARD_ALLOW_PARTIAL=1 to override.\n")
+        sys.exit(1)
     missing = _missing_cities(payload)
     if missing and os.environ.get("DASHBOARD_ALLOW_PARTIAL") != "1":
         sys.stderr.write(
