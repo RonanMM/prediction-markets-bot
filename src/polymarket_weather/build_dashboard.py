@@ -877,6 +877,7 @@ TEMPLATE = r"""<meta charset="utf-8">
       <span class="seg" id="winseg"><button class="on" data-win="all">All time</button><button data-win="recent">Last 60</button></span>
     </div>
     <div class="rank" id="rank"></div>
+    <div class="cap" id="pooledLine" style="margin-top:10px"></div>
     <div class="caveat" id="cav"><b>Small-sample warning.</b> 60 markets is a noisy window — one clean settlement swings it, and recent form is where this project has been fooled before. Read the all-time number for the verdict.</div>
 
     <div class="gloss">
@@ -1242,6 +1243,24 @@ TEMPLATE = r"""<meta charset="utf-8">
         + '<span class="val">' + r[2].toFixed(3) + '</span>'
         + '<span class="d' + (isLead ? ' z' : '') + '">' + (isLead ? '—' : '+' + gap.toFixed(3)) + '</span></div>';
     }).join("");
+    // Pooled paired gap + clustered interval. The ranking alone cannot distinguish a real
+    // gap from sampling noise, so the interval is what makes this a finding. Rendered here on
+    // the live path -- the SCOREBOARD html key has no mount point and never reaches a viewer.
+    var pl = document.getElementById("pooledLine"), P = D.pooled;
+    if (pl) {
+      if (P && isFinite(P.gap)) {
+        var worse = P.lo > 0, better = P.hi < 0;
+        var col = worse ? "model" : (better ? "good" : "faint");
+        var verd = worse ? "the model is <b>measurably worse</b> than the market"
+                 : better ? "the model is <b>measurably better</b> than the market"
+                 : "model and market are <b>indistinguishable</b> on this sample";
+        var sgn = function (x) { return (x >= 0 ? "+" : "−") + Math.abs(x).toFixed(4); };
+        pl.innerHTML = "Pooled gap (model − market, paired per market): "
+          + '<b style="color:var(--' + col + ')">' + sgn(P.gap) + "</b> 95% CI ["
+          + sgn(P.lo) + ", " + sgn(P.hi) + "] over " + P.n + " markets / " + P.clusters
+          + " independent city-days — " + verd + ". The interval, not the ranking, is the evidence.";
+      } else { pl.textContent = ""; }
+    }
     var mg = s.model - s.market;
     if (gapEl) gapEl.textContent = (mg >= 0 ? "+" : "−") + Math.abs(mg).toFixed(3);
     // verdictLine is a neutral static description; the ranked table (leader flagged) shows the standing.

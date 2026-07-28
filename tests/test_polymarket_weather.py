@@ -1577,6 +1577,19 @@ def test_scoreboard_uses_paired_common_set_not_the_unpaired_model_number():
     assert html.index("Raw ensemble") < html.index("Our model") or "#2" in html
 
 
+def test_pooled_line_renders_in_the_LIVE_scoreboard_path():
+    """_scoreboard_html's output is DEAD PAYLOAD: the page has no data-bind-html="SCOREBOARD"
+    mount, and builds its scoreboard live from D.score into #rank via renderScore(). So the
+    pooled interval has to be rendered on that path or it never reaches a viewer."""
+    import build_dashboard as bd
+    import inspect
+    src = inspect.getsource(bd)
+    assert 'id="pooledLine"' in src            # a real element in the DOM
+    assert "D.pooled" in src                   # filled from the payload by the live renderer
+    # and the dead mount must not be the only place it appears
+    assert 'data-bind-html="SCOREBOARD"' not in src
+
+
 def test_scoreboard_publishes_the_pooled_gap_interval():
     """The page showed model 0.1417 vs market 0.1158 with no interval — suggestive, not
     conclusive. The pooled paired gap and its CI are what make it a finding, so they belong on
