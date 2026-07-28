@@ -1562,19 +1562,35 @@ def test_shoulder_report_parse_marks_a_passed_gate():
     assert bd._parse_book_scalars(passed)["sb_mod_pass"] == "1"
 
 
-def test_scoreboard_uses_paired_common_set_not_the_unpaired_model_number():
-    """2026-07-27: the hero scoreboard compared MODEL over all 401 model rows against ENSEMBLE
-    over the 246-market intersection, then captioned it 'on the same 246 common markets'. That
-    flipped the verdict — unpaired model 0.1369 'beats' ens 0.1413, but on the same markets the
-    model is 0.1480 and LOSES. The scoreboard must use the paired numbers."""
+
+def test_headline_briers_come_from_the_paired_common_set():
+    """Coverage kept after deleting _scoreboard_html: the BR_* binds must still read the PAIRED
+    numbers, not evaluate_oos's unpaired MODEL row (401 markets vs the ensemble's 246)."""
     import build_dashboard as bd
-    unpaired = {"br_market": "0.1160", "br_model": "0.1369", "br_ens": "0.1413"}
-    paired = {"market": 0.1180, "ens": 0.1413, "model": 0.1480, "n": 246}
-    html = bd._scoreboard_html(unpaired, paired)
-    assert "0.1480" in html and "0.1369" not in html      # paired model, not the flattering one
-    assert "0.1180" in html and "0.1160" not in html      # paired market too
-    # the ensemble must rank ahead of the model on these numbers
-    assert html.index("Raw ensemble") < html.index("Our model") or "#2" in html
+    import inspect
+    src = inspect.getsource(bd)
+    assert '"BR_MODEL": _f4(br["model"])' in src
+    assert 'paired = ((series.get("score") or {}).get("all")) or {}' in src
+
+
+def test_pooled_interval_is_computed_for_both_scoreboard_windows():
+    """The Model-minus-market tile follows the all/last-60 toggle, so its interval must too —
+    otherwise the number and its uncertainty describe different samples."""
+    import build_dashboard as bd
+    import inspect
+    src = inspect.getsource(bd)
+    assert 'out["pooled"] = {"all":' in src
+    assert '"recent":' in src
+
+
+def test_gap_tile_carries_its_interval():
+    """A point estimate with no interval cannot be told from noise, and the gap already has a
+    KPI box — so the interval belongs in that box, not in a second one."""
+    import build_dashboard as bd
+    import inspect
+    src = inspect.getsource(bd)
+    assert 'id="k_gap_ci"' in src
+    assert 'getElementById("k_gap_ci")' in src
 
 
 def test_pooled_line_renders_in_the_LIVE_scoreboard_path():
@@ -1589,20 +1605,6 @@ def test_pooled_line_renders_in_the_LIVE_scoreboard_path():
     # and the dead mount must not be the only place it appears
     assert 'data-bind-html="SCOREBOARD"' not in src
 
-
-def test_scoreboard_publishes_the_pooled_gap_interval():
-    """The page showed model 0.1417 vs market 0.1158 with no interval — suggestive, not
-    conclusive. The pooled paired gap and its CI are what make it a finding, so they belong on
-    the page, not only in evaluate_oos's console output."""
-    import build_dashboard as bd
-    paired = {"market": 0.1158, "ens": 0.1360, "model": 0.1417, "n": 261}
-    pooled = {"gap": 0.0211, "lo": 0.0068, "hi": 0.0353, "n": 401, "clusters": 171,
-              "verdict": "model worse"}
-    html = bd._scoreboard_html({}, paired, pooled)
-    assert "+0.0211" in html and "+0.0068" in html and "+0.0353" in html
-    assert "171" in html                      # the independent-observation count, not just bets
-    # absent pooled stats the scoreboard must still render
-    assert bd._scoreboard_html({}, paired, None)
 
 
 def test_skill_is_computed_from_the_paired_model_number():

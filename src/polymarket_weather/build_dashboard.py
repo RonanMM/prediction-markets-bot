@@ -205,15 +205,20 @@ def compute_series() -> dict:
         # which is why the per-bucket rows cannot conclude anything for years and this can.
         try:
             import stats_util
-            d_gap = cs["b_model"] - cs["b_mkt"]
-            iv = stats_util.interval(d_gap, stats_util.cluster_key(
-                cs.assign(target_date=cs["td"].dt.strftime("%Y-%m-%d"))))
-            out["pooled"] = {
-                "gap": round(float(iv["mean"]), 4),
-                "lo": round(float(iv["mean"] - 1.96 * iv["se"]), 4),
-                "hi": round(float(iv["mean"] + 1.96 * iv["se"]), 4),
-                "n": int(iv["n"]), "clusters": int(iv["n_clusters"]),
-            }
+
+            def _pooled(w):
+                iv = stats_util.interval(
+                    w["b_model"] - w["b_mkt"],
+                    stats_util.cluster_key(w.assign(
+                        target_date=w["td"].dt.strftime("%Y-%m-%d"))))
+                return {"gap": round(float(iv["mean"]), 4),
+                        "lo": round(float(iv["mean"] - 1.96 * iv["se"]), 4),
+                        "hi": round(float(iv["mean"] + 1.96 * iv["se"]), 4),
+                        "n": int(iv["n"]), "clusters": int(iv["n_clusters"])}
+
+            # one entry per scoreboard window — the KPI tile follows the all/last-60 toggle,
+            # so its interval has to follow it too or the two describe different samples.
+            out["pooled"] = {"all": _pooled(cs), "recent": _pooled(cs.tail(60))}
         except Exception:
             pass
 
@@ -478,67 +483,6 @@ def _last_commit_dt() -> datetime:
 
 
 # ────────────────────────────── payload (data.json) ──────────────────────────────
-def _scoreboard_html(d: dict, score, pooled=None) -> str:
-    """The hero scoreboard: market / model / ensemble Brier ranked, leader flagged.
-
-    Uses the PAIRED common-set scores (series["score"]["all"]) — every predictor measured on the
-    same markets. evaluate_oos prints MODEL/MARKET over every model row but ENSEMBLE only over the
-    intersection, so mixing them (as this did until 2026-07-27) compared 401 markets against 246
-    and reversed the verdict: unpaired model 0.1369 'beat' ensemble 0.1413 while the paired model
-    was 0.1480 and lost. The caption claims a common set, so the numbers must be one."""
-    keys = {"br_market": "market", "br_model": "model", "br_ens": "ens"}
-    entries = []
-    for key, name, cls in (("br_market", "Market price", "market"),
-                           ("br_model", "Our model", "model"),
-                           ("br_ens", "Raw ensemble", "ens")):
-        try:
-            v = (score or {}).get(keys[key])
-            entries.append({"name": name, "cls": cls,
-                            "v": float(v) if v is not None else float(d[key])})
-        except Exception:
-            return ""
-    n_common = (score or {}).get("n")
-    ranked = sorted(entries, key=lambda e: e["v"])
-    for i, e in enumerate(ranked):
-        e["rank"] = i + 1
-    lead = ranked[0]["v"]
-    cells = []
-    for e in entries:   # fixed display order; rank shown as a chip
-        gap = e["v"] - lead
-        sub = "leads" if e["rank"] == 1 else f"+{gap:.4f} behind"
-        cells.append(
-            f'<div class="score {"lead" if e["rank"] == 1 else ""}">'
-            f'<div class="sr"><span class="rank r{e["rank"]}">#{e["rank"]}</span>'
-            f'<span class="sname"><i class="sw {e["cls"]}"></i>{e["name"]}</span></div>'
-            f'<div class="sv">{e["v"]:.4f}</div>'
-            f'<div class="ss">{sub}</div></div>')
-    n_txt = f"{n_common} common markets" if n_common else "common markets"
-    # The POOLED paired gap is what makes the ranking a finding rather than a suggestion: a
-    # per-market model-minus-market difference with a clustered interval. Without it a reader
-    # sees two numbers and has no way to tell a real gap from sampling noise.
-    pooled_html = ""
-    if pooled:
-        try:
-            gap, lo, hi = float(pooled["gap"]), float(pooled["lo"]), float(pooled["hi"])
-            worse = lo > 0
-            better = hi < 0
-            verdict = ("the model is <b>measurably worse</b> than the market" if worse else
-                       "the model is <b>measurably better</b> than the market" if better else
-                       "model and market are <b>indistinguishable</b> on this sample")
-            cls = "model" if worse else ("good" if better else "faint")
-            pooled_html = (
-                f'<div class="score-note" style="margin-top:6px">Pooled gap (model − market, '
-                f'paired per market): <b style="color:var(--{cls})">{gap:+.4f}</b> '
-                f'95% CI [{lo:+.4f}, {hi:+.4f}] over {int(pooled["n"])} markets / '
-                f'{int(pooled["clusters"])} independent city-days — {verdict}. '
-                f'The interval, not the ranking, is the evidence.</div>')
-        except (KeyError, TypeError, ValueError):
-            pooled_html = ""
-    return (f'<div class="scores">{"".join(cells)}</div>'
-            f'<div class="score-note">Brier score on the same {n_txt} — lower is better. '
-            f'Every prediction graded against the station reading each market settles on.</div>'
-            f'{pooled_html}')
-
 
 def _breadth_binds() -> dict:
     """Breadth structure-book stats, read OFFLINE from the committed CSV (no network — the
@@ -603,7 +547,7 @@ def build_payload(d: dict, series: dict) -> dict:
     days, span = _fmt_span(d)
     series["disp"] = d.get("disp", [])
     G = lambda k, dflt="—": str(d.get(k, dflt))
-    # Headline accuracy comes from the PAIRED common set (see _scoreboard_html); the parsed
+    # Headline accuracy comes from the PAIRED common set (score.all); the parsed
     # br_* values measure the model over more markets than the ensemble and flatter it.
     paired = ((series.get("score") or {}).get("all")) or {}
     br = {k: (paired.get(k) if paired.get(k) is not None else d.get(f"br_{k}"))
@@ -653,7 +597,6 @@ def build_payload(d: dict, series: dict) -> dict:
         "html": {
             "EDGE_CHIP": edge_chip,
             "TAKEAWAY": takeaway,
-            "SCOREBOARD": _scoreboard_html(d, paired, series.get("pooled")),
             "CITIES_HTML": _cities_html(series.get("city", []), d),
         },
         "series": series,
@@ -904,7 +847,7 @@ TEMPLATE = r"""<meta charset="utf-8">
     <div class="kpis">
       <div class="kpi b"><div class="k">Markets graded</div><div class="v" data-bind="N_MKTS">—</div><div class="s">settlement truth</div></div>
       <div class="kpi g"><div class="k">Sample gate</div><div class="v g" data-bind="GATE_STATUS">—</div><div class="s"><span data-bind="GATE_MKTS_THR">240</span> required</div></div>
-      <div class="kpi r"><div class="k">Model − market</div><div class="v r" id="k_gap">—</div><div class="s">Brier gap</div></div>
+      <div class="kpi r"><div class="k">Model − market</div><div class="v r" id="k_gap">—</div><div class="s" id="k_gap_ci">Brier gap</div></div>
       <div class="kpi"><div class="k">Live exposure</div><div class="v">$0</div><div class="s">paper only</div></div>
     </div>
     <p class="lede" data-bind-html="TAKEAWAY"></p>
@@ -1245,21 +1188,30 @@ TEMPLATE = r"""<meta charset="utf-8">
     }).join("");
     // Pooled paired gap + clustered interval. The ranking alone cannot distinguish a real
     // gap from sampling noise, so the interval is what makes this a finding. Rendered here on
-    // the live path -- the SCOREBOARD html key has no mount point and never reaches a viewer.
-    var pl = document.getElementById("pooledLine"), P = D.pooled;
-    if (pl) {
-      if (P && isFinite(P.gap)) {
-        var worse = P.lo > 0, better = P.hi < 0;
-        var col = worse ? "model" : (better ? "good" : "faint");
-        var verd = worse ? "the model is <b>measurably worse</b> than the market"
-                 : better ? "the model is <b>measurably better</b> than the market"
-                 : "model and market are <b>indistinguishable</b> on this sample";
-        var sgn = function (x) { return (x >= 0 ? "+" : "−") + Math.abs(x).toFixed(4); };
-        pl.innerHTML = "Pooled gap (model − market, paired per market): "
-          + '<b style="color:var(--' + col + ')">' + sgn(P.gap) + "</b> 95% CI ["
-          + sgn(P.lo) + ", " + sgn(P.hi) + "] over " + P.n + " markets / " + P.clusters
-          + " independent city-days — " + verd + ". The interval, not the ranking, is the evidence.";
-      } else { pl.textContent = ""; }
+    // the live path, alongside the gap KPI whose number this interval belongs to.
+    var pl = document.getElementById("pooledLine"), ci = document.getElementById("k_gap_ci");
+    var P = (D.pooled || {})[win] || null;
+    var sgn = function (x) { return (x >= 0 ? "+" : "\u2212") + Math.abs(x).toFixed(4); };
+    if (P && isFinite(P.gap)) {
+      var worse = P.lo > 0, better = P.hi < 0;
+      // The interval lives in the KPI box that already shows this number - a point estimate
+      // beside its own uncertainty, rather than the same figure twice in two places.
+      if (ci) ci.textContent = "95% CI [" + sgn(P.lo) + ", " + sgn(P.hi) + "]";
+      if (pl) {
+        pl.innerHTML = worse
+          ? "Across all " + P.n + " markets the model is <b>measurably worse</b> than the market: "
+            + "the whole interval sits above zero, so this is a real gap, not sampling noise."
+          : better
+          ? "Across all " + P.n + " markets the model is <b>measurably better</b> than the market: "
+            + "the whole interval sits below zero."
+          : "Model and market are <b>indistinguishable</b> here - the interval includes zero, so "
+            + "the ranking above could be chance.";
+        pl.innerHTML += " (" + P.clusters + " independent city-days; bins settling on one day "
+          + "count once, since they share a single weather outcome.)";
+      }
+    } else {
+      if (ci) ci.textContent = "Brier gap";
+      if (pl) pl.textContent = "";
     }
     var mg = s.model - s.market;
     if (gapEl) gapEl.textContent = (mg >= 0 ? "+" : "−") + Math.abs(mg).toFixed(3);
