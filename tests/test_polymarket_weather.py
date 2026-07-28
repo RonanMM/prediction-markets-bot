@@ -1091,6 +1091,38 @@ def test_moderate_gate_prereg_date_kwarg():
 
 # ── Gate power amendment 2026-07-27 (clustered significance) ────────────────────
 
+def test_every_bucket_is_nominated_with_its_own_forward_clock():
+    """2026-07-28: replaces the hand-picked {Seoul|1d, Chicago|1d} with ALL buckets under test.
+    Buckets nominated on 2026-07-12 keep that clock (their forward sample was earned honestly);
+    everything added now starts today, because its history has already been inspected."""
+    import config
+    noms = config.E3_NOMINATIONS
+    cities = {"Seoul", "London", "Chicago", "NYC", "HongKong"}
+    expected = {f"{c}|{h}" for c in cities for h in ("same-day", "1d", "2d+")}
+    assert set(noms) == expected, "every city x horizon must be under test"
+    assert noms["Seoul|1d"] == "2026-07-12" and noms["Chicago|1d"] == "2026-07-12"
+    assert noms["London|1d"] == "2026-07-28"          # newly nominated -> clock starts today
+    # LIVE_BUCKETS now means GATE-PASSED (execution-eligible), not "someone liked the look of it"
+    assert config.LIVE_BUCKETS == set()
+
+
+def test_gate_threshold_is_corrected_for_the_number_of_buckets_tested():
+    """Bonferroni: checking 15 buckets means the winner must be more convincing than if we had
+    checked one. z 1.96 -> ~2.94, so a result that clears the single-test bar can still fail."""
+    import evaluate_oos as ev
+    assert ev._e3_gate_z(1) == pytest.approx(1.96, abs=0.01)
+    assert ev._e3_gate_z(15) == pytest.approx(2.94, abs=0.02)
+    assert ev._e3_gate_z(15) > ev._e3_gate_z(5) > ev._e3_gate_z(1)
+
+
+def test_multiplicity_correction_actually_blocks_a_marginal_pass():
+    import evaluate_oos as ev
+    # gap -0.02, se 0.009: clears the single-test bar (-0.02 + 1.96*0.009 < 0) but not 15-test
+    g = {"n": 60, "n_clusters": 40, "gap": -0.020, "se": 0.009}
+    assert ev._e3_gate_pass(g, min_bets=40, z=ev._e3_gate_z(1)) is True
+    assert ev._e3_gate_pass(g, min_bets=40, z=ev._e3_gate_z(15)) is False
+
+
 def test_clustered_stats_live_in_a_shared_module_and_shoulder_book_still_exposes_them():
     """The E3 bucket gates need the same clustered inference as the structure gates, so the
     estimator moves to stats_util. shoulder_book must keep re-exporting it (existing callers)."""
@@ -1122,13 +1154,16 @@ def test_e3_forward_gate_requires_the_gap_interval_to_exclude_zero():
     """Same 2026-07-27 amendment as the structure gates: beating the market on a point estimate
     over a handful of bets is not evidence. Chicago|1d sat at 5 forward bets."""
     import evaluate_oos as ev
-    tiny = {"n": 5, "n_clusters": 2, "gap": -0.068, "ci_lo": -0.20, "ci_hi": 0.06}
-    strong = {"n": 60, "n_clusters": 40, "gap": -0.02, "ci_lo": -0.035, "ci_hi": -0.005}
-    assert ev._e3_gate_pass(tiny, min_bets=40) is False        # too few, CI spans 0
+    tiny = {"n": 5, "n_clusters": 2, "gap": -0.068, "se": 0.060}
+    strong = {"n": 60, "n_clusters": 40, "gap": -0.020, "se": 0.005}
+    assert ev._e3_gate_pass(tiny, min_bets=40) is False        # too few bets AND interval spans 0
     assert ev._e3_gate_pass(strong, min_bets=40) is True
-    # a large sample whose interval still spans zero must NOT pass
-    spans = {"n": 60, "n_clusters": 40, "gap": -0.02, "ci_lo": -0.05, "ci_hi": 0.01}
+    # a large, well-clustered sample whose interval still spans zero must NOT pass
+    spans = {"n": 60, "n_clusters": 40, "gap": -0.020, "se": 0.020}
     assert ev._e3_gate_pass(spans, min_bets=40) is False
+    # an unusable SE (fewer than 2 clusters) can never pass
+    assert ev._e3_gate_pass({"n": 60, "n_clusters": 40, "gap": -0.5,
+                             "se": float("inf")}, min_bets=40) is False
 
 
 def test_clustered_mean_se_treats_a_city_day_as_one_observation():

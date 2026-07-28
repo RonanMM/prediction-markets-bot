@@ -240,20 +240,25 @@ def compute_series() -> dict:
         # per-bucket edge table + the pre-registered forward gates (megaplan E3)
         try:
             import config as cfg
-            nominated = set(getattr(cfg, "LIVE_BUCKETS", set()))
-            nom_date = pd.Timestamp(str(getattr(cfg, "E3_NOMINATION_DATE", "2026-07-12")))
+            # 2026-07-28: every bucket is nominated, each with its OWN forward clock, so the
+            # forward slice must be per-bucket rather than one global date. LIVE_BUCKETS now
+            # means gate-PASSED (empty), which is not the same thing as "under test".
+            noms = dict(getattr(cfg, "E3_NOMINATIONS", {}))
+            nominated = set(noms) or set(getattr(cfg, "LIVE_BUCKETS", set()))
+            default_nom = str(getattr(cfg, "E3_NOMINATION_DATE", "2026-07-12"))
         except Exception:
-            nominated, nom_date = set(), pd.Timestamp("2026-07-12")
+            noms, nominated, default_nom = {}, set(), "2026-07-12"
         buckets = []
         if "bucket" in cal.columns:
             for b, g in cal.groupby("bucket"):
                 if len(g) < 3:
                     continue
-                fwd = g[g["td"] > nom_date]
+                fwd = g[g["td"] > pd.Timestamp(noms.get(str(b), default_nom))]
                 row = {"b": str(b), "n": int(len(g)),
                        "model": round(float(g["b_model"].mean()), 4),
                        "market": round(float(g["b_mkt"].mean()), 4),
                        "nom": str(b) in nominated,
+                       "since": noms.get(str(b), default_nom),
                        "fwd_n": int(len(fwd))}
                 if len(fwd) >= 3:
                     row["fwd_model"] = round(float(fwd["b_model"].mean()), 4)

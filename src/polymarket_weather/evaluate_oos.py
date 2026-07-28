@@ -27,6 +27,7 @@ from grading import resolves_yes, fetch_actual_weather
 from data_status import GATE_RESOLVED_MARKETS, GATE_OOS_BETS
 from pmf import _cdf, _t_scale
 from scipy.stats import t as student_t
+from scipy.stats import norm as student_norm
 import config
 import stats_util
 
@@ -45,14 +46,28 @@ def _gap_stats(sub, mkt_col: str) -> dict:
     return out
 
 
-def _e3_gate_pass(g: dict, min_bets: int) -> bool:
-    """E3 forward gate under the 2026-07-27 power amendment (extended here to the bucket gates
-    on 2026-07-28). Beating the market on a point estimate is not evidence: Chicago|1d sat at
-    5 forward bets and 'passed' the old `model_brier <= market_brier` test. The gap interval
-    must sit entirely BELOW zero over enough independent city-days. Tightening only."""
-    return bool(g["n"] >= min_bets
-                and g["n_clusters"] >= stats_util.MIN_CLUSTERS
-                and g["ci_hi"] < 0)
+def _e3_gate_z(n_tests: int) -> float:
+    """Bonferroni z for testing `n_tests` buckets at once.
+
+    One bucket is a 2.5% one-sided test (z=1.96). Fifteen buckets at that bar would let noise
+    through ~9% of the time (measured: null-world simulation in config.E3_NOMINATIONS), because
+    the best of fifteen noisy numbers looks good by construction. Spending the 5% family-wide
+    instead of per-bucket is the whole correction — z rises to ~2.94 for 15."""
+    return float(student_norm.ppf(1.0 - 0.025 / max(1, int(n_tests))))
+
+
+def _e3_gate_pass(g: dict, min_bets: int, z: float = 1.96) -> bool:
+    """E3 forward gate under the 2026-07-27 power amendment (extended to the bucket gates
+    2026-07-28). Beating the market on a point estimate is not evidence: Chicago|1d sat at 5
+    forward bets and 'passed' the old `model_brier <= market_brier` test. The gap interval must
+    sit entirely BELOW zero over enough independent city-days, at a threshold corrected for how
+    many buckets are under test. Tightening only."""
+    if g["n"] < min_bets or g["n_clusters"] < stats_util.MIN_CLUSTERS:
+        return False
+    se = g.get("se", float("inf"))
+    if se == float("inf"):
+        return False
+    return bool(g["gap"] + z * se < 0)
 
 _OUT = Path(__file__).resolve().parent / "output"
 _EPS = 1e-6
@@ -433,6 +448,41 @@ def main():
         status = "ON (paper)" if bk in config.LIVE_BUCKETS else "off"
         print(f"    {bk:<20} {len(grp):>4} {bm:>8.4f} {bmk:>8.4f} {g['gap']:>+8.4f} "
               f"{ci:>19}  {status}")
+    # Every bucket is nominated and tested on identical prospective terms (config.E3_NOMINATIONS),
+    # each against its OWN forward clock, at a threshold corrected for testing them all at once.
+    noms = getattr(config, "E3_NOMINATIONS", {})
+    if noms:
+        z = _e3_gate_z(len(noms))
+        print(f"\n  E3 FORWARD GATES — all {len(noms)} buckets under test "
+              f"(need ≥{config.E3_FORWARD_MIN_BETS} forward bets, ≥{stats_util.MIN_CLUSTERS} "
+              f"city-days, and the gap interval entirely BELOW 0 at z={z:.2f} "
+              f"[Bonferroni for {len(noms)} tests]):")
+        print(f"    {'bucket':<20} {'since':<11} {'fwd n':>6} {'gap':>9} {'interval':>21}  verdict")
+        rows = []
+        for bk, since in noms.items():
+            fwd = ml[(ml["_bucket"] == bk) & (ml["target_date"] > since)]
+            if fwd.empty:
+                rows.append((bk, since, 0, None, None, "no forward bets yet"))
+                continue
+            g = _gap_stats(fwd, mkt_col)
+            passed = _e3_gate_pass(g, config.E3_FORWARD_MIN_BETS, z)
+            lo, hi = g["gap"] - z * g["se"], g["gap"] + z * g["se"]
+            if passed:
+                why = "✅ GATE PASSED — smallest real size OK"
+            elif g["n"] < config.E3_FORWARD_MIN_BETS:
+                why = f"pending ({g['n']}/{config.E3_FORWARD_MIN_BETS} bets)"
+            elif g["n_clusters"] < stats_util.MIN_CLUSTERS:
+                why = f"pending ({g['n_clusters']}/{stats_util.MIN_CLUSTERS} city-days)"
+            else:
+                why = "pending (interval includes 0)"
+            rows.append((bk, since, g["n"], g["gap"], (lo, hi), why))
+        for bk, since, n, gap, ci, why in sorted(rows, key=lambda r: (r[3] is None, r[3])):
+            gtxt = f"{gap:+9.4f}" if gap is not None else f"{'—':>9}"
+            ctxt = (f"[{ci[0]:+.4f},{ci[1]:+.4f}]" if ci and np.isfinite(ci[0]) else "—")
+            print(f"    {bk:<20} {since:<11} {n:>6} {gtxt} {ctxt:>21}  {why}")
+        print("    (gap<0 = model better. All buckets nominated 2026-07-28 except the two "
+              "2026-07-12 ones, whose forward sample predates any inspection.)")
+
     on = ml[ml["_bucket"].isin(config.LIVE_BUCKETS)]
     if not on.empty:
         yo = on["outcome"].tolist()

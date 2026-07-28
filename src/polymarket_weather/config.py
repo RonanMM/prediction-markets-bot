@@ -162,8 +162,47 @@ MIN_MARKET_PRICE      = 0.02   # 2% — below this the market has effectively re
 # PAPER ONLY until the forward gate passes per bucket: ≥40 bets with target_date AFTER
 # E3_NOMINATION_DATE graded, AND model Brier ≤ market Brier on those forward bets.
 # evaluate_oos.py prints per-bucket progress against this gate.
-LIVE_BUCKETS          = {"Seoul|1d", "Chicago|1d"}
-E3_NOMINATION_DATE    = "2026-07-12"
+#
+# ── 2026-07-28: ALL BUCKETS UNDER TEST, NO HAND-PICKING ────────────────────────
+# The two nominations above were chosen by eyeballing in-sample numbers, which is the exact
+# procedure a null world defeats. Simulation (model recentred to EXACTLY market-equal in every
+# bucket, real sizes and city-day correlations preserved, 5,000 runs): the best-looking bucket
+# still shows a gap of −0.046 median / −0.18 at the 5th pct — while our real best (Chicago|2d+)
+# is only −0.016. In other words the observed ranking is weaker than what pure noise produces.
+# Worse, the ranking systematically crowns the SMALLEST bucket: HongKong|2d+ (n=5) "wins" 34% of
+# null runs, London|1d (n=48) only 4% — small samples make extreme numbers, not good forecasts.
+#
+# So: every city × horizon is nominated and tested on identical prospective terms, and the
+# threshold is corrected for testing many at once (evaluate_oos._e3_gate_z, Bonferroni). Buckets
+# nominated 2026-07-12 KEEP that clock — their forward sample was earned before anyone looked.
+# Everything added today starts today, because its history has already been inspected and a gate
+# must never be graded on the data that suggested it.
+E3_NOMINATIONS = {
+    # bucket                 forward clock starts (UTC date)
+    "Seoul|1d":             "2026-07-12",   # original nomination — clock preserved
+    "Chicago|1d":           "2026-07-12",   # original nomination — clock preserved
+    "Seoul|same-day":       "2026-07-28",
+    "Seoul|2d+":            "2026-07-28",
+    "London|same-day":      "2026-07-28",
+    "London|1d":            "2026-07-28",
+    "London|2d+":           "2026-07-28",
+    "Chicago|same-day":     "2026-07-28",
+    "Chicago|2d+":          "2026-07-28",
+    "NYC|same-day":         "2026-07-28",
+    "NYC|1d":               "2026-07-28",
+    "NYC|2d+":              "2026-07-28",
+    "HongKong|same-day":    "2026-07-28",
+    "HongKong|1d":          "2026-07-28",
+    "HongKong|2d+":         "2026-07-28",
+}
+
+# Execution-eligible = a bucket whose FORWARD gate has actually PASSED. Empty is the honest
+# state: no bucket has cleared its gate, so nothing is eligible for real size. (Before
+# 2026-07-28 this held the hand-picked nominations, which made `live_eligible` read as
+# "somebody liked this bucket" rather than "this bucket earned it".)
+LIVE_BUCKETS: set[str] = set()
+
+E3_NOMINATION_DATE    = "2026-07-12"   # legacy default for buckets absent from E3_NOMINATIONS
 E3_FORWARD_MIN_BETS   = 40
 
 
