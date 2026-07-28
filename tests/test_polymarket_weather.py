@@ -1455,6 +1455,49 @@ def test_shoulder_report_parse_marks_a_passed_gate():
     assert bd._parse_book_scalars(passed)["sb_mod_pass"] == "1"
 
 
+def test_scoreboard_uses_paired_common_set_not_the_unpaired_model_number():
+    """2026-07-27: the hero scoreboard compared MODEL over all 401 model rows against ENSEMBLE
+    over the 246-market intersection, then captioned it 'on the same 246 common markets'. That
+    flipped the verdict — unpaired model 0.1369 'beats' ens 0.1413, but on the same markets the
+    model is 0.1480 and LOSES. The scoreboard must use the paired numbers."""
+    import build_dashboard as bd
+    unpaired = {"br_market": "0.1160", "br_model": "0.1369", "br_ens": "0.1413"}
+    paired = {"market": 0.1180, "ens": 0.1413, "model": 0.1480, "n": 246}
+    html = bd._scoreboard_html(unpaired, paired)
+    assert "0.1480" in html and "0.1369" not in html      # paired model, not the flattering one
+    assert "0.1180" in html and "0.1160" not in html      # paired market too
+    # the ensemble must rank ahead of the model on these numbers
+    assert html.index("Raw ensemble") < html.index("Our model") or "#2" in html
+
+
+def test_skill_is_computed_from_the_paired_model_number():
+    import build_dashboard as bd
+    import inspect
+    src = inspect.getsource(bd)
+    assert 'float(d["br_model"]) / float(d["br_market"])' not in src
+
+
+def test_crps_model_is_not_unconditionally_green():
+    """CRPS 1.1248 (model) vs 1.0795 (ensemble) means the model is WORSE, but the tile hardcoded
+    color:var(--good). Colour must depend on the comparison."""
+    import build_dashboard as bd
+    import inspect
+    src = inspect.getsource(bd)
+    assert '<div class="v" style="color:var(--good)"><span data-bind="CRPS_MODEL">' not in src
+    assert "crps_v" in src            # the element the JS colours by comparison
+
+
+def test_collector_tile_reports_build_time_lag_not_browser_clock():
+    """The status pill was fixed to separate collector lag from publish lag, but the Collector KPI
+    still did fmtAgo(lastCollect) against the live clock — so a 3.5h-old build showed a 1h-old
+    collector as '4h ago'."""
+    import build_dashboard as bd
+    import inspect
+    src = inspect.getsource(bd)
+    assert 'cb.textContent = fmtAgo(lastCollect)' not in src
+    assert "collectLagH" in src
+
+
 def test_leg1_row_shows_leg1_graded_count_not_the_whole_book():
     """The '1 · sell shoulder' row bound SB_GRADED (every leg, 151) while Leg 1 itself had 150 —
     the extra row is the single graded Leg 2 favourite."""

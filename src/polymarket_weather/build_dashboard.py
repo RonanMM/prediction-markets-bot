@@ -431,16 +431,26 @@ def _last_commit_dt() -> datetime:
 
 
 # ────────────────────────────── payload (data.json) ──────────────────────────────
-def _scoreboard_html(d: dict, n_common) -> str:
-    """The hero scoreboard: market / model / ensemble Brier ranked, leader flagged."""
+def _scoreboard_html(d: dict, score) -> str:
+    """The hero scoreboard: market / model / ensemble Brier ranked, leader flagged.
+
+    Uses the PAIRED common-set scores (series["score"]["all"]) — every predictor measured on the
+    same markets. evaluate_oos prints MODEL/MARKET over every model row but ENSEMBLE only over the
+    intersection, so mixing them (as this did until 2026-07-27) compared 401 markets against 246
+    and reversed the verdict: unpaired model 0.1369 'beat' ensemble 0.1413 while the paired model
+    was 0.1480 and lost. The caption claims a common set, so the numbers must be one."""
+    keys = {"br_market": "market", "br_model": "model", "br_ens": "ens"}
     entries = []
     for key, name, cls in (("br_market", "Market price", "market"),
                            ("br_model", "Our model", "model"),
                            ("br_ens", "Raw ensemble", "ens")):
         try:
-            entries.append({"name": name, "cls": cls, "v": float(d[key])})
+            v = (score or {}).get(keys[key])
+            entries.append({"name": name, "cls": cls,
+                            "v": float(v) if v is not None else float(d[key])})
         except Exception:
             return ""
+    n_common = (score or {}).get("n")
     ranked = sorted(entries, key=lambda e: e["v"])
     for i, e in enumerate(ranked):
         e["rank"] = i + 1
@@ -512,13 +522,26 @@ def _breadth_binds() -> dict:
     return b
 
 
+def _f4(v) -> str:
+    """Format a Brier for display, tolerating the parsed-string fallback."""
+    try:
+        return f"{float(v):.4f}"
+    except (TypeError, ValueError):
+        return "—"
+
+
 def build_payload(d: dict, series: dict) -> dict:
     days, span = _fmt_span(d)
     series["disp"] = d.get("disp", [])
     G = lambda k, dflt="—": str(d.get(k, dflt))
+    # Headline accuracy comes from the PAIRED common set (see _scoreboard_html); the parsed
+    # br_* values measure the model over more markets than the ensemble and flatter it.
+    paired = ((series.get("score") or {}).get("all")) or {}
+    br = {k: (paired.get(k) if paired.get(k) is not None else d.get(f"br_{k}"))
+          for k in ("market", "model", "ens")}
     try:
-        model_wins = float(d["br_model"]) < float(d["br_market"])
-        skill = (1.0 - float(d["br_model"]) / float(d["br_market"])) * 100.0
+        model_wins = float(br["model"]) < float(br["market"])
+        skill = (1.0 - float(br["model"]) / float(br["market"])) * 100.0
         skill_txt = f"{skill:+.1f}%".replace("-", "−")
     except Exception:
         model_wins, skill_txt = False, "—"
@@ -548,7 +571,7 @@ def build_payload(d: dict, series: dict) -> dict:
             "GATE_MKTS_THR": G("gate_mkts_thr", "150"),
             "DATA_DAYS": days, "SPAN": span,
             "SB_WR": G("sb_wr"), "SB_GRADED": G("sb_graded"), "SB_ENTRIES": G("sb_entries"),
-            "BR_MARKET": G("br_market"), "BR_ENS": G("br_ens"), "BR_MODEL": G("br_model"),
+            "BR_MARKET": _f4(br["market"]), "BR_ENS": _f4(br["ens"]), "BR_MODEL": _f4(br["model"]),
             "N_MKTS": G("n_mkts"), "CRPS_MODEL": G("crps_model"), "CRPS_ENS": G("crps_ens"),
             "SB_FULL": G("sb_full"), "SB_CORE": G("sb_core"), "SB_AWAIT": G("sb_await"),
             "SB_FULL_N": G("sb_full_n"),   # Leg 1 only — SB_GRADED counts every leg
@@ -561,7 +584,7 @@ def build_payload(d: dict, series: dict) -> dict:
         "html": {
             "EDGE_CHIP": edge_chip,
             "TAKEAWAY": takeaway,
-            "SCOREBOARD": _scoreboard_html(d, series.get("n_common")),
+            "SCOREBOARD": _scoreboard_html(d, paired),
             "CITIES_HTML": _cities_html(series.get("city", []), d),
         },
         "series": series,
@@ -828,8 +851,8 @@ TEMPLATE = r"""<meta charset="utf-8">
     </div>
     <div class="panel" style="margin-top:14px">
       <div class="statrow" style="border-top:0;padding-top:0;margin-top:0">
-        <div class="st"><div class="k">Temp accuracy · CRPS</div><div class="v" style="color:var(--good)"><span data-bind="CRPS_MODEL">—</span> <small>model</small></div></div>
-        <div class="st"><div class="k">vs ensemble</div><div class="v"><span data-bind="CRPS_ENS">—</span> <small>°C err</small></div></div>
+        <div class="st"><div class="k">Temp accuracy · CRPS</div><div class="v" id="crps_v"><span data-bind="CRPS_MODEL">—</span> <small>model</small></div></div>
+        <div class="st"><div class="k">vs ensemble</div><div class="v"><span data-bind="CRPS_ENS">—</span> <small>°C err</small></div><div class="s" id="crps_note">—</div></div>
         <div class="st" style="flex:1;min-width:240px"><div class="k">what it measures</div><div class="v" style="font-size:11.5px;font-family:var(--sans);color:var(--ink2);line-height:1.5">CRPS is the temperature-forecast error in °C (lower = sharper). It scores the point forecast against the station reading — not the market's bin prices.</div></div>
       </div>
     </div>
@@ -882,7 +905,7 @@ TEMPLATE = r"""<meta charset="utf-8">
         <div class="find">Each leg proves itself before real money.</div>
         <div class="findsub">A leg must clear a pre-registered forward target — settlements holding positive expectancy out-of-sample — before it can trade. In-sample profit doesn't count.</div>
         <table class="data" style="margin-top:2px">
-          <tr><th>Leg</th><th class="num">Graded</th><th class="num">Edge / contract</th><th>Status</th></tr>
+          <tr><th>Leg</th><th class="num">Graded</th><th class="num">Edge <span class="dim">$/contract</span></th><th>Status</th></tr>
           <tr><td class="city">1 · sell shoulder</td><td class="num" data-bind="SB_FULL_N">—</td><td class="num" id="sb_full_cell" data-bind="SB_FULL">—</td><td><span class="pill2 warn">paper</span></td></tr>
           <tr><td class="city">2 · buy favourite</td><td class="num" id="leg2n">—</td><td class="num" id="leg2edge">—</td><td><span class="pill2" id="leg2status">pending</span></td></tr>
           <tr><td class="city">1b · moderate [10–25¢]</td><td class="num" id="modn">—</td><td class="num" id="modedge">—</td><td><span class="pill2" id="modstatus">forward</span></td></tr>
@@ -900,11 +923,11 @@ TEMPLATE = r"""<meta charset="utf-8">
         <div class="st"><div class="k">Awaiting</div><div class="v" data-bind="BK_AWAIT">—</div></div>
       </div>
       <table class="data" style="margin-top:10px">
-        <tr><th>Leg</th><th class="num">Forward</th><th class="num">Taker net</th><th class="num">Maker net</th><th>Status</th></tr>
+        <tr><th>Leg</th><th class="num">Forward</th><th class="num">Taker <span class="dim">$/contract</span></th><th class="num">Maker <span class="dim">$/contract</span></th><th>Status</th></tr>
         <tr><td class="city">1b · moderate [10–25¢] · all cities</td><td class="num" id="bkmodn">—</td><td class="num" id="bkmodedge">—</td><td class="num" id="bkmodmaker">—</td><td><span class="pill2" id="bkmodstatus">forward</span></td></tr>
         <tr><td class="city">1 · sell shoulder [5–35¢] · all cities</td><td class="num" id="bkfulln">—</td><td class="num" id="bkfulledge" data-bind="BK_FULL_NET">—</td><td class="num dim" data-bind="BK_FULL_MAKER">—</td><td><span class="pill2 warn">paper</span></td></tr>
       </table>
-      <p class="cap" style="margin-top:12px"><b>Paper — no real money.</b> <b>Maker net</b> = filled-only, no spread/fee, rebate excluded (our 5-city + a 300k-contract study both find the moderate-band edge is bigger maker-side). Forward-only: only entries recorded on/after 2026-07-23 count toward the gate, so the hypothesis is never graded on the data that suggested it.</p>
+      <p class="cap" style="margin-top:12px"><b>Paper — no real money.</b> <b>Maker net</b> = filled-only, no spread/fee, rebate excluded (after the 2026-07-27 fill-detector fix the maker edge is <b>not</b> established: 5-city +0.056 CI [−0.018,+0.129], breadth at comparable liquidity −0.007 [−0.028,+0.015] — both consistent with zero; thin books &lt;1k liquidity are significantly negative). Forward-only: only entries recorded on/after 2026-07-23 count toward the gate, so the hypothesis is never graded on the data that suggested it.</p>
     </div>
   </section>
 
@@ -1265,6 +1288,17 @@ TEMPLATE = r"""<meta charset="utf-8">
       // net-units value stays sign-coloured (green +, red −) — the number shows good/bad, not a title.
       var netEl = document.getElementById("sb_net"); if (netEl) netEl.style.color = _neg(b.BOOK_NET) ? "var(--model)" : "var(--good)";
     }
+    // CRPS: green ONLY when the model actually beats the ensemble (lower is better).
+    var cv = document.getElementById("crps_v");
+    if (cv && b.CRPS_MODEL && b.CRPS_ENS) {
+      var cm = parseFloat(b.CRPS_MODEL), ce = parseFloat(b.CRPS_ENS);
+      cv.style.color = (isFinite(cm) && isFinite(ce)) ? (cm < ce ? "var(--good)" : "var(--model)") : "";
+    }
+    var cnote = document.getElementById("crps_note");
+    if (cnote && b.CRPS_MODEL && b.CRPS_ENS) {
+      var m2 = parseFloat(b.CRPS_MODEL), e2 = parseFloat(b.CRPS_ENS);
+      cnote.textContent = (m2 < e2 ? "model sharper" : "ensemble sharper");
+    }
     if (b.SB_FULL != null) { var fc = document.getElementById("sb_full_cell"); if (fc) fc.style.color = _neg(b.SB_FULL) ? "var(--model)" : "var(--good)"; }
     // Leg 2 favourites — honest "pending" until it has graded entries
     var favN = b.SB_FAV_GRADED;
@@ -1318,7 +1352,12 @@ TEMPLATE = r"""<meta charset="utf-8">
       else if (pubH !== null && pubH >= 5) { label = "dashboard stale"; ok = false; }
       if (colH !== null || pubH !== null) { pill.className = "pill " + (ok ? "" : "warn"); st.textContent = label; }
     }
-    var cb = document.getElementById("collectorbig"); if (cb && lastCollect) cb.textContent = fmtAgo(lastCollect) || "—";
+    var cb = document.getElementById("collectorbig");
+    // Build-time lag: live clock - frozen snapshot would add this page's own publish delay
+    // and report a 1h-old collector as "4h ago" whenever the rebuild is late.
+    if (cb) { if (collectLagH !== null && collectLagH !== undefined) {
+        cb.textContent = (collectLagH < 1.5 ? Math.round(collectLagH * 60) + "m" : collectLagH.toFixed(1) + "h") + " behind";
+      } else { cb.textContent = "—"; } }   // unknown lag shows nothing, never the browser-clock number
   }
   function apply(P) {
     if (!P || !P.bind) return false;
