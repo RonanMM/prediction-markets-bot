@@ -174,6 +174,24 @@ def compute_series() -> dict:
                     "model": round(float(w["b_model"].mean()), 4), "n": int(len(w))}
         out["score"] = {"all": _sb(cs), "recent": _sb(cs.tail(60))}
 
+        # POOLED paired gap — the powered test. Per-market model-minus-market difference (the
+        # market's own difficulty cancels), clustered by city-day because every bin for a city on
+        # a date settles on ONE weather outcome. Splitting into 15 buckets costs ~15x this sample,
+        # which is why the per-bucket rows cannot conclude anything for years and this can.
+        try:
+            import stats_util
+            d_gap = cs["b_model"] - cs["b_mkt"]
+            iv = stats_util.interval(d_gap, stats_util.cluster_key(
+                cs.assign(target_date=cs["td"].dt.strftime("%Y-%m-%d"))))
+            out["pooled"] = {
+                "gap": round(float(iv["mean"]), 4),
+                "lo": round(float(iv["mean"] - 1.96 * iv["se"]), 4),
+                "hi": round(float(iv["mean"] + 1.96 * iv["se"]), 4),
+                "n": int(iv["n"]), "clusters": int(iv["n_clusters"]),
+            }
+        except Exception:
+            pass
+
         # ROI at production params (IN-SAMPLE, noisy) — model AND ensemble, for the honest
         # accuracy-vs-profit panel. The ensemble's positive ROI while it LOSES on Brier is the
         # exact "127% ROI" mirage this project warns about; surfaced only with that caveat,
@@ -436,7 +454,7 @@ def _last_commit_dt() -> datetime:
 
 
 # ────────────────────────────── payload (data.json) ──────────────────────────────
-def _scoreboard_html(d: dict, score) -> str:
+def _scoreboard_html(d: dict, score, pooled=None) -> str:
     """The hero scoreboard: market / model / ensemble Brier ranked, leader flagged.
 
     Uses the PAIRED common-set scores (series["score"]["all"]) — every predictor measured on the
@@ -471,9 +489,31 @@ def _scoreboard_html(d: dict, score) -> str:
             f'<div class="sv">{e["v"]:.4f}</div>'
             f'<div class="ss">{sub}</div></div>')
     n_txt = f"{n_common} common markets" if n_common else "common markets"
+    # The POOLED paired gap is what makes the ranking a finding rather than a suggestion: a
+    # per-market model-minus-market difference with a clustered interval. Without it a reader
+    # sees two numbers and has no way to tell a real gap from sampling noise.
+    pooled_html = ""
+    if pooled:
+        try:
+            gap, lo, hi = float(pooled["gap"]), float(pooled["lo"]), float(pooled["hi"])
+            worse = lo > 0
+            better = hi < 0
+            verdict = ("the model is <b>measurably worse</b> than the market" if worse else
+                       "the model is <b>measurably better</b> than the market" if better else
+                       "model and market are <b>indistinguishable</b> on this sample")
+            cls = "model" if worse else ("good" if better else "faint")
+            pooled_html = (
+                f'<div class="score-note" style="margin-top:6px">Pooled gap (model − market, '
+                f'paired per market): <b style="color:var(--{cls})">{gap:+.4f}</b> '
+                f'95% CI [{lo:+.4f}, {hi:+.4f}] over {int(pooled["n"])} markets / '
+                f'{int(pooled["clusters"])} independent city-days — {verdict}. '
+                f'The interval, not the ranking, is the evidence.</div>')
+        except (KeyError, TypeError, ValueError):
+            pooled_html = ""
     return (f'<div class="scores">{"".join(cells)}</div>'
             f'<div class="score-note">Brier score on the same {n_txt} — lower is better. '
-            f'Every prediction graded against the station reading each market settles on.</div>')
+            f'Every prediction graded against the station reading each market settles on.</div>'
+            f'{pooled_html}')
 
 
 def _breadth_binds() -> dict:
@@ -589,7 +629,7 @@ def build_payload(d: dict, series: dict) -> dict:
         "html": {
             "EDGE_CHIP": edge_chip,
             "TAKEAWAY": takeaway,
-            "SCOREBOARD": _scoreboard_html(d, paired),
+            "SCOREBOARD": _scoreboard_html(d, paired, series.get("pooled")),
             "CITIES_HTML": _cities_html(series.get("city", []), d),
         },
         "series": series,

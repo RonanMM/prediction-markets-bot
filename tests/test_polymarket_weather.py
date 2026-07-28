@@ -1565,6 +1565,21 @@ def test_scoreboard_uses_paired_common_set_not_the_unpaired_model_number():
     assert html.index("Raw ensemble") < html.index("Our model") or "#2" in html
 
 
+def test_scoreboard_publishes_the_pooled_gap_interval():
+    """The page showed model 0.1417 vs market 0.1158 with no interval — suggestive, not
+    conclusive. The pooled paired gap and its CI are what make it a finding, so they belong on
+    the page, not only in evaluate_oos's console output."""
+    import build_dashboard as bd
+    paired = {"market": 0.1158, "ens": 0.1360, "model": 0.1417, "n": 261}
+    pooled = {"gap": 0.0211, "lo": 0.0068, "hi": 0.0353, "n": 401, "clusters": 171,
+              "verdict": "model worse"}
+    html = bd._scoreboard_html({}, paired, pooled)
+    assert "+0.0211" in html and "+0.0068" in html and "+0.0353" in html
+    assert "171" in html                      # the independent-observation count, not just bets
+    # absent pooled stats the scoreboard must still render
+    assert bd._scoreboard_html({}, paired, None)
+
+
 def test_skill_is_computed_from_the_paired_model_number():
     import build_dashboard as bd
     import inspect
