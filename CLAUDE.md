@@ -401,13 +401,9 @@ moving off it. **Do not re-tune; the bottleneck is data, not parameters.**
 > (`grading.py`) roughly **halved** measured ROI (e.g. 48% → 22% on one 64–76 bet sample). The
 > honest reading: **in-sample station-truth ROI ≈ 20–35%, and out-of-sample edge is unproven**
 > (held-out sample still tiny). Params are validated; *edge is not* — see the gate above.
-- `MIN_EDGE = 0.06` (6% minimum advantage over market price)
-- `MIN_LIQUIDITY = 1000` (USDC)
-- `KELLY_FRACTION = 0.50` (half-Kelly bet sizing multiplier)
-- `MAX_KELLY_PER_BET = 0.08` (8% maximum bet size on any single market)
-- `STALE_HOURS = 4` (penalizes markets with no activity in 4 hours)
-- `STALE_MOVE_THRESHOLD = 0.02` (requires a 2% price move to reset the staleness clock)
-- `INFORMED_RECENCY = 0.80` (only flags volume as informed if 80%+ occurred in the last 24h)
+The values themselves live in `config.py` (`MIN_EDGE`, `MIN_LIQUIDITY`, `KELLY_FRACTION`,
+`MAX_KELLY_PER_BET`, `STALE_HOURS`, `STALE_MOVE_THRESHOLD`, `INFORMED_RECENCY`) — read them
+there rather than from a copy that can drift.
 
 ---
 
