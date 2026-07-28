@@ -214,3 +214,5 @@ entered_at_utc,city,condition_id,question,target_date,leg,side,entry_side_price,
 2026-07-27T20:47:40.651400+00:00,London,0xec4d35678ed192bc918bee04fe5caeba33e793f3ca348b9b209a784780c1093b,Will the highest temperature in London be 34°C on July 29?,2026-07-29,shoulder,No,0.765,0.235,core,2921.71
 2026-07-27T20:47:40.651400+00:00,Seoul,0x2d436a21f5039428f110656780bb7b6a7149fffeb4d82edc08cb3b24cc4be55a,Will the highest temperature in Seoul be 30°C on July 29?,2026-07-29,shoulder,No,0.705,0.295,core,3649.55
 2026-07-27T22:22:53.045046+00:00,Chicago,0xddf6478cf4d005a0c50fb9ec19e4ab3e8cd66ec0496123bfef8be4d16fa26e6d,Will the highest temperature in Chicago be between 78-79°F on July 28?,2026-07-28,shoulder,No,0.695,0.305,core,4313.75
+2026-07-28T00:16:21.121363+00:00,London,0x8973d33d97993bd15e5d0149c7a7863854a11e8657c9dc6df4b2430f4dc12e04,Will the lowest temperature in London be 21°C on July 29?,2026-07-29,shoulder,No,0.95,0.05,outer,1767.62
+2026-07-28T00:16:21.121363+00:00,London,0xce054be8bd14ff9721ca339ee1c0f058e6171a0d2aea5a853dfee947dec0ad93,Will the highest temperature in London be 31°C on July 29?,2026-07-29,shoulder,No,0.905,0.095,outer,2894.4
