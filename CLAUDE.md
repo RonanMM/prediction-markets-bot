@@ -107,7 +107,23 @@ from it — there are no hardcoded coords anywhere.
   (`fetch_historical_truth.py` → `{slug}_historical_actuals.csv`: NWS CLI via IEM for
   KLGA/KORD, IEM METAR daily for EGLC/RKSI, HKO API for HKO) as fallback + glitch guard.
   `audit_settlements.py` checks grades against actual settlements (keep ≥95%). **Meteostat is
-  legacy/reference only** (2026-07-03 audit: corrupted). Truth lag ~1 day (HKO ~1 month).
+  legacy/reference only** (2026-07-03 audit: corrupted). Truth lag ~1 day — **except Hong Kong,
+  see below.**
+
+  ⚠️ **HKO publishes in MONTHLY BATCHES, not on a rolling lag** (measured 2026-07-28; the old
+  "HKO ~1 month" wording read as rolling and cost an investigation). `CLMMAXT`/`CLMMINT` return
+  a whole month at once, roughly **3 weeks after that month ends**: on 2026-07-28 the API served
+  exactly 181 rows — Jan 1 to Jun 30 — and the June batch had landed 2026-07-23. So Hong Kong is
+  ungradable for the *entire* current month and then jumps in one step. Measured cost at the
+  blackout's peak: **84 of 102 HK tracker markets ungradable (18 graded vs 70–116 elsewhere)**;
+  the July batch (~2026-08-21) should take HK to ~102 in a single jump. Every other city grades
+  July fine, so a lone frozen `hong_kong_historical_actuals.csv` is EXPECTED, not a dead feed —
+  check the API's row count before diagnosing.
+
+  🚫 **Do NOT substitute a faster HKO endpoint** (standing decision, Ronan, 2026-07-28). Grading
+  must use the source Polymarket actually resolves on, for every city, even when a quicker feed
+  exists. Waiting three weeks is cheaper than a fourth broken ruler — see W0, where the wrong
+  source graded 4/60 settlements backwards.
 - **Forecast anchor** — `forecast_lat`/`forecast_lon` (where Open-Meteo is pointed). Usually the
   station's location, but **not always**.
 
@@ -436,8 +452,11 @@ made the model look worse and the market look better — assume the same until p
 python data_status.py        # collected / resolved / gradable counts vs the gate
 python audit_settlements.py  # grading vs actual settlements (must stay ≥95%)
 ```
-Truth publishing lag is no longer the bottleneck: the settlement-faithful feeds publish within
-~1 day (HKO ~1 month), so a market becomes gradable almost as soon as it resolves. Refresh truth
+Truth publishing lag is no longer the bottleneck **for the four METAR/CLI cities**: those feeds
+publish within ~1 day, so a market becomes gradable almost as soon as it resolves. **Hong Kong is
+the exception** — HKO's monthly batch (see Resolution Anchors) leaves the whole current month
+ungradable, so HK is permanently the smallest per-city sample and its dashboard row is showing
+last month's answer. Refresh truth
 (`fetch_historical_truth.py`) before regenerating the eval tracker; `wu_truth.py` needs only the
 obs top-up that runs inside `main.py`.
 
