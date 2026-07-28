@@ -1498,6 +1498,20 @@ def test_collector_tile_reports_build_time_lag_not_browser_clock():
     assert "collectLagH" in src
 
 
+def test_every_edge_cell_is_sign_coloured():
+    """Sign colouring must be consistent across both structure tables: the 5-city Leg 1b edge and
+    the breadth full-band maker cell were left unpainted, so +0.042 rendered like plain text and
+    −0.0169 was not red. (The gate pill, not the colour, carries the pass/fail verdict.)"""
+    import build_dashboard as bd
+    import inspect
+    src = inspect.getsource(bd)
+    # 5-city Leg 1b forward edge
+    assert 'me.style.color' in src
+    # breadth full-band maker needs an addressable cell before it can be painted
+    assert 'id="bkfullmaker"' in src
+    assert 'bkfullmaker' in src.split("<script")[-1] or 'getElementById("bkfullmaker")' in src
+
+
 def test_leg1_row_shows_leg1_graded_count_not_the_whole_book():
     """The '1 · sell shoulder' row bound SB_GRADED (every leg, 151) while Leg 1 itself had 150 —
     the extra row is the single graded Leg 2 favourite."""

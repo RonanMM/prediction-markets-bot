@@ -61,6 +61,24 @@ jobs:
         working-directory: src/polymarket_weather
         run: python polymarket_weather_analysis.py --data_dir ./data --no_plots
 
+      # The headline MODEL-vs-ENSEMBLE verdict is scored on the INTERSECTION of the two
+      # trackers, so a stale ensemble file silently freezes the comparison. Until 2026-07-28
+      # only the calibrated tracker was rebuilt here and the ensemble one came from the MANUAL
+      # retrain: it sat at targets <= 2026-07-26 while the calibrated tracker ran to 07-29, the
+      # common set stuck at 246 markets, and the published Brier stopped moving for days while
+      # looking perfectly healthy. Same failure mode as the stale training targets in CLAUDE.md.
+      - name: Regenerate ensemble baseline tracker
+        working-directory: src/polymarket_weather
+        run: python polymarket_weather_analysis.py --data_dir ./data --no_plots --disable-calibrator
+
+      # QRF is parked (M1 failed twice) but its tracker feeds the M1 GATE line; keep it current
+      # so that line never reports a frozen verdict. Non-fatal: a missing/failed artifact must
+      # not block the core tracker commit.
+      - name: Regenerate QRF tracker
+        working-directory: src/polymarket_weather
+        continue-on-error: true
+        run: python polymarket_weather_analysis.py --data_dir ./data --no_plots --predictor qrf
+
       # Permanent grading guard (CLAUDE.md): compares resolves_yes against how markets
       # ACTUALLY settled and exits 1 below 95% agreement. Runs after the truth refresh so a
       # regression in either truth source fails the run instead of silently republishing.

@@ -925,7 +925,7 @@ TEMPLATE = r"""<meta charset="utf-8">
       <table class="data" style="margin-top:10px">
         <tr><th>Leg</th><th class="num">Forward</th><th class="num">Taker <span class="dim">$/contract</span></th><th class="num">Maker <span class="dim">$/contract</span></th><th>Status</th></tr>
         <tr><td class="city">1b · moderate [10–25¢] · all cities</td><td class="num" id="bkmodn">—</td><td class="num" id="bkmodedge">—</td><td class="num" id="bkmodmaker">—</td><td><span class="pill2" id="bkmodstatus">forward</span></td></tr>
-        <tr><td class="city">1 · sell shoulder [5–35¢] · all cities</td><td class="num" id="bkfulln">—</td><td class="num" id="bkfulledge" data-bind="BK_FULL_NET">—</td><td class="num dim" data-bind="BK_FULL_MAKER">—</td><td><span class="pill2 warn">paper</span></td></tr>
+        <tr><td class="city">1 · sell shoulder [5–35¢] · all cities</td><td class="num" id="bkfulln">—</td><td class="num" id="bkfulledge" data-bind="BK_FULL_NET">—</td><td class="num" id="bkfullmaker" data-bind="BK_FULL_MAKER">—</td><td><span class="pill2 warn">paper</span></td></tr>
       </table>
       <p class="cap" style="margin-top:12px"><b>Paper — no real money.</b> <b>Maker net</b> = filled-only, no spread/fee, rebate excluded (after the 2026-07-27 fill-detector fix the maker edge is <b>not</b> established: 5-city +0.056 CI [−0.018,+0.129], breadth at comparable liquidity −0.007 [−0.028,+0.015] — both consistent with zero; thin books &lt;1k liquidity are significantly negative). Forward-only: only entries recorded on/after 2026-07-23 count toward the gate, so the hypothesis is never graded on the data that suggested it.</p>
     </div>
@@ -1313,7 +1313,8 @@ TEMPLATE = r"""<meta charset="utf-8">
       var mn = document.getElementById("modn"), me = document.getElementById("modedge"), ms = document.getElementById("modstatus");
       var fn = parseInt(b.SB_MOD_FWD_N, 10) || 0, pass = b.SB_MOD_PASS === "1";
       if (mn) mn.textContent = b.SB_MOD_FWD_N + "/" + (b.SB_MOD_NEED || "80");
-      if (me) me.textContent = fn > 0 ? b.SB_MOD_FWD : "—";
+      if (me) { me.textContent = fn > 0 ? b.SB_MOD_FWD : "—";
+        me.style.color = fn > 0 ? (_neg(b.SB_MOD_FWD) ? "var(--model)" : "var(--good)") : ""; }
       if (ms) { ms.textContent = pass ? "gate ✓" : "forward"; ms.className = pass ? "pill2 on" : "pill2"; }
     }
     // Breadth book — all-cities Leg 1b forward gate + shoulder leg, mirrors the 5-city panel.
@@ -1328,6 +1329,8 @@ TEMPLATE = r"""<meta charset="utf-8">
       if (bs) { bs.textContent = bpass ? "gate ✓" : "forward"; bs.className = bpass ? "pill2 on" : "pill2"; }
       var bfl = document.getElementById("bkfulln"); if (bfl) bfl.textContent = b.BK_FULL_N;
       var bfe = document.getElementById("bkfulledge"); if (bfe) bfe.style.color = _neg(b.BK_FULL_NET) ? "var(--model)" : (b.BK_FULL_NET && b.BK_FULL_NET !== "—" ? "var(--good)" : "");
+      var bfm = document.getElementById("bkfullmaker");
+      if (bfm) bfm.style.color = _neg(b.BK_FULL_MAKER) ? "var(--model)" : (b.BK_FULL_MAKER && b.BK_FULL_MAKER !== "—" ? "var(--good)" : "");
     }
     prevBind = b;
     var h = html || {};
