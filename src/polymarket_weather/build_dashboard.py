@@ -145,6 +145,37 @@ def _series_error(payload) -> "str | None":
     return str(err) if err else None
 
 
+def _city_rows(c) -> list[dict]:
+    """Per-city Brier for market / ensemble / model, all on the SAME markets.
+
+    `c` is the common-set frame (markets every forecaster scored) carrying b_mkt/b_ens/b_model.
+    Scoring the three from their own trackers is what published London as an ensemble win on
+    2026-07-28: the ensemble drew an easier 94-market subset while the row read n=115, and the
+    ordering reversed (0.1197 vs 0.1290 unpaired; 0.1259 vs 0.1228 paired). One row, one market
+    set, one n — the chart draws these three on a single connected line, so they have to be
+    comparable or the line is a lie.
+
+    `degenerate` marks a city whose graded markets ALL settled the same way. Brier there is
+    mean(p^2) with no discrimination in it — lowest-numbers-wins, and predicting 0.0 everywhere
+    scores a perfect 0 — so the row is not an accuracy comparison and must not render as one.
+    That is the Hong Kong case (11 markets, 0 YES, ensemble 'beat' the market by stating lower
+    numbers).
+    """
+    rows = []
+    for cty, g in c.groupby("city"):
+        y = g["outcome"].astype(float)
+        rows.append({
+            "city": str(cty), "n": int(len(g)),
+            "market": round(float(g["b_mkt"].mean()), 4),
+            "ens": round(float(g["b_ens"].mean()), 4),
+            "model": round(float(g["b_model"].mean()), 4),
+            "degenerate": bool(y.nunique() < 2),
+            "yes": int(y.sum()),
+        })
+    rows.sort(key=lambda r: r["n"], reverse=True)
+    return rows
+
+
 def compute_series() -> dict:
     out: dict = {"acc": [], "roll": [], "city": [], "calib": [], "growth": [],
                  "heartbeat": [], "buckets": [], "recent": [], "equity": []}
@@ -258,19 +289,10 @@ def compute_series() -> dict:
             })
         out["roll"] = _sample(roll)
 
-        # accuracy by city — model, market, AND raw ensemble Brier (real per-city ordering varies)
-        ens2 = ens.copy()
-        ens2["b_ens"] = (ens2["forecast_prob"] - ens2["outcome"]) ** 2
-        ecity = ens2.groupby("city")["b_ens"].mean()
-        city = []
-        for cty, g in cal.groupby("city"):
-            row = {"city": str(cty), "model": round(float(g["b_model"].mean()), 4),
-                   "market": round(float(g["b_mkt"].mean()), 4), "n": int(len(g))}
-            if str(cty) in ecity.index:
-                row["ens"] = round(float(ecity.loc[str(cty)]), 4)
-            city.append(row)
-        city.sort(key=lambda r: r["n"], reverse=True)
-        out["city"] = city
+        # accuracy by city — on the COMMON set `c`, exactly like the scoreboard above. Reading
+        # model/market off `cal` and the ensemble off `ens` compared different market sets in one
+        # row; see _city_rows.
+        out["city"] = _city_rows(c)
 
         # calibration — model predicted P(YES) vs realized frequency, 10 bins, dot sized by n
         p = cal["forecast_prob"].to_numpy(dtype=float)
@@ -870,7 +892,7 @@ TEMPLATE = r"""<meta charset="utf-8">
         <div class="findsub">Brier per city · market vs ensemble vs model</div>
         <div class="leg"><span><i style="background:var(--market);border-radius:50%"></i>Market</span><span><i style="background:var(--ens);border-radius:50%"></i>Ensemble</span><span><i style="background:var(--model);border-radius:50%"></i>Model</span></div>
         <div class="chartwrap"><div id="c_city"></div></div>
-        <div class="cap">Each row is one city — market, ensemble, and model Brier. Further left is more accurate.</div>
+        <div class="cap">Each row is one city — market, ensemble, and model Brier <b>on the same markets</b> (the set all three scored), so the three dots are directly comparable. Further left is more accurate. A row marked <b>†</b> had every market settle NO: Brier carries no accuracy signal there, since the lowest numbers win by default.</div>
       </div>
     </div>
     <div class="panel" style="margin-top:14px">
@@ -1095,17 +1117,22 @@ TEMPLATE = r"""<meta charset="utf-8">
     var tip = document.createElement("div"); tip.className = "tip"; host.parentNode.appendChild(tip);
     rows.forEach(function (r, i) {
       var y = P.t + rh * i + rh / 2;
-      svg.appendChild(el("text", { class: "axis", x: 0, y: y + 3.5, fill: css("--ink2") }, r.city));
+      // A city whose graded markets ALL settled the same way carries no discrimination: Brier
+      // is mean(p^2), so the lowest numbers "win" by construction. Dim it and mark it rather
+      // than letting it read as an accuracy result.
+      var dead = !!r.degenerate, dim = dead ? 0.32 : 1;
+      svg.appendChild(el("text", { class: "axis", x: 0, y: y + 3.5, fill: css("--ink2"), opacity: dim }, r.city + (dead ? " †" : "")));
       var xs = [r.market, r.ens, r.model].filter(function (v) { return v != null; }).map(xOf);
-      svg.appendChild(el("line", { x1: Math.min.apply(null, xs), y1: y, x2: Math.max.apply(null, xs), y2: y, stroke: css("--axis"), "stroke-width": 1.5 }));
+      svg.appendChild(el("line", { x1: Math.min.apply(null, xs), y1: y, x2: Math.max.apply(null, xs), y2: y, stroke: css("--axis"), "stroke-width": 1.5, opacity: dim }));
       [["market", r.market, css("--market")], ["ens", r.ens, css("--ens")], ["model", r.model, css("--model")]].forEach(function (m) {
         if (m[1] == null) return;
-        var c = el("circle", { cx: xOf(m[1]), cy: y, r: 4, fill: m[2] });
+        var c = el("circle", { cx: xOf(m[1]), cy: y, r: 4, fill: m[2], opacity: dim });
         c.addEventListener("mousemove", function () {
           tip.innerHTML = '<div class="tt">' + esc(r.city) + ' · n=' + r.n + '</div>'
             + '<div class="tr"><span><i style="background:' + css("--market") + '"></i>Market</span><b>' + r.market.toFixed(3) + '</b></div>'
             + (r.ens != null ? '<div class="tr"><span><i style="background:' + css("--ens") + '"></i>Ensemble</span><b>' + r.ens.toFixed(3) + '</b></div>' : '')
-            + '<div class="tr"><span><i style="background:' + css("--model") + '"></i>Model</span><b>' + r.model.toFixed(3) + '</b></div>';
+            + '<div class="tr"><span><i style="background:' + css("--model") + '"></i>Model</span><b>' + r.model.toFixed(3) + '</b></div>'
+            + (dead ? '<div class="tr" style="color:var(--faint)">† all ' + r.n + ' settled NO — no accuracy signal; lowest numbers win by default</div>' : '');
           tip.style.opacity = 1; var hr = host.getBoundingClientRect();
           tip.style.left = Math.min(Math.max(xOf(m[1]) / W * hr.width - tip.offsetWidth / 2, 0), hr.width - tip.offsetWidth) + "px"; tip.style.top = (y / H * hr.height + 8) + "px";
         });
@@ -1299,7 +1326,7 @@ TEMPLATE = r"""<meta charset="utf-8">
     });
 
     var city = (D.city || []).slice().sort(function (a, b) { return a.market - b.market; });
-    dumbbell("c_city", city.map(function (r) { return { city: (r.city === "HongKong" ? "Hong Kong" : r.city === "NYC" ? "New York" : r.city), market: r.market, model: r.model, ens: r.ens, n: r.n }; }));
+    dumbbell("c_city", city.map(function (r) { return { city: (r.city === "HongKong" ? "Hong Kong" : r.city === "NYC" ? "New York" : r.city), market: r.market, model: r.model, ens: r.ens, n: r.n, degenerate: r.degenerate }; }));
 
     divergingBars("c_calib", D.calib || []);
     dispChart("c_disp", D.disp || []);

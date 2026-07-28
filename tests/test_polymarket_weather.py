@@ -2250,3 +2250,71 @@ def test_engine_threads_ml_cdf_into_pricing(tmp_path):
     assert opp_cdf.forecast_prob > 0.9     # step cdf: ~all mass at the bin
     assert opp_no_cdf.forecast_prob < 0.5  # Student-t moment match: mass spread out
     assert opp_cdf.edge != pytest.approx(opp_no_cdf.edge, abs=1e-9)
+
+
+# --------------------------------------------------------------------------------------
+# Dashboard: per-city Brier must be a PAIRED comparison
+# --------------------------------------------------------------------------------------
+
+def _city_frame():
+    """A common-set frame shaped like build_dashboard's `c`.
+
+    London: 4 markets. The ensemble is GOOD on the two the model also saw and TERRIBLE on
+    the rest; the unpaired bug scored it only on an easier subset. HongKong: every market
+    settled NO, so Brier carries no discrimination at all.
+    """
+    import pandas as pd
+    rows = [
+        # city,      outcome, model, market, ens
+        ("London",   0, 0.20, 0.20, 0.60),
+        ("London",   1, 0.80, 0.80, 0.40),
+        ("London",   0, 0.10, 0.10, 0.10),
+        ("London",   1, 0.90, 0.90, 0.90),
+        ("HongKong", 0, 0.30, 0.40, 0.20),
+        ("HongKong", 0, 0.25, 0.35, 0.15),
+    ]
+    df = pd.DataFrame(rows, columns=["city", "outcome", "p_model", "p_market", "p_ens"])
+    df["b_model"] = (df["p_model"] - df["outcome"]) ** 2
+    df["b_mkt"] = (df["p_market"] - df["outcome"]) ** 2
+    df["b_ens"] = (df["p_ens"] - df["outcome"]) ** 2
+    return df
+
+
+def test_city_rows_score_all_three_forecasters_on_the_same_markets():
+    """2026-07-28 regression: the per-city block computed model/market from the calibrated
+    tracker (401 markets) and the ensemble from the ensemble tracker (370) and put them in one
+    row captioned as one comparison. On the published dashboard that handed London to the
+    ensemble (0.1197 vs market 0.1290) purely because the ensemble was scored on an easier
+    94-market subset; paired, the ensemble LOSES there (0.1259 vs 0.1228). One n per row is
+    only honest if all three dots came from those same n markets."""
+    import build_dashboard as bd
+    rows = {r["city"]: r for r in bd._city_rows(_city_frame())}
+
+    ldn = rows["London"]
+    assert ldn["n"] == 4
+    # every dot on the row is the mean over the SAME 4 markets
+    assert ldn["market"] == pytest.approx(0.025, abs=1e-9)
+    assert ldn["model"] == pytest.approx(0.025, abs=1e-9)
+    assert ldn["ens"] == pytest.approx(0.185, abs=1e-9)
+    # and the ensemble must not come out ahead here -- that was the artifact
+    assert ldn["ens"] > ldn["market"]
+
+
+def test_city_rows_flag_cities_where_every_market_settled_the_same_way():
+    """Hong Kong published `ens 0.0625 < market 0.0712` off 11 graded markets with ZERO YES
+    outcomes. With no outcome variance Brier collapses to mean(p^2), so the 'winner' is just
+    whoever stated lower numbers -- predicting 0.0 everywhere scores a perfect 0. That row has
+    no discrimination in it and must not render as a like-for-like accuracy win."""
+    import build_dashboard as bd
+    rows = {r["city"]: r for r in bd._city_rows(_city_frame())}
+
+    assert rows["HongKong"]["degenerate"] is True
+    assert rows["HongKong"]["yes"] == 0
+    # a city with both outcomes present is a real comparison
+    assert rows["London"].get("degenerate", False) is False
+
+
+def test_city_rows_are_ordered_by_sample_size():
+    import build_dashboard as bd
+    rows = bd._city_rows(_city_frame())
+    assert [r["n"] for r in rows] == sorted([r["n"] for r in rows], reverse=True)
