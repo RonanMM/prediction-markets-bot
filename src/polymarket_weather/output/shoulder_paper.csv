@@ -234,3 +234,5 @@ entered_at_utc,city,condition_id,question,target_date,leg,side,entry_side_price,
 2026-07-29T15:30:52.041090+00:00,NYC,0xe5230f655d5a1bb73e4628c2c4aa503a55a89c970d8886be68700ef417c45e47,Will the lowest temperature in New York City be between 72-73°F on July 30?,2026-07-30,shoulder,No,0.91,0.09,outer,1329.91
 2026-07-29T19:48:50.851345+00:00,NYC,0xbc1fd06613966bcaa866b25a7c3e3417f752f42c24d108d350a8e4f43c2791b6,Will the highest temperature in New York City be between 74-75°F on July 30?,2026-07-30,shoulder,No,0.9,0.1,outer,2616.56
 2026-07-29T21:17:36.903622+00:00,London,0x1239d948a89af73b30cf19bb1810fbe5b64400a2ad77d1101c710a08e0cad702,Will the highest temperature in London be 26°C on July 31?,2026-07-31,shoulder,No,0.77,0.23,core,3476.6
+2026-07-29T22:20:24.471231+00:00,Seoul,0xb9f04836ad90e97452f23c3e5fff6c671df18bead8b5faf4dec496eca17c4309,Will the highest temperature in Seoul be 33°C on July 31?,2026-07-31,shoulder,No,0.855,0.145,outer,3431.72
+2026-07-29T22:20:24.471231+00:00,Seoul,0xd2262954c818ca8a8b4654226fb08e49e11a39bf20bda466bdcb77ccf26b4351,Will the lowest temperature in Seoul be 24°C on July 31?,2026-07-31,shoulder,No,0.855,0.145,outer,1049.53
