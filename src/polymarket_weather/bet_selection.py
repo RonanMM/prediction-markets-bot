@@ -212,6 +212,17 @@ def train_clears_bar(train_result: dict, holdout_gap_se: float) -> bool:
     return bool(train_result["gap"] < -(stats_util.Z * float(holdout_gap_se)))
 
 
+def _append_log(record: dict, log_path=None) -> None:
+    """One line per held-out touch. Refusals count: cmd_validate must compute the held-out
+    SE to decide whether to refuse, so a refused attempt HAS consulted the test set. Logging
+    only the attempts that stuck would let a caller probe rule after rule and leave an audit
+    trail showing a single clean shot."""
+    path = Path(log_path) if log_path is not None else HOLDOUT_LOG
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(_json_safe(record)) + "\n")
+
+
 def validate_holdout(train: pd.DataFrame, holdout: pd.DataFrame, selector: str, threshold,
                      data_cutoff: str, log_path=None) -> dict:
     """THE ONE SHOT. Score a single (selector, threshold) pair on held-out and record it forever.
@@ -239,11 +250,9 @@ def validate_holdout(train: pd.DataFrame, holdout: pd.DataFrame, selector: str, 
     r["passed"] = interval_clears_zero(r["gap"], r["se"])
     r["data_cutoff"] = data_cutoff
     r["logged_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat()
+    r["outcome"] = "validated"
 
-    path = Path(log_path) if log_path is not None else HOLDOUT_LOG
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as fh:      # append-only, never truncate
-        fh.write(json.dumps(_json_safe(r)) + "\n")
+    _append_log(r, log_path)
     return r
 
 
@@ -283,10 +292,20 @@ def cmd_search(csv_path=None) -> list:
     return search_train(train)
 
 
-def cmd_validate(selector: str, threshold, data_cutoff: str, csv_path=None) -> dict:
-    """The one shot. Refuses unless the same rule already clears the bar on train."""
+def cmd_validate(selector: str, threshold, data_cutoff: str, csv_path=None, log_path=None) -> dict:
+    """The one shot. Refuses unless the same rule already clears the bar on train.
+
+    Threshold pre-registration is enforced HERE, not only in main()'s CLI parsing, so a
+    programmatic caller (notebook, future refactor, another module) cannot spend the one shot
+    on an un-pre-registered threshold — the pre-registered grid IS the multiplicity control.
+    """
     train, holdout = split_frozen(load_bets(csv_path))
-    pred, _ = SELECTORS[selector]
+    pred, thresholds = SELECTORS[selector]
+    if threshold not in thresholds:
+        raise SystemExit(
+            f"REFUSED: {threshold!r} is not a pre-registered threshold for {selector}. "
+            f"Registered: {thresholds}. The pre-registered grid IS the multiplicity control — "
+            f"validating an off-grid threshold silently widens the search.")
     tr = evaluate_selector(train, pred(train, threshold))
     if tr is None:
         raise SystemExit(f"{selector}@{threshold} selects nothing on train")
@@ -294,12 +313,21 @@ def cmd_validate(selector: str, threshold, data_cutoff: str, csv_path=None) -> d
     if ho_probe is None:
         raise SystemExit(f"{selector}@{threshold} selects nothing on held-out")
     if not train_clears_bar(tr, ho_probe["se"]):
+        # Refused attempts still consulted held-out (its SE drove the decision), so they leave
+        # a trace too — but never the held-out GAP itself, or the refusal path becomes a
+        # backdoor way to read the one-shot answer without spending it.
+        _append_log({"outcome": "refused", "selector": selector, "threshold": threshold,
+                     "train_gap": tr["gap"], "train_n": tr["n"],
+                     "holdout_se": ho_probe["se"], "holdout_mde": stats_util.Z * ho_probe["se"],
+                     "holdout_n": ho_probe["n"], "holdout_clusters": ho_probe["clusters"],
+                     "logged_at": _dt.datetime.now(_dt.timezone.utc).isoformat()},
+                    log_path)
         raise SystemExit(
             f"REFUSED: train gap {tr['gap']:+.4f} is smaller than the held-out MDE "
             f"{stats_util.Z * ho_probe['se']:.4f}. Held-out cannot resolve an effect this size, "
             f"so spending the one shot here would use up the test and learn nothing. "
             f"Go to Phase C (see the spec).")
-    return validate_holdout(train, holdout, selector, threshold, data_cutoff)
+    return validate_holdout(train, holdout, selector, threshold, data_cutoff, log_path=log_path)
 
 
 def main() -> None:

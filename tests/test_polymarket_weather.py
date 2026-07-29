@@ -2685,3 +2685,100 @@ def test_search_path_never_reads_holdout_rows(tmp_path):
     assert [(r["selector"], r["threshold"], round(r["gap"], 9)) for r in a] == \
            [(r["selector"], r["threshold"], round(r["gap"], 9)) for r in b], \
         "search results changed when held-out rows were added — the search read held-out data"
+
+
+def _cmd_validate_frame(train_is_bad: bool):
+    """A searchable frame split so ALL model-perfect ('good') rows land on one side of
+    SPLIT_DATE and all model-terrible ('bad') rows land on the other, selected via the
+    'bucket' selector at threshold 'Seoul|1d' (constant on every row, so it always keeps
+    everything). Every row within a half is identical, so the clustered SE is exactly 0 and
+    train_clears_bar's outcome is deterministic rather than borderline.
+
+    train_is_bad=True  -> train is all 'bad' rows (gap +0.75, se 0): fails the bar.
+    train_is_bad=False -> train is all 'good' rows (gap -0.25, se 0): clears the bar.
+    """
+    df = _searchable_frame()
+    pre = ["2026-07-01", "2026-07-02", "2026-07-03"]     # before SPLIT_DATE (2026-07-08)
+    post = ["2026-07-20", "2026-07-21", "2026-07-22"]    # after SPLIT_DATE
+    good_idx = [0, 1, 2, 6, 7, 8, 12, 13, 14]             # forecast_prob == outcome, brier 0
+    bad_idx = [3, 4, 5, 9, 10, 11, 15, 16, 17]            # forecast_prob wrong every time, brier 1
+    good_dates, bad_dates = (post, pre) if train_is_bad else (pre, post)
+    dates = [None] * len(df)
+    for j, i in enumerate(good_idx):
+        dates[i] = good_dates[j % 3]
+    for j, i in enumerate(bad_idx):
+        dates[i] = bad_dates[j % 3]
+    df["target_date"] = dates
+    return df
+
+
+def test_cmd_validate_refuses_off_grid_threshold(tmp_path):
+    """Pre-registration must be enforced inside cmd_validate itself, not only in main()'s CLI
+    parsing — a programmatic caller (notebook, future refactor, another module) must not be
+    able to spend the one shot on an un-pre-registered threshold. Nothing held-out is touched
+    on this path, so nothing should be logged."""
+    import bet_selection as bs
+    df = _searchable_frame()
+    csv = tmp_path / "bets.csv"
+    df.to_csv(csv, index=False)
+    log = tmp_path / "holdout_log.jsonl"
+    _, grid = bs.SELECTORS["forecast_prob_floor"]
+    with pytest.raises(SystemExit) as exc:
+        bs.cmd_validate("forecast_prob_floor", 0.37, "2026-07-29", csv_path=csv, log_path=log)
+    assert str(grid) in str(exc.value), "message must name the registered grid"
+    assert not log.exists(), "off-grid threshold must be rejected before touching held-out data"
+
+
+def test_cmd_validate_refuses_when_train_cannot_clear_the_bar(tmp_path):
+    """cmd_validate must not spend the one shot on an effect train can't show is real. The
+    refusal message must state both the train gap and the held-out MDE."""
+    import bet_selection as bs
+    df = _cmd_validate_frame(train_is_bad=True)
+    csv = tmp_path / "bets.csv"
+    df.to_csv(csv, index=False)
+    log = tmp_path / "holdout_log.jsonl"
+    with pytest.raises(SystemExit) as exc:
+        bs.cmd_validate("bucket", "Seoul|1d", "2026-07-29", csv_path=csv, log_path=log)
+    msg = str(exc.value)
+    assert "REFUSED" in msg
+    assert "+0.7500" in msg, "message must state the train gap"
+    assert "0.0000" in msg, "message must state the held-out MDE"
+
+
+def test_cmd_validate_refusal_logs_a_record_without_the_holdout_gap(tmp_path):
+    """Refused attempts still consulted held-out (its SE drove the refusal decision), so they
+    must leave a trace too — otherwise a caller could probe rule after rule and the audit trail
+    would show only the one that stuck. But the held-out GAP itself must NOT be logged, or the
+    refusal path becomes a backdoor way to read the one-shot answer without spending it."""
+    import json
+    import bet_selection as bs
+    df = _cmd_validate_frame(train_is_bad=True)
+    csv = tmp_path / "bets.csv"
+    df.to_csv(csv, index=False)
+    log = tmp_path / "holdout_log.jsonl"
+    with pytest.raises(SystemExit):
+        bs.cmd_validate("bucket", "Seoul|1d", "2026-07-29", csv_path=csv, log_path=log)
+    lines = [json.loads(x) for x in log.read_text().splitlines() if x.strip()]
+    assert len(lines) == 1, "exactly one record per touch, even a refused one"
+    rec = lines[0]
+    assert rec["outcome"] == "refused"
+    assert "gap" not in rec, "the refusal record must not leak the held-out gap"
+    assert {"selector", "threshold", "train_gap", "train_n", "holdout_se", "holdout_mde",
+            "holdout_n", "holdout_clusters", "logged_at"} <= set(rec)
+
+
+def test_cmd_validate_success_logs_validated_outcome(tmp_path):
+    """A validation that clears the bar must reach validate_holdout and log
+    outcome == 'validated', distinguishing it from a refused attempt in the same log."""
+    import json
+    import bet_selection as bs
+    df = _cmd_validate_frame(train_is_bad=False)
+    csv = tmp_path / "bets.csv"
+    df.to_csv(csv, index=False)
+    log = tmp_path / "holdout_log.jsonl"
+    r = bs.cmd_validate("bucket", "Seoul|1d", "2026-07-29", csv_path=csv, log_path=log)
+    assert r["selector"] == "bucket" and r["threshold"] == "Seoul|1d"
+    lines = [json.loads(x) for x in log.read_text().splitlines() if x.strip()]
+    assert len(lines) == 1
+    assert lines[0]["outcome"] == "validated"
+    assert lines[0]["selector"] == "bucket"
