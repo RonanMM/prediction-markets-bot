@@ -2507,13 +2507,56 @@ def test_candidate_count_is_the_pre_registered_number():
 
 def _searchable_frame():
     import pandas as pd
+    import numpy as np
     df = pd.concat([_scored_frame()] * 3, ignore_index=True)
     df["condition_id"] = [f"c{i}" for i in range(len(df))]
     df["target_date"] = ["2026-07-01", "2026-07-02", "2026-07-03"] * 6
-    df["forecast_sigma"] = 1.5
-    df["liquidity"] = 3000
-    df["pmf_sum_dev"] = 0.5
-    df["volume_recency"] = 0.9
+
+    # Vary signals so different thresholds select different subsets with genuinely different gaps.
+    # Pattern: rows 0-2, 6-8, 12-14 are model-perfect (outcome matches forecast_prob exactly);
+    # rows 3-5, 9-11, 15-17 are model-terrible. By varying each signal inversely (good rows
+    # get low values, bad rows get high values), thresholds select different proportions.
+    # This creates different gaps: low threshold = mostly good; high threshold = mixed.
+    forecast_sigma = np.array([
+        1.0, 1.0, 1.0,      # 0-2: good rows, low
+        2.0, 2.0, 2.0,      # 3-5: bad rows, high
+        1.5, 1.5, 1.5,      # 6-8: good rows, medium
+        1.5, 1.5, 1.5,      # 9-11: bad rows, medium
+        0.9, 0.9, 0.9,      # 12-14: good rows, very low
+        1.9, 1.9, 1.9,      # 15-17: bad rows, high
+    ], dtype=float)
+
+    liquidity = np.array([
+        1500, 1500, 1500,   # 0-2: good rows, low
+        4000, 4000, 4000,   # 3-5: bad rows, high
+        3000, 3000, 3000,   # 6-8: good rows, medium
+        3000, 3000, 3000,   # 9-11: bad rows, medium
+        4500, 4500, 4500,   # 12-14: good rows, high
+        500, 500, 500,      # 15-17: bad rows, very low
+    ], dtype=float)
+
+    pmf_sum_dev = np.array([
+        0.2, 0.2, 0.2,      # 0-2: good rows, low
+        0.9, 0.9, 0.9,      # 3-5: bad rows, high
+        0.5, 0.5, 0.5,      # 6-8: good rows, medium
+        0.5, 0.5, 0.5,      # 9-11: bad rows, medium
+        0.1, 0.1, 0.1,      # 12-14: good rows, very low
+        0.8, 0.8, 0.8,      # 15-17: bad rows, high
+    ], dtype=float)
+
+    volume_recency = np.array([
+        0.95, 0.95, 0.95,   # 0-2: good rows, high
+        0.5, 0.5, 0.5,      # 3-5: bad rows, low
+        0.7, 0.7, 0.7,      # 6-8: good rows, medium
+        0.7, 0.7, 0.7,      # 9-11: bad rows, medium
+        0.99, 0.99, 0.99,   # 12-14: good rows, very high
+        0.3, 0.3, 0.3,      # 15-17: bad rows, very low
+    ], dtype=float)
+
+    df["forecast_sigma"] = forecast_sigma
+    df["liquidity"] = liquidity
+    df["pmf_sum_dev"] = pmf_sum_dev
+    df["volume_recency"] = volume_recency
     df["bucket"] = "Seoul|1d"
     return df
 
@@ -2526,6 +2569,8 @@ def test_search_train_ranks_every_candidate_and_keeps_the_losers():
     assert len(res) >= 1
     gaps = [r["gap"] for r in res]
     assert gaps == sorted(gaps), "results must be ranked by gap ascending (most negative first)"
+    assert len(set(gaps)) > 1, "fixture must produce differing gaps or this test proves nothing"
+    assert gaps != sorted(gaps, reverse=True), "verify not reverse-sorted (catches broken sort)"
     assert all("selector" in r and "threshold" in r for r in res)
     # empty selections are dropped, not reported as gap=0
     assert all(r["n"] > 0 for r in res)
