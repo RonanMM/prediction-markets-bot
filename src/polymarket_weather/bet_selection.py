@@ -140,3 +140,28 @@ def evaluate_selector(df: pd.DataFrame, mask) -> dict | None:
         "kept": len(sel) / len(df),
         "roi_flat": flat_roi(sel) if "their_prob" in sel.columns else float("nan"),
     }
+
+
+def search_train(train: pd.DataFrame) -> list:
+    """Score every pre-registered (selector, threshold) pair on TRAIN.
+
+    Deliberately unconstrained — search train as hard as you like, because the multiplicity
+    control is the held-out set, not a correction factor applied here. Every candidate is
+    returned, including the losers, so the written record shows how wide the net was.
+
+    A family whose column is absent from the frame is skipped rather than raising, so an older
+    tracker missing one signal does not block the whole search.
+    """
+    out = []
+    for name, threshold in iter_candidates():
+        pred, _ = SELECTORS[name]
+        try:
+            mask = pred(train, threshold)
+        except KeyError:
+            continue       # signal not present in this tracker
+        r = evaluate_selector(train, mask)
+        if r is None:
+            continue       # threshold kept nothing
+        r["selector"], r["threshold"] = name, threshold
+        out.append(r)
+    return sorted(out, key=lambda r: r["gap"])

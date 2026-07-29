@@ -2503,3 +2503,39 @@ def test_candidate_count_is_the_pre_registered_number():
     cands = bs.iter_candidates()
     assert len(cands) == sum(len(t) for _, t in bs.SELECTORS.values())
     assert all(isinstance(name, str) for name, _ in cands)
+
+
+def _searchable_frame():
+    import pandas as pd
+    df = pd.concat([_scored_frame()] * 3, ignore_index=True)
+    df["condition_id"] = [f"c{i}" for i in range(len(df))]
+    df["target_date"] = ["2026-07-01", "2026-07-02", "2026-07-03"] * 6
+    df["forecast_sigma"] = 1.5
+    df["liquidity"] = 3000
+    df["pmf_sum_dev"] = 0.5
+    df["volume_recency"] = 0.9
+    df["bucket"] = "Seoul|1d"
+    return df
+
+
+def test_search_train_ranks_every_candidate_and_keeps_the_losers():
+    """The record has to show how wide the net was. Reporting only the winner is how a search of
+    32 rules gets written up as if one rule had been tried."""
+    import bet_selection as bs
+    res = bs.search_train(_searchable_frame())
+    assert len(res) >= 1
+    gaps = [r["gap"] for r in res]
+    assert gaps == sorted(gaps), "results must be ranked by gap ascending (most negative first)"
+    assert all("selector" in r and "threshold" in r for r in res)
+    # empty selections are dropped, not reported as gap=0
+    assert all(r["n"] > 0 for r in res)
+
+
+def test_search_train_is_pure_and_does_not_mutate_its_input():
+    """A search that mutates the frame makes results depend on evaluation order."""
+    import bet_selection as bs
+    df = _searchable_frame()
+    before = df.copy(deep=True)
+    bs.search_train(df)
+    pd_testing = __import__("pandas").testing
+    pd_testing.assert_frame_equal(df, before)
