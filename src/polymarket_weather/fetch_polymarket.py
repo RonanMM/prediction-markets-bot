@@ -325,3 +325,60 @@ def fetch_price_history_for_market(snap: dict, interval: str = "1d") -> list[dic
         time.sleep(0.2)
 
     return records
+
+
+# One pagination per process. fetch_weather_markets is called once per city, and the old code
+# paid 44 full paginations per collect cycle for that; the tag is global, so it is fetched once
+# and partitioned. Collect runs as a fresh process each cycle, so process lifetime IS the
+# correct cache lifetime — no TTL needed.
+_TAG_CACHE: dict[str, dict[str, list[dict]]] = {}
+
+
+def _reset_tag_cache() -> None:
+    """Clear the per-process tag cache. Exists so tests are not order-dependent."""
+    _TAG_CACHE.clear()
+
+
+def discover_by_tag(tag_slug: str = "weather") -> dict[str, list[dict]]:
+    """{city: [raw Gamma market dicts]} for every configured city, from one tag enumeration.
+
+    Returns raw market dicts, NOT snapshots: event-nested markets carry every field
+    extract_market_snapshot reads (verified 2026-07-29), so the caller's existing conversion is
+    unchanged and nothing downstream of it needs to know discovery changed.
+    """
+    if tag_slug in _TAG_CACHE:
+        return _TAG_CACHE[tag_slug]
+
+    events, truncated = _paged_events(tag_slug)
+    if truncated:
+        logger.warning("tag '%s' enumeration was truncated — city counts below are a FLOOR, "
+                       "not a complete picture", tag_slug)
+
+    by_city: dict[str, list[dict]] = {}
+    seen: set[str] = set()
+    skipped_events = 0
+    for ev in events:
+        markets = ev.get("markets")
+        if not markets:
+            skipped_events += 1
+            continue
+        for m in markets:
+            q = m.get("question") or ""
+            if not is_temperature_question(q):
+                continue
+            city = match_city(q)
+            if city is None:
+                continue
+            cid = m.get("conditionId") or ""
+            if not cid or cid in seen:
+                continue
+            seen.add(cid)
+            by_city.setdefault(city, []).append(m)
+
+    if skipped_events:
+        logger.info("tag '%s': %d event(s) carried no markets key", tag_slug, skipped_events)
+    logger.info("tag '%s': %d markets across %d cities (%s)", tag_slug, len(seen), len(by_city),
+                ", ".join(f"{c}={len(v)}" for c, v in sorted(by_city.items())))
+
+    _TAG_CACHE[tag_slug] = by_city
+    return by_city

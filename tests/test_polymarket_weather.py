@@ -2995,3 +2995,64 @@ def test_cap_enforces_max_pages(caplog):
         f"should have made exactly {fp._MAX_EVENT_PAGES} calls"
     assert any("TRUNCATED" in r.message and "cap" in r.message for r in caplog.records), \
         "cap hit must emit a warning naming the cap"
+
+
+_TAG_EVENTS = [
+    {"title": "London temps", "markets": [
+        {"conditionId": "a", "question": "Will the highest temperature in London be 22°C on July 29?"},
+        {"conditionId": "b", "question": "Will the lowest temperature in London be 15°C or below on July 29?"},
+    ]},
+    {"title": "NYC temps", "markets": [
+        {"conditionId": "c", "question": "Will the highest temperature in NYC be 30°C on July 29?"},
+    ]},
+    {"title": "climate", "markets": [
+        {"conditionId": "d", "question": "Will 2026 be the hottest year on record?"},
+    ]},
+    {"title": "malformed — no markets key"},
+    {"title": "dupe", "markets": [
+        {"conditionId": "a", "question": "Will the highest temperature in London be 22°C on July 29?"},
+    ]},
+]
+
+
+def test_discover_by_tag_partitions_by_city_and_keeps_tmin(monkeypatch):
+    """Both London rows must survive: one Tmax, one Tmin. Dropping Tmin here would repeat an
+    exclusion this repo has already made once by accident."""
+    import fetch_polymarket as fp
+    fp._reset_tag_cache()
+    monkeypatch.setattr(fp, "_paged_events", lambda tag, page_size=100: (_TAG_EVENTS, False))
+    out = fp.discover_by_tag("weather")
+    assert sorted(out) == ["London", "New York City"]
+    assert len(out["London"]) == 2, "the Tmin market was dropped"
+    assert len(out["New York City"]) == 1
+
+
+def test_discover_by_tag_ignores_non_temperature_and_malformed_events(monkeypatch):
+    """The weather tag also carries climate markets ('hottest year on record') and events with
+    no markets key at all. Neither may reach a city bucket or raise."""
+    import fetch_polymarket as fp
+    fp._reset_tag_cache()
+    monkeypatch.setattr(fp, "_paged_events", lambda tag, page_size=100: (_TAG_EVENTS, False))
+    out = fp.discover_by_tag("weather")
+    qs = [m["question"] for ms in out.values() for m in ms]
+    assert not any("hottest year" in q for q in qs)
+
+
+def test_discover_by_tag_dedupes_and_pages_only_once(monkeypatch):
+    """Condition 'a' appears in two events. And the tag must be paged ONCE per process, not once
+    per city — otherwise five cities means five full paginations, which is the cost this change
+    exists to remove."""
+    import fetch_polymarket as fp
+    fp._reset_tag_cache()
+    calls = []
+
+    def fake_paged(tag, page_size=100):
+        calls.append(tag)
+        return _TAG_EVENTS, False
+
+    monkeypatch.setattr(fp, "_paged_events", fake_paged)
+    fp.discover_by_tag("weather")
+    fp.discover_by_tag("weather")
+    fp.discover_by_tag("weather")
+    assert len(calls) == 1, "tag was paged more than once per process"
+    assert len(fp.discover_by_tag("weather")["London"]) == 2, "duplicate conditionId not deduped"
