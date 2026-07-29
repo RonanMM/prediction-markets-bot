@@ -2378,3 +2378,42 @@ def test_gap_kpi_number_comes_from_the_same_computation_as_its_interval():
     h = bd.render_shell({"series": {}, "generated_at": "2026-07-28T00:00:00Z"})
     assert "(P && isFinite(P.gap)) ? P.gap : (s.model - s.market)" in h, \
         "gap KPI must prefer the pooled gap so it matches the interval shown under it"
+
+
+def _selection_frame():
+    """Minimal frame shaped like the calibrated eval tracker."""
+    import pandas as pd
+    return pd.DataFrame({
+        "condition_id": ["a", "b", "c", "d"],
+        "city": ["Seoul", "Seoul", "London", "London"],
+        "target_date": ["2026-07-07", "2026-07-08", "2026-07-07", "2026-07-09"],
+        "outcome": [0, 1, 0, 1],
+        "forecast_prob": [0.2, 0.8, 0.3, 0.7],
+        "market_prob_raw": [0.3, 0.7, 0.2, 0.8],
+    })
+
+
+def test_split_frozen_is_chronological_and_deterministic():
+    """The split date is frozen in code, not derived from the data. Deriving it (e.g. a 2/3
+    quantile) would move the boundary every time new markets grade, so 'held-out' would quietly
+    become a different set on each run."""
+    import bet_selection as bs
+    df = _selection_frame()
+    train, holdout = bs.split_frozen(df)
+    assert bs.SPLIT_DATE == "2026-07-08"
+    assert sorted(train["condition_id"]) == ["a", "c"]      # strictly before the cut
+    assert sorted(holdout["condition_id"]) == ["b", "d"]    # on or after
+    # deterministic: same input, same output, no RNG
+    again = bs.split_frozen(df)
+    assert list(again[0]["condition_id"]) == list(train["condition_id"])
+
+
+def test_split_frozen_never_leaks_or_straddles():
+    """A condition_id in both halves would make the held-out test meaningless, and a city-day
+    spanning the boundary would put correlated bins (one weather outcome) on both sides."""
+    import bet_selection as bs
+    train, holdout = bs.split_frozen(_selection_frame())
+    assert set(train["condition_id"]).isdisjoint(set(holdout["condition_id"]))
+    tr_days = set(train["city"] + "|" + train["target_date"])
+    ho_days = set(holdout["city"] + "|" + holdout["target_date"])
+    assert tr_days.isdisjoint(ho_days)
