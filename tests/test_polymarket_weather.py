@@ -3056,3 +3056,75 @@ def test_discover_by_tag_dedupes_and_pages_only_once(monkeypatch):
     fp.discover_by_tag("weather")
     assert len(calls) == 1, "tag was paged more than once per process"
     assert len(fp.discover_by_tag("weather")["London"]) == 2, "duplicate conditionId not deduped"
+
+
+def test_discover_by_tag_warns_when_the_enumeration_was_truncated(caplog):
+    """A truncated enumeration must never be presented as a complete picture. This is the
+    original bug one layer up: the old pager could not distinguish a hard API ceiling from
+    the end of the list, and that silence hid a ~3% capture rate for months."""
+    import logging
+    import fetch_polymarket as fp
+    fp._reset_tag_cache()
+    monkeypatched = lambda tag, page_size=100: (_TAG_EVENTS, True)   # truncated=True
+    import unittest.mock as m
+    with caplog.at_level(logging.WARNING), m.patch.object(fp, "_paged_events", monkeypatched):
+        fp.discover_by_tag("weather")
+    assert any("FLOOR" in r.message for r in caplog.records), \
+        "a truncated enumeration must be reported as a FLOOR, not a complete picture"
+
+
+def test_discover_by_tag_does_not_warn_when_complete(caplog):
+    """A warning on the NORMAL path becomes noise and gets ignored — which is how the
+    truncation signal would be lost a second time."""
+    import logging
+    import fetch_polymarket as fp
+    fp._reset_tag_cache()
+    import unittest.mock as m
+    with caplog.at_level(logging.WARNING), m.patch.object(
+            fp, "_paged_events", lambda tag, page_size=100: (_TAG_EVENTS, False)):
+        fp.discover_by_tag("weather")
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+def test_discover_by_tag_cache_keys_on_tag_slug(monkeypatch):
+    """Cache keys on tag_slug. discover_by_tag('weather') then discover_by_tag('other') must
+    each trigger their own _paged_events call and return distinct results."""
+    import fetch_polymarket as fp
+    fp._reset_tag_cache()
+    calls = []
+
+    def fake_paged(tag, page_size=100):
+        calls.append(tag)
+        if tag == "weather":
+            return _TAG_EVENTS, False
+        else:
+            return [{"title": "other tag", "markets": [
+                {"conditionId": "x", "question": "Will the highest temperature in Seoul be 28°C on July 29?"},
+            ]}], False
+
+    monkeypatch.setattr(fp, "_paged_events", fake_paged)
+    weather_result = fp.discover_by_tag("weather")
+    other_result = fp.discover_by_tag("other")
+    assert len(calls) == 2, "each tag should trigger its own pagination"
+    assert "London" in weather_result
+    assert "Seoul" in other_result
+    assert "Seoul" not in weather_result
+
+
+def test_discover_by_tag_drops_markets_with_empty_or_missing_conditionid(monkeypatch):
+    """A market with an empty or missing conditionId is DROPPED, not kept. Dedupe keys on that
+    field, so keeping such rows would silently merge unrelated markets together."""
+    import fetch_polymarket as fp
+    fp._reset_tag_cache()
+    bad_events = [
+        {"title": "London temps", "markets": [
+            {"conditionId": "a", "question": "Will the highest temperature in London be 22°C on July 29?"},
+            {"question": "Will the highest temperature in London be 23°C on July 29?"},  # missing conditionId
+            {"conditionId": "", "question": "Will the highest temperature in London be 24°C on July 29?"},  # empty conditionId
+        ]},
+    ]
+    import unittest.mock as m
+    with m.patch.object(fp, "_paged_events", lambda tag, page_size=100: (bad_events, False)):
+        result = fp.discover_by_tag("weather")
+    assert len(result["London"]) == 1, "only the market with valid conditionId should survive"
+    assert result["London"][0]["conditionId"] == "a"
