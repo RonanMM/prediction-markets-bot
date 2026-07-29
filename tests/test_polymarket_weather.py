@@ -2818,3 +2818,38 @@ def test_flat_roi_pins_exact_arithmetic_against_hand_computed_pnl():
         "dropping the half-spread must not leave flat_roi this high or higher"
     assert bs.flat_roi(df) < no_fee, \
         "dropping the fee must not leave flat_roi this high or higher"
+
+
+# ── Question classification for tag-based discovery ────────────────────────────
+
+def test_match_city_handles_every_configured_alias():
+    """Discovery is only as good as this function — a city it cannot name is a city we
+    silently stop collecting."""
+    import fetch_polymarket as fp
+    assert fp.match_city("Will the highest temperature in London be 22°C on July 29?") == "London"
+    assert fp.match_city("Will the highest temperature in Seoul be 30°C on July 29?") == "Seoul"
+    assert fp.match_city("Will the highest temperature in Chicago be 30°C on July 29?") == "Chicago"
+    assert fp.match_city("Will the highest temperature in Hong Kong be 33°C on July 29?") == "Hong Kong"
+    # New York City has three aliases and all must land on the same key
+    for q in ["Highest temperature in New York on July 29?",
+              "Highest temperature in NYC on July 29?",
+              "highest temperature in new york on July 29?"]:
+        assert fp.match_city(q) == "New York City", q
+
+
+def test_match_city_does_not_match_substrings_of_other_words():
+    """'New Yorker' contains 'New York'. Matching it would file an unrelated market under NYC
+    and corrupt that city's series."""
+    import fetch_polymarket as fp
+    assert fp.match_city("Will the New Yorker publish a temperature piece?") is None
+    assert fp.match_city("Will the highest temperature in Paris be 30°C?") is None
+
+
+def test_is_temperature_question_keeps_tmin_markets():
+    """~20% of markets settle on the daily MINIMUM. A filter written around 'highest' drops
+    them silently — and Tmin is already a market type this repo excluded once before."""
+    import fetch_polymarket as fp
+    assert fp.is_temperature_question("Will the lowest temperature in London be 15°C or below on July 29?")
+    assert fp.is_temperature_question("Will the highest temperature in London be 22°C on July 29?")
+    assert not fp.is_temperature_question("Will it rain in London on July 29?")
+    assert not fp.is_temperature_question("Will 2026 be the hottest year on record?")

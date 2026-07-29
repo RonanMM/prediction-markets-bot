@@ -9,6 +9,7 @@ Uses the Gamma API (read-only, no auth) to:
 
 import json
 import logging
+import re
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -26,6 +27,36 @@ from config import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ── Question classification ──────────────────────────────────────────────────
+
+# "temperature" plus a superlative. Deliberately matches BOTH highest and lowest: about 20% of
+# markets settle on the daily minimum, and a pattern written around "highest" drops them without
+# a trace — Tmin is already a market type this repo excluded once by accident.
+_TEMP_RE = re.compile(r"\b(highest|lowest|high|low|max|min|maximum|minimum)\b[^?]*\btemperature\b"
+                      r"|\btemperature\b[^?]*\b(highest|lowest|high|low|max|min)\b", re.I)
+
+
+def is_temperature_question(question: str) -> bool:
+    """Is this a daily high/low temperature market?"""
+    return bool(_TEMP_RE.search(question or ""))
+
+
+def match_city(question: str) -> str | None:
+    """Which configured city this question is about, or None.
+
+    The single place that decides city membership, so "New York" / "NYC" / "new york" collapsing
+    to one key is asserted in one test rather than assumed in five call sites. Matching is on WORD
+    BOUNDARIES: "New Yorker" contains "New York", and filing that under NYC would quietly corrupt
+    the city's series.
+    """
+    q = question or ""
+    for city, cfg in CITIES.items():
+        for term in cfg.get("search_terms", [city]):
+            if re.search(rf"\b{re.escape(term)}\b", q, re.I):
+                return city
+    return None
 
 
 # ── HTTP helpers ─────────────────────────────────────────────────────────────
