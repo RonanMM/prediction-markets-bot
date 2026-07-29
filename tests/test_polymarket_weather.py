@@ -2617,12 +2617,35 @@ def test_validate_holdout_appends_exactly_one_record_per_call(tmp_path):
             "train_gap", "train_n"} <= set(lines[0])
 
 
-def test_validate_holdout_passes_only_when_the_interval_clears_zero(tmp_path):
+def test_validate_holdout_passes_only_when_the_interval_clears_zero():
     """gap + 1.96*se < 0. A negative point estimate whose interval spans zero is not a result —
     that is exactly how the full-band structure gate read 'MET' while underpowered."""
     import bet_selection as bs
+    cases = [
+        (-0.10, 0.02, True),    # interval [-0.139,-0.061] entirely below zero
+        (-0.03, 0.02, False),   # negative point estimate, interval spans zero -> NOT a result
+        (-0.03, 0.01, True),    # [-0.050,-0.010] clears
+        (+0.05, 0.02, False),   # positive gap never passes
+        (-0.10, float("inf"), False),  # undefined se cannot pass
+    ]
+    for gap, se, want in cases:
+        assert bs.interval_clears_zero(gap, se) is want, f"gap={gap} se={se}"
+
+
+def test_validate_holdout_log_is_valid_strict_json(tmp_path):
+    """Log lines must be parseable by non-Python readers (jq, etc). A record from an empty
+    selection contains NaN/Infinity; they must serialize to null, not bare NaN/Infinity."""
+    import json
+    import bet_selection as bs
     df = _searchable_frame()
-    train, holdout = df.iloc[:9].copy(), df.iloc[9:].copy()
-    r = bs.validate_holdout(train, holdout, "bucket", "Seoul|1d",
-                            data_cutoff="2026-07-29", log_path=tmp_path / "l.jsonl")
-    assert r["passed"] == bool(r["gap"] + 1.96 * r["se"] < 0)
+    train = df.iloc[:9].copy()
+    holdout_empty = df.iloc[0:0].copy()  # empty
+    log = tmp_path / "holdout_log.jsonl"
+    r = bs.validate_holdout(train, holdout_empty, "bucket", "Seoul|1d",
+                            data_cutoff="2026-07-29", log_path=log)
+    # Record returned to caller has real inf/nan
+    assert r["se"] == float("inf")
+    # But log line is strict JSON
+    line = log.read_text().strip()
+    # This parser fires on NaN/Infinity — if any bare non-finites were written, it raises
+    json.loads(line, parse_constant=lambda c: (_ for _ in ()).throw(ValueError(f"non-finite: {c}")))

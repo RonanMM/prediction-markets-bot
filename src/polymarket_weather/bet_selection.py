@@ -174,6 +174,32 @@ def search_train(train: pd.DataFrame) -> list:
 HOLDOUT_LOG = Path(__file__).resolve().parent / "output" / "holdout_log.jsonl"
 
 
+def interval_clears_zero(gap: float, se: float) -> bool:
+    """The pass rule: the ENTIRE 95% interval must lie below zero.
+
+    A negative point estimate whose interval spans zero is not a result. Extracted from
+    validate_holdout so the rule can be tested against synthetic (gap, se) pairs — derived
+    from data it was only ever exercised at one point, where every loosening of the rule
+    happened to give the same answer.
+    """
+    if se == float("inf") or se != se:      # inf or nan
+        return False
+    return bool(gap + stats_util.Z * se < 0)
+
+
+def _json_safe(d: dict) -> dict:
+    """NaN/Infinity are not valid JSON. json.dumps emits them bare, so a record from an empty
+    selection is readable by Python but rejected by jq and every non-Python reader — and this
+    log exists precisely to be audited later, possibly not from Python."""
+    out = {}
+    for k, v in d.items():
+        if isinstance(v, float) and (v != v or v in (float("inf"), float("-inf"))):
+            out[k] = None
+        else:
+            out[k] = v
+    return out
+
+
 def train_clears_bar(train_result: dict, holdout_gap_se: float) -> bool:
     """Is the train effect big enough that held-out could actually see it?
 
@@ -208,12 +234,12 @@ def validate_holdout(train: pd.DataFrame, holdout: pd.DataFrame, selector: str, 
     tr = evaluate_selector(train, pred(train, threshold))
     r["train_gap"] = float(tr["gap"]) if tr else float("nan")
     r["train_n"] = int(tr["n"]) if tr else 0
-    r["passed"] = bool(r["se"] != float("inf") and r["gap"] + stats_util.Z * r["se"] < 0)
+    r["passed"] = interval_clears_zero(r["gap"], r["se"])
     r["data_cutoff"] = data_cutoff
     r["logged_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat()
 
     path = Path(log_path) if log_path is not None else HOLDOUT_LOG
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:      # append-only, never truncate
-        fh.write(json.dumps(r) + "\n")
+        fh.write(json.dumps(_json_safe(r)) + "\n")
     return r
