@@ -68,6 +68,53 @@ def flat_roi(sel: pd.DataFrame) -> float:
     return float(np.mean(pnl))
 
 
+# Pre-registered before any searching. Each entry maps a family name to a pure predicate and a
+# fixed threshold grid. Adding a family after seeing results is how a search launders noise into
+# a finding — if one has to be added, say so in the log and treat the run as exploratory.
+SELECTORS: dict = {
+    # Theory-driven, not dredged: the model's [0,0.1) confidence bin predicts 3.6% and realizes
+    # 15.5%. Excluding its overconfident tail fixes a known, measured defect.
+    "forecast_prob_floor": (
+        lambda d, t: d["forecast_prob"].astype(float) >= t, [0.10, 0.15, 0.20]),
+    # The market's cheap bins are honestly cheap — 0 of 64 markets priced under 10c landed — so
+    # betting No into them may be systematically wrong.
+    "bet_side": (
+        lambda d, t: d["bet_side"].astype(str) == t, ["Yes", "No"]),
+    "forecast_sigma_max": (
+        lambda d, t: d["forecast_sigma"].astype(float) <= t, [1.2, 1.6, 2.0]),
+    # The structure book already found thin books lose -0.064/contract as maker.
+    "liquidity_min": (
+        lambda d, t: d["liquidity"].astype(float) >= t, [1500, 2500, 4000]),
+    "pmf_sum_dev_max": (
+        lambda d, t: d["pmf_sum_dev"].astype(float) <= t, [0.3, 0.6, 0.9]),
+    "volume_recency_min": (
+        lambda d, t: d["volume_recency"].astype(float) >= t, [0.5, 0.8, 0.95]),
+    "bucket": (
+        lambda d, t: d["bucket"].astype(str) == t,
+        ["Chicago|1d", "Chicago|2d+", "Chicago|same-day",
+         "HongKong|1d", "HongKong|2d+", "HongKong|same-day",
+         "London|1d", "London|2d+", "London|same-day",
+         "NYC|1d", "NYC|2d+", "NYC|same-day",
+         "Seoul|1d", "Seoul|2d+", "Seoul|same-day"]),
+}
+
+# Kept as data, not a comment, so the exclusion is testable and survives refactoring.
+EXCLUDED_BY_DESIGN: dict = {
+    "abs_edge": ("Adverse selection, z-std 1.41 (EDGE_MEGAPLAN §63): the model is most wrong "
+                 "exactly where it disagrees most with the price, so selecting on edge size is "
+                 "the measured trap."),
+    "is_stale": "Only 22 of 201 training bets — far too thin to resolve anything.",
+    "intraday": ("Only 12 of 201 training bets carry intraday conditioning. Worth recording "
+                 "that the model's one genuine informational edge over the market fires this "
+                 "rarely in the backtest."),
+}
+
+
+def iter_candidates() -> list:
+    """Every (family, threshold) pair, in a deterministic order."""
+    return [(name, t) for name, (_, thresholds) in SELECTORS.items() for t in thresholds]
+
+
 def evaluate_selector(df: pd.DataFrame, mask) -> dict | None:
     """Paired model-minus-market Brier gap for the selected rows, clustered by city-day.
 

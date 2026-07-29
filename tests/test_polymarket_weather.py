@@ -2466,3 +2466,40 @@ def test_evaluate_selector_returns_none_on_empty_selection():
     import bet_selection as bs
     df = _scored_frame()
     assert bs.evaluate_selector(df, df["city"] == "Nowhere") is None
+
+
+def test_selector_registry_is_pre_registered_and_pure():
+    """Every family is a pure predicate over the frame, so a rule cannot silently depend on
+    global state or on which rows were evaluated before it."""
+    import bet_selection as bs
+    df = _scored_frame()
+    df["forecast_sigma"] = [1.0, 1.5, 2.5, 1.0, 1.5, 2.5]
+    df["liquidity"] = [1200, 3000, 5000, 1200, 3000, 5000]
+    df["pmf_sum_dev"] = [0.1, 0.5, 0.95, 0.1, 0.5, 0.95]
+    df["volume_recency"] = [0.4, 0.85, 0.99, 0.4, 0.85, 0.99]
+    df["bucket"] = ["Seoul|1d"] * 3 + ["London|1d"] * 3
+    for name, (pred, thresholds) in bs.SELECTORS.items():
+        assert thresholds, f"{name} has no thresholds"
+        for t in thresholds:
+            m = pred(df, t)
+            assert len(m) == len(df), f"{name}@{t} returned the wrong length"
+            assert m.dtype == bool, f"{name}@{t} did not return a boolean mask"
+
+
+def test_edge_magnitude_is_excluded_by_design():
+    """Adverse selection at z-std 1.41 (EDGE_MEGAPLAN §63): the model is most wrong exactly
+    where it disagrees most with the price. Selecting on edge size is the measured trap, so it
+    must not be reachable through the registry."""
+    import bet_selection as bs
+    assert "abs_edge" not in bs.SELECTORS
+    assert "edge" not in bs.SELECTORS
+    assert "abs_edge" in bs.EXCLUDED_BY_DESIGN
+
+
+def test_candidate_count_is_the_pre_registered_number():
+    """The count is logged with every search so the record shows how wide the net was, even
+    though multiplicity is controlled by the held-out set rather than by a correction."""
+    import bet_selection as bs
+    cands = bs.iter_candidates()
+    assert len(cands) == sum(len(t) for _, t in bs.SELECTORS.values())
+    assert all(isinstance(name, str) for name, _ in cands)
