@@ -2782,3 +2782,39 @@ def test_cmd_validate_success_logs_validated_outcome(tmp_path):
     assert len(lines) == 1
     assert lines[0]["outcome"] == "validated"
     assert lines[0]["selector"] == "bucket"
+
+
+def test_flat_roi_pins_exact_arithmetic_against_hand_computed_pnl():
+    """flat_roi feeds the roiflat column humans read straight off `--search`, but nothing pinned
+    its value: a future sign flip or a dropped cost term would still pass the rest of the suite
+    silently and just quietly flatter the model. Each row's expected PnL is derived here
+    independently — win = payout at the crossed price net of the fee, loss = -1.0 — from
+    config.HALF_SPREAD / config.FEE_RATE directly, not by calling flat_roi or copying its
+    expression, so this cannot degrade into a tautology that just restates the implementation."""
+    import config
+    import bet_selection as bs
+    import pandas as pd
+
+    df = pd.DataFrame({
+        "their_prob": [0.25, 0.25, 0.50],
+        "bet_side":   ["Yes", "No",  "Yes"],
+        "outcome":    [1,      1,     0],      # row 0 wins, row 1 loses, row 2 loses
+    })
+
+    eff_win = 0.25 + config.HALF_SPREAD          # buy price = their_prob + half the spread
+    expected = ((1 - config.FEE_RATE) / eff_win - 1.0    # row 0: Yes bet, outcome 1 -> wins
+                + (-1.0)                                  # row 1: No bet, outcome 1 -> loses
+                + (-1.0)) / 3                              # row 2: Yes bet, outcome 0 -> loses
+    assert bs.flat_roi(df) == pytest.approx(expected, abs=1e-12)
+
+    # A dropped cost must make the number MORE flattering, not just different — pin the
+    # direction. Both no-cost variants are computed inline here (not by editing flat_roi), and
+    # only the winning row's PnL differs since a loss is -1.0 regardless of price paid.
+    no_spread_pnl0 = (1 - config.FEE_RATE) / 0.25 - 1.0             # spread cost removed
+    no_spread = (no_spread_pnl0 + (-1.0) + (-1.0)) / 3
+    no_fee_pnl0 = 1.0 / eff_win - 1.0                                # fee cost removed
+    no_fee = (no_fee_pnl0 + (-1.0) + (-1.0)) / 3
+    assert bs.flat_roi(df) < no_spread, \
+        "dropping the half-spread must not leave flat_roi this high or higher"
+    assert bs.flat_roi(df) < no_fee, \
+        "dropping the fee must not leave flat_roi this high or higher"

@@ -183,6 +183,16 @@ def interval_clears_zero(gap: float, se: float) -> bool:
     validate_holdout so the rule can be tested against synthetic (gap, se) pairs — derived
     from data it was only ever exercised at one point, where every loosening of the rule
     happened to give the same answer.
+
+    Deliberately does NOT enforce stats_util.MIN_CLUSTERS (30) — the pass rule stays exactly
+    as pre-registered rather than being amended post-hoc. Checked empirically, not assumed
+    safe, on 2026-07-29: on the real tracker (73 holdout city-days) 2 of 27 holdout candidates
+    would clear this rule at fewer than 30 clusters (bucket=Chicago|1d at 6 clusters,
+    bucket=London|1d at 16) — but both are separately blocked by train_clears_bar, and at the
+    time of the check ZERO candidates cleared that prescreen at all. So the missing cluster
+    floor is currently harmless, but only incidentally: few clusters means a large SE, which
+    makes the held-out MDE bar harder to clear, not impossible. If a future candidate ever
+    clears train_clears_bar at fewer than 30 clusters, this needs revisiting.
     """
     if se == float("inf") or se != se:      # inf or nan
         return False
@@ -309,6 +319,13 @@ def cmd_validate(selector: str, threshold, data_cutoff: str, csv_path=None, log_
     tr = evaluate_selector(train, pred(train, threshold))
     if tr is None:
         raise SystemExit(f"{selector}@{threshold} selects nothing on train")
+    # This is a SEPARATE evaluation from the one validate_holdout runs below for the logged
+    # record — same pure inputs (holdout, pred(holdout, threshold)), computed twice rather than
+    # threaded through as an argument, because we don't want to change validate_holdout's
+    # signature. The refuse/proceed decision here and the number that ends up in the log are
+    # therefore trusted to agree; that only holds because evaluate_selector is deterministic and
+    # side-effect-free (no RNG, no mutation of its inputs) — if that ever stops being true, this
+    # and the call inside validate_holdout can silently diverge.
     ho_probe = evaluate_selector(holdout, pred(holdout, threshold))
     if ho_probe is None:
         raise SystemExit(f"{selector}@{threshold} selects nothing on held-out")
@@ -322,11 +339,17 @@ def cmd_validate(selector: str, threshold, data_cutoff: str, csv_path=None, log_
                      "holdout_n": ho_probe["n"], "holdout_clusters": ho_probe["clusters"],
                      "logged_at": _dt.datetime.now(_dt.timezone.utc).isoformat()},
                     log_path)
+        mde = stats_util.Z * ho_probe["se"]
+        if tr["gap"] >= 0:
+            reason = (f"train gap {tr['gap']:+.4f} means the model did not beat the market on "
+                      f"train at all (held-out MDE is {mde:.4f})")
+        else:
+            reason = (f"train gap {tr['gap']:+.4f} is a real effect on train but is not more "
+                      f"negative than the held-out MDE of {mde:.4f} — a real effect too small "
+                      f"for held-out to resolve")
         raise SystemExit(
-            f"REFUSED: train gap {tr['gap']:+.4f} is smaller than the held-out MDE "
-            f"{stats_util.Z * ho_probe['se']:.4f}. Held-out cannot resolve an effect this size, "
-            f"so spending the one shot here would use up the test and learn nothing. "
-            f"Go to Phase C (see the spec).")
+            f"REFUSED: {reason}. Spending the one shot here would use up the test and learn "
+            f"nothing. Go to Phase C (see the spec).")
     return validate_holdout(train, holdout, selector, threshold, data_cutoff, log_path=log_path)
 
 
