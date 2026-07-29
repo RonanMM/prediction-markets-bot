@@ -3128,3 +3128,66 @@ def test_discover_by_tag_drops_markets_with_empty_or_missing_conditionid(monkeyp
         result = fp.discover_by_tag("weather")
     assert len(result["London"]) == 1, "only the market with valid conditionId should survive"
     assert result["London"][0]["conditionId"] == "a"
+
+
+# ── Task 4: wire tag discovery in, repair the query-scan fallback ────────────
+
+def test_search_matches_keyword_and_term_independently(monkeypatch):
+    """The fallback was 3/4 dead. Queries were built as f"{kw} {term}" and matched as a literal
+    substring, but real questions read "highest temperature IN London" — so
+    "highest temperature London" never matched anything, and three of four keywords merely paged
+    2100 markets for nothing. A fallback that does not work is not a fallback."""
+    import fetch_polymarket as fp
+    page = [{"question": "Will the highest temperature in London be 22°C on July 29?"},
+            {"question": "Will the highest temperature in Paris be 30°C on July 29?"}]
+    calls = []
+
+    def fake_get(url, params=None):
+        calls.append(params["offset"])
+        return page if params["offset"] == 0 else []
+
+    monkeypatch.setattr(fp, "_get", fake_get)
+    got = fp.search_markets_by_query("highest temperature London")
+    assert len(got) == 1, "keyword and city must match independently, not as one substring"
+    assert "London" in got[0]["question"]
+
+
+def test_fetch_weather_markets_uses_the_tag(monkeypatch, caplog):
+    """Return shape is unchanged: a list of snapshot dicts from extract_market_snapshot. Also
+    pins the quiet path: the tag already found markets, so the retag-fallback warning must NOT
+    fire — a warning that fires on every call is noise nobody will notice when it matters."""
+    import logging
+    import fetch_polymarket as fp
+    fp._reset_tag_cache()
+    monkeypatch.setattr(fp, "discover_by_tag", lambda tag="weather": {"London": [
+        {"conditionId": "a", "question": "Will the highest temperature in London be 22°C?",
+         "active": True, "closed": False, "endDateIso": "2026-07-29",
+         "startDateIso": "2026-07-27", "volume": 1.0, "volume24hr": 1.0, "liquidity": 1.0,
+         "clobTokenIds": '["123"]', "outcomePrices": '["0.5", "0.5"]'}]})
+    with caplog.at_level(logging.WARNING):
+        out = fp.fetch_weather_markets("London")
+    assert len(out) == 1
+    assert out[0]["city"] == "London"
+    assert out[0]["condition_id"] == "a"
+    assert out[0]["clob_token_ids"] == ["123"]
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING], \
+        "the fallback warning must not fire when the tag already found markets"
+
+
+def test_fetch_weather_markets_falls_back_when_the_tag_yields_nothing(monkeypatch, caplog):
+    """If Polymarket retags these markets, tag discovery silently returns nothing for a city that
+    had plenty. That must fall back to the query scan AND warn — not silently collect zero.
+    Pinned with caplog so the warning cannot regress into a silent no-op that nothing catches."""
+    import logging
+    import fetch_polymarket as fp
+    fp._reset_tag_cache()
+    monkeypatch.setattr(fp, "discover_by_tag", lambda tag="weather": {})
+    used = []
+    monkeypatch.setattr(fp, "search_markets_by_query",
+                        lambda q, limit=100: used.append(q) or [])
+    with caplog.at_level(logging.WARNING):
+        fp.fetch_weather_markets("London")
+    assert used, "fallback did not fire when the tag returned nothing"
+    assert any("falling back" in r.message.lower()
+               for r in caplog.records if r.levelno >= logging.WARNING), \
+        "fetch_weather_markets must WARN when falling back off the tag"

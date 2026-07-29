@@ -150,8 +150,12 @@ def search_markets_by_query(query: str, limit: int = 100) -> list[dict]:
         if not page:
             break
 
+        # Queries arrive as "highest temperature London", but questions read "highest temperature
+        # IN London" — as one substring that never matches. Require each whitespace-separated
+        # token instead, so the fallback actually finds things.
         for m in page:
-            if q_lower in (m.get("question") or "").lower():
+            question = (m.get("question") or "").lower()
+            if all(tok in question for tok in q_lower.split()):
                 matched.append(m)
 
         if len(page) < page_size:
@@ -265,22 +269,33 @@ def fetch_weather_markets(city: str) -> list[dict[str, Any]]:
     """
     Main function: find all temperature/weather markets for *city*
     and return a list of snapshot dicts (one per matching market).
+
+    Discovery is tag-based (one /events enumeration per process, partitioned across cities). The
+    old query scan remains as a fallback, because depending on a third-party tag with no backup
+    would mean silently collecting nothing if Polymarket ever retags these markets. It is a
+    DEGRADED path: GET /markets 422s at offset 2100, so it can only ever see the top ~2100 active
+    markets by volume, and weather markets sit below that line until near expiry.
     """
-    city_cfg  = CITIES.get(city, {})
-    search_terms = city_cfg.get("search_terms", [city])
+    found: dict[str, dict] = {}
 
-    found: dict[str, dict] = {}   # condition_id → market
+    for m in discover_by_tag().get(city, []):
+        cid = m.get("conditionId", "")
+        if cid:
+            found[cid] = m
 
-    for kw in MARKET_KEYWORDS:
-        for term in search_terms:
-            query = f"{kw} {term}"
-            logger.info("Searching Polymarket for: '%s'", query)
-            markets = search_markets_by_query(query)
-            for m in markets:
-                cid = m.get("conditionId", "")
-                if cid and cid not in found:
-                    found[cid] = m
-            time.sleep(0.3)   # be polite to the API
+    if not found:
+        logger.warning("Tag discovery returned no markets for %s — falling back to the query "
+                       "scan. If this persists, the Polymarket 'weather' tag may have changed.",
+                       city)
+        city_cfg = CITIES.get(city, {})
+        search_terms = city_cfg.get("search_terms", [city])
+        for kw in MARKET_KEYWORDS:
+            for term in search_terms:
+                for m in search_markets_by_query(f"{kw} {term}"):
+                    cid = m.get("conditionId", "")
+                    if cid and cid not in found:
+                        found[cid] = m
+                time.sleep(0.3)
 
     if not found:
         logger.warning("No Polymarket temperature markets found for %s.", city)
