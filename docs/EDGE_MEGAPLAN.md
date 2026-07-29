@@ -486,6 +486,86 @@ Pre-registered gate (declared before any forward data): core [65,75)¢ ≥80 gra
    *realized* outcome updates NYC's next-day distribution before NYC's crowd reacts. Testable
    offline from truth + leads archives.
 
+## 12. Bet selection (Phase A) — searched, found nothing (2026-07-29)
+
+Spec `docs/superpowers/specs/2026-07-29-bet-selection-design.md`, code
+`src/polymarket_weather/bet_selection.py`.
+
+**The question.** The model loses to the market on average (pooled paired Brier gap **+0.0211**,
+95% CI [+0.0068, +0.0353], n=401 over 171 city-days — interval entirely above zero). But average
+accuracy across all markets is a different question from being right on the bets we actually
+place. So: is there a SUBSET where the model beats the price? That is the only reading of
+"positive ROI" the Brier evidence does not already rule out.
+
+**Why the test statistic is Brier and not ROI.** Measured first, before designing anything:
+production ROI is **−12.4%**, clustered 95% CI [−26.9%, −3.0%] over 407 markets / 174 city-days
+(flat-stake −16.4%) — a significant loss, not noise. And the held-out third's apparent +3.3% Kelly
+ROI reverses to **−4.5%** at equal stakes: it was sizing luck concentrated in a few bets. Crucially
+the held-out ROI interval is ~46 percentage points wide (50pp flat) and cannot distinguish +3% from
+−20%. ROI cannot serve as a gate at this sample size; the paired Brier gap resolves 0.017–0.033.
+
+**Protocol.** Split frozen at 2026-07-08 on city-days (train 201 bets / 99 city-days; held-out 209
+/ 75). Unconstrained search on train over 32 pre-registered (selector, threshold) pairs across 7
+families. Edge magnitude EXCLUDED by design — adverse selection at z-std 1.41 (§1) means the model
+is most wrong exactly where it disagrees most with the price, so the intuitive selector is the
+measured trap.
+
+**Result — nothing cleared the bar.** Of 32 candidates, 4 had a negative gap, and **every one had
+|gap| smaller than its own in-sample MDE**: not distinguishable from zero on the very data it was
+selected from. Flat ROI was negative in 31 of 32.
+
+| selector | gap | own MDE | n | keeps | flat ROI |
+|---|---:|---:|---:|---:|---:|
+| `bucket` Seoul\|1d | −0.0412 | 0.0540 | 13 | 6% | +0.013 |
+| `bucket` Chicago\|2d+ | −0.0163 | 0.0189 | 9 | 4% | −0.080 |
+| `bucket` HongKong\|same-day | −0.0147 | 0.0547 | 6 | 3% | −0.316 |
+| `liquidity_min` 2500 | −0.0099 | 0.0288 | 63 | 31% | −0.198 |
+
+Per the pre-registered rule (spec §7) the held-out set was **NOT touched** — confirmed, no
+`output/holdout_log.jsonl` exists. Spending the one clean measurement on an effect smaller than
+held-out could resolve would use up the test to learn nothing.
+
+**Seoul|1d, the best of the 32, examined.** 95% CI [−0.0952, +0.0128] spans zero. Its positive ROI
+is ONE bet — removing the single best-paying win of 9/13 takes flat ROI +0.013 → −0.069. And it is
+the max of 32 draws, biased upward by construction. Independent check: Seoul|1d is an original E3
+nomination under prospective test since 2026-07-12, and its forward gap is **−0.0060** on n=33 (CI
+[−0.0388, +0.0268]). An effect measuring −0.041 in the discovery window measures −0.006 forward.
+That decay is what selection noise looks like.
+
+**Verdict: bet selection on this model does not produce positive ROI.** Not "not yet" — the
+effects are absent in the training data, the most favourable possible view since that is where the
+rules were chosen. Three instruments now agree: pooled Brier (+0.0211, CI above zero), production
+ROI (−12.4%, CI below zero), and no profitable subset.
+
+### 12a. ⚠️ A defect in this design — retrospective splits are not clean here
+
+**Do not repeat this.** The split date was drawn BACKWARD from existing data, which is not sound in
+this repo, because standing analyses report on those same markets continuously:
+
+- The E3 forward window for Seoul|1d and Chicago|1d (target > 2026-07-12) sits INSIDE the held-out
+  split (target ≥ 2026-07-08), and those forward gaps are printed by `evaluate_oos.py` daily and
+  published on the dashboard.
+- The per-bucket table (`evaluate_oos.py`, dashboard) reports model/market Brier per bucket over
+  ALL gradable markets — train and held-out together — for all 15 buckets. The `bucket` family is
+  15 of the 32 candidates, so for those, held-out was already visible.
+- Per-city Brier, calibration-by-confidence-bin and dispersion tables likewise span both splits.
+
+It did not bite, because nothing cleared the train bar and held-out was never consulted. But a
+"clean one-shot" claim on a retrospectively-drawn split is not defensible here, and Phase C would
+inherit the same problem.
+
+**The fix, for any future validation: draw the split FORWARD.** Pre-register the rule, start the
+clock today, and validate on markets that settle afterwards. That trades borrowed sample for
+waiting — the same trade the structure books already make — and it is the only version of
+"held-out" this repo can honestly claim while the standing gates keep reporting on everything.
+
+**Phase C** (regenerate the tracker with `MIN_EDGE=0`/`MIN_LIQUIDITY=0`, since the eval tracker is
+POST-filter — minimum `abs_edge` in it is 0.0602 — and those thresholds were tuned by grid searches
+predating the settlement-truth corrections) remains pre-registered and unrun. Under the correction
+above it should treat all current data as discovery and validate forward.
+
+---
+
 ## 11. Provenance of the numbers in this doc
 
 All from 2026-07-10/11 analysis of `output/opportunities_evaluation_calibrated.csv` (graded via
