@@ -564,6 +564,43 @@ POST-filter — minimum `abs_edge` in it is 0.0602 — and those thresholds were
 predating the settlement-truth corrections) remains pre-registered and unrun. Under the correction
 above it should treat all current data as discovery and validate forward.
 
+### 12b. Phase C — widened the universe, still nothing (2026-07-29)
+
+Ran the same 32 candidates against a tracker regenerated with the production filters OFF
+(`polymarket_weather_analysis.py --min_edge 0 --min_liq 0`), on the theory that `MIN_EDGE ≥ 0.06`
+and `MIN_LIQUIDITY ≥ 1000` were tuned by grid searches predating the settlement-truth corrections
+and might be excluding the edge.
+
+The universe really is much wider: **1156 markets in the tracker vs 504** (983 gradable over 254
+city-days vs 410 over 174), **652 newly visible**, 41% of rows below the old `MIN_EDGE`. Per §12a
+all of it was treated as discovery — a retrospective split cannot be claimed clean here.
+
+**7 of 32 negative; exactly one clears the uncorrected interval test — and it is an artifact.**
+
+`bucket@HongKong|same-day`: gap −0.0536, CI [−0.1068, **−0.0004**] — clearing by four ten-thousandths.
+Then:
+
+- **0 YES outcomes of 13.** With no outcome variance Brier collapses to `mean(p²)`, so the lowest
+  numbers win by construction and no discrimination is being measured at all. This is the same
+  degenerate case that made Hong Kong look like it beat the market on the dashboard (fixed
+  2026-07-28, `_city_rows` now flags single-outcome cities).
+- **Fails Bonferroni.** Testing 32 candidates needs z=3.16; `gap + 3.16·se = +0.0322`.
+- **11 city-days**, against the repo-wide floor of `stats_util.MIN_CLUSTERS = 30`.
+- **Flat ROI −0.018.** It loses money, which is the actual question.
+
+**The ROI column reproduces the mirage this doc opens with.** The three highest-ROI candidates all
+have WORSE Brier than the market — `Seoul|2d+` roi +0.194 at gap +0.0444, `Seoul|same-day` +0.178 at
++0.0110, `bet_side=No` +0.021 at +0.0086. Positive ROI on worse accuracy is bet-selection and
+sizing luck on a small sample, not edge. The two candidates with better Brier and positive ROI
+(`HongKong|1d`, `Chicago|1d`) clear no interval test at any correction.
+
+**Verdict: the pre-registered list is exhausted.** Phase A found nothing in the production
+universe; Phase C found nothing in a universe 2.3× larger. Neither spent a held-out shot, because
+nothing ever earned one. Combined with the pooled Brier gap (+0.0211, CI above zero) and production
+ROI (−12.4%, CI below zero), four instruments now agree: **this model has no edge to select on, at
+any filter setting.** The live candidates remain the model-free structure books (§10b/§10d), which
+are answered by waiting for sample rather than by more searching.
+
 ---
 
 ## 11. Provenance of the numbers in this doc
