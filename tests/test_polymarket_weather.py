@@ -2924,3 +2924,74 @@ def test_paged_events_reports_no_truncation_when_the_first_page_fails():
         events, truncated = fp._paged_events("weather", page_size=100)
     assert events == []
     assert truncated is False
+
+
+def test_truncation_emits_an_operator_warning(caplog):
+    """The flag is for code; the warning is for whoever reads the collector logs. Deleting
+    the warning left every test green, so the operator-facing half of this fix was unpinned."""
+    import logging
+    import fetch_polymarket as fp
+    import unittest.mock as m
+
+    class _Stub:
+        def __init__(self):
+            self.n = 0
+
+        def __call__(self, url, params=None):
+            self.n += 1
+            return [{"id": i} for i in range(100)] if self.n == 1 else None
+
+    with caplog.at_level(logging.WARNING), m.patch.object(fp, "_get", _Stub()):
+        fp._paged_events("weather", page_size=100)
+    assert any("TRUNCATED" in r.message for r in caplog.records), \
+        "truncation must emit a TRUNCATED warning"
+    assert any("100" in r.message for r in caplog.records), \
+        "warning must name the offset reached"
+
+
+def test_short_page_emits_no_warning(caplog):
+    """A warning on the NORMAL path becomes noise and gets ignored — which is how the
+    original truncation signal would be lost a second time."""
+    import logging
+    import fetch_polymarket as fp
+    import unittest.mock as m
+
+    pages = [[{"id": i} for i in range(100)], [{"id": 100}]]
+    calls = []
+
+    def fake_get(url, params=None):
+        calls.append(params["offset"])
+        return pages.pop(0) if pages else []
+
+    with caplog.at_level(logging.WARNING), m.patch.object(fp, "_get", fake_get):
+        events, truncated = fp._paged_events("weather", page_size=100)
+    assert len(events) == 101, "should get all events from both pages"
+    assert truncated is False, "short page is not a truncation"
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING], \
+        "short page must not emit any warning"
+
+
+def test_cap_enforces_max_pages(caplog):
+    """Hitting the page cap terminates and returns truncated=True with a warning.
+    Without this, an API that ignores `offset` and re-serves page 1 forever would
+    hang the hourly collector."""
+    import logging
+    import fetch_polymarket as fp
+    import unittest.mock as m
+
+    # Stub always returns a full page (never terminates naturally)
+    stub_call_count = [0]
+
+    def always_full_page(url, params=None):
+        stub_call_count[0] += 1
+        return [{"id": i} for i in range(100)]
+
+    with caplog.at_level(logging.WARNING), m.patch.object(fp, "_get", always_full_page):
+        events, truncated = fp._paged_events("weather", page_size=100)
+    assert truncated is True, "hitting the cap must report truncation"
+    assert len(events) == fp._MAX_EVENT_PAGES * 100, \
+        f"should have max pages worth of events ({fp._MAX_EVENT_PAGES * 100})"
+    assert stub_call_count[0] == fp._MAX_EVENT_PAGES, \
+        f"should have made exactly {fp._MAX_EVENT_PAGES} calls"
+    assert any("TRUNCATED" in r.message and "cap" in r.message for r in caplog.records), \
+        "cap hit must emit a warning naming the cap"

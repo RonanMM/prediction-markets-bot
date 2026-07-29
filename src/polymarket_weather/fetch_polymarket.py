@@ -69,6 +69,11 @@ def _get(url: str, params: dict | None = None) -> dict | list | None:
 
 # ── Pagination ───────────────────────────────────────────────────────────────
 
+_MAX_EVENT_PAGES = 100   # 10k events at page_size=100; measured reality is ~216. Generous
+                         # headroom, but BOUNDED: an API that ignores `offset` and re-serves
+                         # page 1 forever would otherwise hang the hourly collector.
+
+
 def _paged_events(tag_slug: str, page_size: int = 100) -> tuple[list[dict], bool]:
     """Page GET /events for one tag. Returns (events, truncated).
 
@@ -79,6 +84,7 @@ def _paged_events(tag_slug: str, page_size: int = 100) -> tuple[list[dict], bool
         short page (< page_size)   -> legitimate end of list
         None after a full page     -> TRUNCATED: warn loudly, return what we have
         None on the first page     -> endpoint down: caller falls back
+        _MAX_EVENT_PAGES reached   -> TRUNCATED: cap enforced, return what we have
 
     The distinction is the entire point of this change. GET /markets returns 422 at offset 2100;
     the old pager read that None as "last page" and stopped, so a hard ceiling on how much of
@@ -87,7 +93,14 @@ def _paged_events(tag_slug: str, page_size: int = 100) -> tuple[list[dict], bool
     url = f"{GAMMA_API_BASE}/events"
     events: list[dict] = []
     offset = 0
+    page_count = 0
     while True:
+        if page_count >= _MAX_EVENT_PAGES:
+            logger.warning(
+                "TRUNCATED: /events?tag_slug=%s hit page cap at %d pages after %d events. "
+                "Returning a PARTIAL list — do not treat this as the full set.",
+                tag_slug, _MAX_EVENT_PAGES, len(events))
+            return events, True
         page = _get(url, {"tag_slug": tag_slug, "limit": page_size,
                           "offset": offset, "closed": "false"})
         if page is None:
@@ -104,6 +117,7 @@ def _paged_events(tag_slug: str, page_size: int = 100) -> tuple[list[dict], bool
         if not page:
             return events, False
         events.extend(page)
+        page_count += 1
         if len(page) < page_size:
             return events, False
         offset += page_size
