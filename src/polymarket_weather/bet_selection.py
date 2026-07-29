@@ -16,6 +16,7 @@ See docs/superpowers/specs/2026-07-29-bet-selection-design.md.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import datetime as _dt
 from pathlib import Path
@@ -25,6 +26,7 @@ import pandas as pd
 
 import config
 import stats_util
+import evaluate_oos
 
 # Frozen. Deriving this from the data (a 2/3 quantile, say) would move the boundary every time
 # new markets grade, silently redefining the held-out set between runs.
@@ -243,3 +245,97 @@ def validate_holdout(train: pd.DataFrame, holdout: pd.DataFrame, selector: str, 
     with path.open("a", encoding="utf-8") as fh:      # append-only, never truncate
         fh.write(json.dumps(_json_safe(r)) + "\n")
     return r
+
+
+DEFAULT_TRACKER = evaluate_oos._OUT / "opportunities_evaluation_calibrated.csv"
+
+
+def load_bets(csv_path=None) -> pd.DataFrame:
+    """Graded markets from the calibrated tracker.
+
+    Grading is applied at READ time, so refresh station truth and hourly obs first
+    (`fetch_historical_truth.py`, then `fetch_station_obs.py` FULL) or wu_truth silently falls
+    back to the pre-W0 ruler and every number below is graded against the wrong source.
+
+    A frame that ALREADY carries `outcome` is taken as-is. The real trackers carry no grade
+    column — grading happens at read time (CLAUDE.md) — so that branch is unreachable for
+    production data and exists to let the CLI be tested without standing up a full station-truth
+    fixture.
+    """
+    path = Path(csv_path) if csv_path is not None else DEFAULT_TRACKER
+    if not Path(path).exists():
+        raise SystemExit(f"no tracker at {path}")
+    raw = pd.read_csv(path)
+    df = raw if "outcome" in raw.columns else evaluate_oos._graded_markets(Path(path))
+    if df is None or df.empty:
+        raise SystemExit(f"no gradable markets in {path} — refresh truth first")
+    return df
+
+
+def cmd_search(csv_path=None) -> list:
+    """Discovery. Loads, splits, and passes ONLY train onward.
+
+    `holdout` is deliberately discarded on the next line rather than being kept in scope: this
+    function must not be able to see it even by accident.
+    """
+    train, _holdout = split_frozen(load_bets(csv_path))
+    del _holdout
+    return search_train(train)
+
+
+def cmd_validate(selector: str, threshold, data_cutoff: str, csv_path=None) -> dict:
+    """The one shot. Refuses unless the same rule already clears the bar on train."""
+    train, holdout = split_frozen(load_bets(csv_path))
+    pred, _ = SELECTORS[selector]
+    tr = evaluate_selector(train, pred(train, threshold))
+    if tr is None:
+        raise SystemExit(f"{selector}@{threshold} selects nothing on train")
+    ho_probe = evaluate_selector(holdout, pred(holdout, threshold))
+    if ho_probe is None:
+        raise SystemExit(f"{selector}@{threshold} selects nothing on held-out")
+    if not train_clears_bar(tr, ho_probe["se"]):
+        raise SystemExit(
+            f"REFUSED: train gap {tr['gap']:+.4f} is smaller than the held-out MDE "
+            f"{stats_util.Z * ho_probe['se']:.4f}. Held-out cannot resolve an effect this size, "
+            f"so spending the one shot here would use up the test and learn nothing. "
+            f"Go to Phase C (see the spec).")
+    return validate_holdout(train, holdout, selector, threshold, data_cutoff)
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="Bet selection (Phase A). See "
+                                             "docs/superpowers/specs/2026-07-29-bet-selection-design.md")
+    ap.add_argument("--search", action="store_true",
+                    help="rank every pre-registered candidate on TRAIN only")
+    ap.add_argument("--validate", nargs=2, metavar=("SELECTOR", "THRESHOLD"),
+                    help="THE ONE SHOT: score one pair on held-out and log it forever")
+    ap.add_argument("--data-cutoff", default=_dt.date.today().isoformat(),
+                    help="stamped into the log; held-out grows as markets grade")
+    a = ap.parse_args()
+
+    if a.search:
+        rows = cmd_search()
+        print(f"{'selector':<22}{'thresh':>12}{'n':>5}{'cd':>5}{'gap':>9}{'mde':>8}"
+              f"{'kept':>7}{'roiflat':>9}")
+        for r in rows:
+            print(f"{r['selector']:<22}{str(r['threshold']):>12}{r['n']:>5}{r['clusters']:>5}"
+                  f"{r['gap']:>+9.4f}{r['mde']:>8.4f}{r['kept']:>7.2f}{r['roi_flat']:>+9.3f}")
+        print(f"\n{len(rows)} candidates scored on TRAIN. Held-out untouched.")
+    elif a.validate:
+        sel, raw = a.validate
+        _, thresholds = SELECTORS[sel]
+        # match the pre-registered threshold's type rather than guessing from the string
+        threshold = next((t for t in thresholds if str(t) == raw), None)
+        if threshold is None:
+            raise SystemExit(f"{raw!r} is not a pre-registered threshold for {sel}: {thresholds}")
+        r = cmd_validate(sel, threshold, a.data_cutoff)
+        print(f"HELD-OUT  {sel}@{threshold}  n={r['n']} clusters={r['clusters']}")
+        print(f"  gap {r['gap']:+.4f}  95% CI [{r['ci_lo']:+.4f},{r['ci_hi']:+.4f}]")
+        print(f"  -> {'PASS' if r['passed'] else 'FAIL'}   (logged to {HOLDOUT_LOG})")
+        print("  A pass is a pre-registered candidate, NOT permission to trade.")
+    else:
+        ap.print_help()
+
+
+if __name__ == "__main__":
+    main()

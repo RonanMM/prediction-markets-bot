@@ -2655,3 +2655,33 @@ def test_validate_holdout_log_is_valid_strict_json(tmp_path):
     line = log.read_text().strip()
     # This parser fires on NaN/Infinity — if any bare non-finites were written, it raises
     json.loads(line, parse_constant=lambda c: (_ for _ in ()).throw(ValueError(f"non-finite: {c}")))
+
+
+def test_search_path_never_reads_holdout_rows(tmp_path):
+    """The leakage guard is structural, not disciplinary. If cmd_search ever passed the full
+    frame to search_train, poisoning the held-out rows would change its output. It must not.
+
+    Written as a behavioural test rather than a code-shape assertion, because the failure this
+    prevents is a one-word edit (train -> df) that no signature check would catch.
+    """
+    import bet_selection as bs
+    import pandas as pd
+
+    base = _searchable_frame()
+    base["target_date"] = ["2026-07-01", "2026-07-02", "2026-07-03"] * 6   # all pre-split
+    poisoned = base.copy()
+    poisoned["target_date"] = ["2026-07-20"] * len(poisoned)               # all post-split
+    poisoned["forecast_prob"] = 0.0                                        # absurdly wrong
+    poisoned["outcome"] = 1
+    poisoned["condition_id"] = [f"p{i}" for i in range(len(poisoned))]
+
+    clean_csv = tmp_path / "clean.csv"
+    mixed_csv = tmp_path / "mixed.csv"
+    base.to_csv(clean_csv, index=False)
+    pd.concat([base, poisoned], ignore_index=True).to_csv(mixed_csv, index=False)
+
+    a = bs.cmd_search(csv_path=clean_csv)
+    b = bs.cmd_search(csv_path=mixed_csv)
+    assert [(r["selector"], r["threshold"], round(r["gap"], 9)) for r in a] == \
+           [(r["selector"], r["threshold"], round(r["gap"], 9)) for r in b], \
+        "search results changed when held-out rows were added — the search read held-out data"
