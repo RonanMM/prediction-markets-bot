@@ -231,3 +231,4 @@ entered_at_utc,city,condition_id,question,target_date,leg,side,entry_side_price,
 2026-07-29T09:53:58.196764+00:00,NYC,0x8521ad7956df9421c7b238ddbe8dc79fd76500fc457247da6e82f21d0b3460bb,Will the highest temperature in New York City be between 80-81°F on July 30?,2026-07-30,shoulder,No,0.895,0.105,outer,2299.48
 2026-07-29T12:30:48.562205+00:00,Chicago,0x141de22f785056bb8f9a4011535c8fe35c5f20ee02d42e359ffc0975fe9ed1d4,Will the highest temperature in Chicago be between 90-91°F on July 30?,2026-07-30,shoulder,No,0.925,0.075,outer,3862.42
 2026-07-29T12:30:48.562205+00:00,Seoul,0x2af56f1c65f9a6aa37d2264b26a415ba67f75c7008ebd7f6ba17ed91adeddbc0,Will the lowest temperature in Seoul be 27°C on July 30?,2026-07-30,shoulder,No,0.93,0.07,outer,1061.44
+2026-07-29T15:30:52.041090+00:00,NYC,0xe5230f655d5a1bb73e4628c2c4aa503a55a89c970d8886be68700ef417c45e47,Will the lowest temperature in New York City be between 72-73°F on July 30?,2026-07-30,shoulder,No,0.91,0.09,outer,1329.91
