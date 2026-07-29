@@ -2853,3 +2853,25 @@ def test_is_temperature_question_keeps_tmin_markets():
     assert fp.is_temperature_question("Will the highest temperature in London be 22°C on July 29?")
     assert not fp.is_temperature_question("Will it rain in London on July 29?")
     assert not fp.is_temperature_question("Will 2026 be the hottest year on record?")
+
+
+def test_classification_is_case_insensitive():
+    """Stripping re.I from either regex passed every existing assertion — config
+    double-lists "New York"/"new york" and the temperature fixtures are all lowercase, so
+    case-insensitivity was assumed rather than tested. Polymarket capitalises inconsistently
+    across market types."""
+    import fetch_polymarket as fp
+    assert fp.match_city("Highest Temperature in NYC on July 30?") == "New York City"
+    assert fp.match_city("HIGHEST TEMPERATURE IN LONDON ON JULY 30?") == "London"
+    assert fp.is_temperature_question("Will The HIGHEST TEMPERATURE In London Be 22C?")
+    assert fp.is_temperature_question("LOWEST TEMPERATURE IN SEOUL ON JULY 30?")
+
+
+def test_precipitation_markets_are_excluded():
+    """The weather tag also carries precipitation markets — 62 of the 2718 real questions
+    mentioning our cities. They have no temperature to grade against station truth, so they
+    must not enter the pipeline. Pinned because the natural 'fix' for a perceived Tmin gap is
+    to loosen the temperature pattern, which would sweep these in."""
+    import fetch_polymarket as fp
+    assert not fp.is_temperature_question("Will Hong Kong have 600mm or more of precipitation in July?")
+    assert not fp.is_temperature_question("Will Hong Kong have between 400-425mm of precipitation in July?")
