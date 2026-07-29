@@ -16,6 +16,10 @@ See docs/superpowers/specs/2026-07-29-bet-selection-design.md.
 """
 from __future__ import annotations
 
+import json
+import datetime as _dt
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
@@ -165,3 +169,51 @@ def search_train(train: pd.DataFrame) -> list:
         r["selector"], r["threshold"] = name, threshold
         out.append(r)
     return sorted(out, key=lambda r: r["gap"])
+
+
+HOLDOUT_LOG = Path(__file__).resolve().parent / "output" / "holdout_log.jsonl"
+
+
+def train_clears_bar(train_result: dict, holdout_gap_se: float) -> bool:
+    """Is the train effect big enough that held-out could actually see it?
+
+    Held-out is the one clean measurement available. Spending it on an effect smaller than its
+    own minimum detectable size guarantees an uninformative answer while permanently using up
+    the test. The bar is the held-out MDE at z=1.96.
+    """
+    return bool(train_result["gap"] < -(stats_util.Z * float(holdout_gap_se)))
+
+
+def validate_holdout(train: pd.DataFrame, holdout: pd.DataFrame, selector: str, threshold,
+                     data_cutoff: str, log_path=None) -> dict:
+    """THE ONE SHOT. Score a single (selector, threshold) pair on held-out and record it forever.
+
+    `data_cutoff` is stamped because held-out grows as markets grade. Markets settling after this
+    date are FORWARD sample for stage 2, not more held-out — without the stamp, 'one shot'
+    silently becomes 'one shot per week'.
+
+    Passing here is not permission to trade. A pass produces a pre-registered candidate that must
+    then clear its own forward gate.
+    """
+    pred, _ = SELECTORS[selector]
+    r = evaluate_selector(holdout, pred(holdout, threshold))
+    if r is None:
+        r = {"n": 0, "clusters": 0, "gap": float("nan"), "se": float("inf"),
+             "ci_lo": float("nan"), "ci_hi": float("nan"), "mde": float("nan"),
+             "kept": 0.0, "roi_flat": float("nan")}
+    r["selector"], r["threshold"] = selector, threshold
+    # The train gap for the SAME rule goes in the record. A held-out result read months later is
+    # hard to judge without knowing what it was predicted to be — a rule that showed -0.30 on
+    # train and -0.02 on held-out tells a very different story from one that showed -0.03 twice.
+    tr = evaluate_selector(train, pred(train, threshold))
+    r["train_gap"] = float(tr["gap"]) if tr else float("nan")
+    r["train_n"] = int(tr["n"]) if tr else 0
+    r["passed"] = bool(r["se"] != float("inf") and r["gap"] + stats_util.Z * r["se"] < 0)
+    r["data_cutoff"] = data_cutoff
+    r["logged_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat()
+
+    path = Path(log_path) if log_path is not None else HOLDOUT_LOG
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:      # append-only, never truncate
+        fh.write(json.dumps(r) + "\n")
+    return r

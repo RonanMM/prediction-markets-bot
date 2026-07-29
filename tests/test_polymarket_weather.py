@@ -2584,3 +2584,45 @@ def test_search_train_is_pure_and_does_not_mutate_its_input():
     bs.search_train(df)
     pd_testing = __import__("pandas").testing
     pd_testing.assert_frame_equal(df, before)
+
+
+def test_validate_holdout_refuses_when_train_cannot_clear_the_bar():
+    """The decision rule that matters most. A train gap of -0.01 cannot be confirmed by a
+    held-out set that can only resolve -0.026 — running it would burn the one clean measurement
+    we have to learn nothing. Held-out is spent only when train shows something detectable."""
+    import bet_selection as bs
+    df = _searchable_frame()
+    train, holdout = df.iloc[:9].copy(), df.iloc[9:].copy()
+    # a train result far too small to be visible on held-out
+    weak = {"gap": -0.001, "n": 9, "clusters": 3, "se": 0.02}
+    assert bs.train_clears_bar(weak, holdout_gap_se=0.013) is False
+    strong = {"gap": -0.30, "n": 9, "clusters": 3, "se": 0.02}
+    assert bs.train_clears_bar(strong, holdout_gap_se=0.013) is True
+
+
+def test_validate_holdout_appends_exactly_one_record_per_call(tmp_path):
+    """A code lock can be commented out; a record cannot be un-written. If this file ends up
+    with twelve entries, any reader knows the p-value is fiction."""
+    import json
+    import bet_selection as bs
+    df = _searchable_frame()
+    train, holdout = df.iloc[:9].copy(), df.iloc[9:].copy()
+    log = tmp_path / "holdout_log.jsonl"
+    for _ in range(3):
+        bs.validate_holdout(train, holdout, "bucket", "Seoul|1d",
+                            data_cutoff="2026-07-29", log_path=log)
+    lines = [json.loads(x) for x in log.read_text().splitlines() if x.strip()]
+    assert len(lines) == 3, "every held-out evaluation must leave a permanent trace"
+    assert {"selector", "threshold", "gap", "passed", "data_cutoff", "logged_at",
+            "train_gap", "train_n"} <= set(lines[0])
+
+
+def test_validate_holdout_passes_only_when_the_interval_clears_zero(tmp_path):
+    """gap + 1.96*se < 0. A negative point estimate whose interval spans zero is not a result —
+    that is exactly how the full-band structure gate read 'MET' while underpowered."""
+    import bet_selection as bs
+    df = _searchable_frame()
+    train, holdout = df.iloc[:9].copy(), df.iloc[9:].copy()
+    r = bs.validate_holdout(train, holdout, "bucket", "Seoul|1d",
+                            data_cutoff="2026-07-29", log_path=tmp_path / "l.jsonl")
+    assert r["passed"] == bool(r["gap"] + 1.96 * r["se"] < 0)
