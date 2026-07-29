@@ -2621,12 +2621,18 @@ def test_validate_holdout_passes_only_when_the_interval_clears_zero():
     """gap + 1.96*se < 0. A negative point estimate whose interval spans zero is not a result —
     that is exactly how the full-band structure gate read 'MET' while underpowered."""
     import bet_selection as bs
+    import stats_util
+    # Boundary case: construct so gap + Z*se == 0.0 exactly (by construction, not decimal approximation)
+    _se_b = 0.01
+    _gap_b = -(stats_util.Z * _se_b)  # gap + Z*se is then exactly 0.0 by construction
     cases = [
         (-0.10, 0.02, True),    # interval [-0.139,-0.061] entirely below zero
         (-0.03, 0.02, False),   # negative point estimate, interval spans zero -> NOT a result
         (-0.03, 0.01, True),    # [-0.050,-0.010] clears
         (+0.05, 0.02, False),   # positive gap never passes
         (-0.10, float("inf"), False),  # undefined se cannot pass
+        (_gap_b, _se_b, False),  # EXACTLY on the boundary: interval touches zero but does not
+                                 # clear it, so this must NOT pass. This row discriminates `<` from `<=`.
     ]
     for gap, se, want in cases:
         assert bs.interval_clears_zero(gap, se) is want, f"gap={gap} se={se}"
