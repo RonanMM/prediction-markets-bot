@@ -2875,3 +2875,52 @@ def test_precipitation_markets_are_excluded():
     import fetch_polymarket as fp
     assert not fp.is_temperature_question("Will Hong Kong have 600mm or more of precipitation in July?")
     assert not fp.is_temperature_question("Will Hong Kong have between 400-425mm of precipitation in July?")
+
+
+def test_paged_events_stops_cleanly_on_a_short_page(monkeypatch):
+    """A short page is a legitimate end of list — no truncation flag, no warning."""
+    import fetch_polymarket as fp
+    pages = [[{"id": i} for i in range(100)], [{"id": 100}]]
+    calls = []
+
+    def fake_get(url, params=None):
+        calls.append(params["offset"])
+        return pages.pop(0) if pages else []
+
+    monkeypatch.setattr(fp, "_get", fake_get)
+    events, truncated = fp._paged_events("weather", page_size=100)
+    assert len(events) == 101
+    assert truncated is False
+    assert calls == [0, 100]
+
+
+def test_paged_events_flags_truncation_when_a_full_page_is_followed_by_failure():
+    """THE bug this whole change exists for. GET /markets 422s at offset 2100 and _get returns
+    None, so the pager read a hard truncation as 'last page'. A 3% capture rate looked healthy
+    for months. None after a FULL page must be reported as truncation, never as completion."""
+    import fetch_polymarket as fp
+
+    class _Stub:
+        def __init__(self):
+            self.n = 0
+
+        def __call__(self, url, params=None):
+            self.n += 1
+            return [{"id": i} for i in range(100)] if self.n == 1 else None
+
+    import unittest.mock as m
+    with m.patch.object(fp, "_get", _Stub()):
+        events, truncated = fp._paged_events("weather", page_size=100)
+    assert len(events) == 100
+    assert truncated is True, "a full page followed by an error is a TRUNCATION, not the end"
+
+
+def test_paged_events_reports_no_truncation_when_the_first_page_fails():
+    """An endpoint that is down from the first call is an outage, not a truncation — the caller
+    falls back rather than trusting a partial list."""
+    import fetch_polymarket as fp
+    import unittest.mock as m
+    with m.patch.object(fp, "_get", lambda url, params=None: None):
+        events, truncated = fp._paged_events("weather", page_size=100)
+    assert events == []
+    assert truncated is False

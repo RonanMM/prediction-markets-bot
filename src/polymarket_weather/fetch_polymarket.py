@@ -67,6 +67,49 @@ def _get(url: str, params: dict | None = None) -> dict | list | None:
     return get_json(url, params, "Polymarket")
 
 
+# ── Pagination ───────────────────────────────────────────────────────────────
+
+def _paged_events(tag_slug: str, page_size: int = 100) -> tuple[list[dict], bool]:
+    """Page GET /events for one tag. Returns (events, truncated).
+
+    `_get` collapses every failure to None, so the pager cannot ask WHY a page was empty and has
+    to infer:
+
+        full page (== page_size)   -> keep going
+        short page (< page_size)   -> legitimate end of list
+        None after a full page     -> TRUNCATED: warn loudly, return what we have
+        None on the first page     -> endpoint down: caller falls back
+
+    The distinction is the entire point of this change. GET /markets returns 422 at offset 2100;
+    the old pager read that None as "last page" and stopped, so a hard ceiling on how much of
+    Polymarket we could even see was indistinguishable from having seen all of it.
+    """
+    url = f"{GAMMA_API_BASE}/events"
+    events: list[dict] = []
+    offset = 0
+    while True:
+        page = _get(url, {"tag_slug": tag_slug, "limit": page_size,
+                          "offset": offset, "closed": "false"})
+        if page is None:
+            if events:
+                logger.warning(
+                    "TRUNCATED: /events?tag_slug=%s failed at offset %d after %d events. "
+                    "Returning a PARTIAL list — do not treat this as the full set.",
+                    tag_slug, offset, len(events))
+                return events, True
+            logger.warning("/events?tag_slug=%s unavailable at offset 0", tag_slug)
+            return [], False
+        if not isinstance(page, list):
+            page = page.get("data", []) or []
+        if not page:
+            return events, False
+        events.extend(page)
+        if len(page) < page_size:
+            return events, False
+        offset += page_size
+        time.sleep(0.2)   # be polite to the API
+
+
 # ── Gamma API ────────────────────────────────────────────────────────────────
 
 def search_markets_by_query(query: str, limit: int = 100) -> list[dict]:
