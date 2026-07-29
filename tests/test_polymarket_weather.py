@@ -2417,3 +2417,52 @@ def test_split_frozen_never_leaks_or_straddles():
     tr_days = set(train["city"] + "|" + train["target_date"])
     ho_days = set(holdout["city"] + "|" + holdout["target_date"])
     assert tr_days.isdisjoint(ho_days)
+
+
+def _scored_frame():
+    """Frame with two city-days per city so clustering has something to collapse."""
+    import pandas as pd
+    return pd.DataFrame({
+        "condition_id": list("abcdef"),
+        "city": ["Seoul"] * 3 + ["London"] * 3,
+        "target_date": ["2026-07-01", "2026-07-01", "2026-07-02",
+                        "2026-07-01", "2026-07-02", "2026-07-02"],
+        "outcome": [1, 0, 1, 0, 1, 0],
+        # model is PERFECT on the first three, terrible on the last three
+        "forecast_prob": [1.0, 0.0, 1.0, 1.0, 0.0, 1.0],
+        "market_prob_raw": [0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
+        "market_prob": [0.9, 0.9, 0.9, 0.9, 0.9, 0.9],   # must be IGNORED in favour of raw
+        "their_prob": [0.5] * 6,
+        "bet_side": ["Yes", "No", "Yes", "Yes", "No", "Yes"],
+    })
+
+
+def test_evaluate_selector_scores_the_paired_gap_on_the_raw_price():
+    """The benchmark is the RAW tradeable price. market_prob is normalised so bins sum to 1,
+    which flatters the market's Brier and would understate our own gap."""
+    import bet_selection as bs
+    df = _scored_frame()
+    mask = df["city"] == "Seoul"          # the subset where the model is perfect
+    r = bs.evaluate_selector(df, mask)
+    assert r["n"] == 3
+    assert r["clusters"] == 2             # Seoul 07-01 and Seoul 07-02
+    assert r["kept"] == pytest.approx(0.5)
+    # model Brier 0, market Brier 0.25 -> gap = -0.25 (negative = model better)
+    assert r["gap"] == pytest.approx(-0.25, abs=1e-9)
+
+
+def test_evaluate_selector_clusters_by_city_day():
+    """Bins settling on one city-day share a single weather outcome. Counting them as
+    independent shrinks the SE and manufactures significance."""
+    import bet_selection as bs
+    df = _scored_frame()
+    r = bs.evaluate_selector(df, df["condition_id"].notna())
+    assert r["n"] == 6 and r["clusters"] == 4      # 2 cities x 2 days, not 6
+    assert r["mde"] > 0
+
+
+def test_evaluate_selector_returns_none_on_empty_selection():
+    """A threshold that keeps nothing must not raise or report a spurious gap."""
+    import bet_selection as bs
+    df = _scored_frame()
+    assert bs.evaluate_selector(df, df["city"] == "Nowhere") is None

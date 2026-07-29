@@ -16,11 +16,17 @@ See docs/superpowers/specs/2026-07-29-bet-selection-design.md.
 """
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
+
+import config
+import stats_util
 
 # Frozen. Deriving this from the data (a 2/3 quantile, say) would move the boundary every time
 # new markets grade, silently redefining the held-out set between runs.
 SPLIT_DATE = "2026-07-08"
+
+MKT_COL_CANDIDATES = ("market_prob_raw", "market_prob")
 
 
 def split_frozen(df: pd.DataFrame, split_date: str = SPLIT_DATE):
@@ -36,3 +42,54 @@ def split_frozen(df: pd.DataFrame, split_date: str = SPLIT_DATE):
     train = d[d["_td"] < cut].drop(columns=["_td"]).reset_index(drop=True)
     holdout = d[d["_td"] >= cut].drop(columns=["_td"]).reset_index(drop=True)
     return train, holdout
+
+
+def market_col(df: pd.DataFrame) -> str:
+    """The RAW tradeable price when present. `market_prob` is normalised so bins sum to 1, which
+    flatters the market's Brier — grading against it would understate our own deficit."""
+    return MKT_COL_CANDIDATES[0] if MKT_COL_CANDIDATES[0] in df.columns else MKT_COL_CANDIDATES[1]
+
+
+def flat_roi(sel: pd.DataFrame) -> float:
+    """Equal-stake ROI with the same execution costs as evaluate_oos._roi_at_production: cross
+    half the spread on entry, pay the taker fee on a winning payout.
+
+    Flat rather than Kelly deliberately. The held-out third's apparent +3.3% Kelly ROI reverses
+    to -4.5% at equal stakes — that number was sizing luck concentrated into a few bets, not
+    selection skill. Reported only; the gate is the Brier gap.
+    """
+    if len(sel) == 0:
+        return float("nan")
+    their = sel["their_prob"].astype(float).clip(1e-6, 1 - 1e-6)
+    eff = (their + config.HALF_SPREAD).clip(upper=1 - 1e-6)
+    won = (((sel["bet_side"] == "Yes") & (sel["outcome"].astype(int) == 1)) |
+           ((sel["bet_side"] == "No") & (sel["outcome"].astype(int) == 0)))
+    pnl = np.where(won, (1.0 - config.FEE_RATE) / eff - 1.0, -1.0)
+    return float(np.mean(pnl))
+
+
+def evaluate_selector(df: pd.DataFrame, mask) -> dict | None:
+    """Paired model-minus-market Brier gap for the selected rows, clustered by city-day.
+
+    Negative gap = model beats the market on this subset. Returns None when the selection is
+    empty, so a threshold that keeps nothing cannot report a spurious result.
+    """
+    sel = df[mask]
+    if len(sel) == 0:
+        return None
+    mkt = market_col(sel)
+    y = sel["outcome"].to_numpy(dtype=float)
+    d = (sel["forecast_prob"].to_numpy(dtype=float) - y) ** 2 - \
+        (sel[mkt].to_numpy(dtype=float) - y) ** 2
+    iv = stats_util.interval(d, stats_util.cluster_key(sel))
+    return {
+        "n": int(iv["n"]),
+        "clusters": int(iv["n_clusters"]),
+        "gap": float(iv["mean"]),
+        "se": float(iv["se"]),
+        "ci_lo": float(iv["ci_lo"]),
+        "ci_hi": float(iv["ci_hi"]),
+        "mde": float(stats_util.Z * iv["se"]),
+        "kept": len(sel) / len(df),
+        "roi_flat": flat_roi(sel) if "their_prob" in sel.columns else float("nan"),
+    }
