@@ -237,3 +237,5 @@ entered_at_utc,city,condition_id,question,target_date,leg,side,entry_side_price,
 2026-07-29T22:20:24.471231+00:00,Seoul,0xb9f04836ad90e97452f23c3e5fff6c671df18bead8b5faf4dec496eca17c4309,Will the highest temperature in Seoul be 33°C on July 31?,2026-07-31,shoulder,No,0.855,0.145,outer,3431.72
 2026-07-29T22:20:24.471231+00:00,Seoul,0xd2262954c818ca8a8b4654226fb08e49e11a39bf20bda466bdcb77ccf26b4351,Will the lowest temperature in Seoul be 24°C on July 31?,2026-07-31,shoulder,No,0.855,0.145,outer,1049.53
 2026-07-30T00:17:24.486481+00:00,HongKong,0xe1b7edba5be979eb1ee2bae07ec05b6d6bcc94f35447617ded7b24ea5c489d7c,Will the highest temperature in Hong Kong be 27°C on July 31?,2026-07-31,shoulder,No,0.92,0.08,outer,3324.83
+2026-07-30T03:36:26.163469+00:00,HongKong,0x1d0139e63ff58fa1e1673843e765d6987b5746f755fd98ee9765f8f97f817202,Will the highest temperature in Hong Kong be 29°C on July 31?,2026-07-31,shoulder,No,0.655,0.345,core,10058.96
+2026-07-30T03:36:26.163469+00:00,HongKong,0xd5443af959da655a763e1785a4271e68c619eacb4c4c61592795ffd301eba183,Will the highest temperature in Hong Kong be 28°C on July 31?,2026-07-31,shoulder,No,0.74,0.26,core,3185.14
