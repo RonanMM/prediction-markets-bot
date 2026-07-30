@@ -280,3 +280,4 @@ entered_at_utc,city,condition_id,question,target_date,leg,side,entry_side_price,
 2026-07-30T14:35:47.011404+00:00,HongKong,0xaa975c0bb730c92ec83ada049ac09805aab81fad796f805994d32e5197da2388,Will the lowest temperature in Hong Kong be 26°C on July 31?,2026-07-31,shoulder,No,0.685,0.315,core,1199.17
 2026-07-30T14:35:47.011404+00:00,HongKong,0xd4a660328e314adeae597a31be4a866d41b367f3256a3d65fee3ca9e5e9ae83f,Will the lowest temperature in Hong Kong be 26°C on August 1?,2026-08-01,shoulder,No,0.715,0.285,core,1234.25
 2026-07-30T16:52:47.899042+00:00,NYC,0xe3e6c1e998e7a8993203fbc62c75776ca608594f54a91b4e06363635ca4ddfe5,Will the lowest temperature in New York City be between 72-73°F on July 31?,2026-07-31,shoulder,No,0.945,0.055,outer,1001.01
+2026-07-30T18:54:08.040826+00:00,Seoul,0x3948c667d3ad9646304d8a743b2864c7e062ee61e146ff27a899b405cf1409bb,Will the highest temperature in Seoul (Incheon) be 32°C on August 1?,2026-08-01,shoulder,No,0.655,0.345,core,4035.37
