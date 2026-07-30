@@ -3406,3 +3406,94 @@ def test_discover_by_tag_skips_ambiguous_multi_city_questions(caplog):
     assert any("ambig" in r.message.lower()
                for r in caplog.records if r.levelno >= logging.WARNING), \
         "an ambiguous market must be logged loudly, naming the question and the candidates"
+
+
+# --------------------------------------------------------------------------------------
+# fetch_station_obs: a partial refetch must never overwrite a complete file
+# --------------------------------------------------------------------------------------
+
+def _obs_frame(n, start_year=2022):
+    """n hourly rows with genuinely distinct timestamps, starting at start_year.
+
+    Distinctness matters: fetch_station_obs dedupes on `valid_local`, so a fixture that repeats
+    timestamps collapses to a handful of rows and the size guards never get exercised.
+    """
+    import pandas as pd
+    ts = pd.date_range(f"{start_year}-01-01", periods=n, freq="h")
+    return pd.DataFrame({"valid_local": ts.strftime("%Y-%m-%d %H:%M"), "temp_c": 20.0})
+
+
+def test_obs_fetch_keeps_existing_file_when_a_year_chunk_fails(tmp_path, monkeypatch):
+    """The 2026-07-30 incident. LGA's 2026 chunk failed all four retries while 2022-2025
+    succeeded; the failure was silently skipped, the 35,032 surviving rows cleared the absolute
+    floor of 20,000, and the complete 40,071-row file was overwritten. wu_truth then returned
+    None for every 2026 date and NYC grading fell back to the pre-W0 CLI ruler — settlement audit
+    97.0% -> 94.7%, published pooled gap +0.0178 (CI above zero) -> +0.0122 (CI spanning zero).
+    A dropped HTTP request flipped the project's headline verdict, on a green run."""
+    import pandas as pd
+    import fetch_station_obs as fso
+
+    out = tmp_path / "new_york_city_obs_hourly.csv"
+    # DELIBERATELY SMALL existing file. The partial refetch below totals ~32k rows — far MORE
+    # than this — so the size-regression guard cannot fire and only the failed-chunk guard can
+    # save the file. Sizing it the other way lets guard 2 silently do guard 1's job, and the
+    # test then passes with guard 1 deleted (verified by mutation: it did).
+    _obs_frame(9000).to_csv(out, index=False)
+
+    monkeypatch.setattr(fso, "OUT_DIR", str(tmp_path))
+    monkeypatch.setattr(fso, "OBS_STATIONS", {"new_york_city": ("LGA", "America/New_York")})
+    monkeypatch.setattr(fso.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(fso, "START_YEAR", 2022)
+
+    def fake_range(station, tz, start, end):
+        if start.year >= 2026:
+            return None                     # the 2026 chunk fails all retries
+        return _obs_frame(8000, start_year=start.year)
+
+    monkeypatch.setattr(fso, "_fetch_range", fake_range)
+    fso.fetch_station_obs(recent_only=False)
+
+    kept = pd.read_csv(out)
+    assert len(kept) == 9000, \
+        "a partial year-set overwrote the existing file — this is the 2026-07-30 incident"
+
+
+def test_obs_fetch_refuses_to_shrink_an_existing_file(tmp_path, monkeypatch):
+    """Guard 1 catches a chunk that errored. This catches everything else — an upstream range
+    quietly returning fewer rows, a response that parses but is empty, a station rename.
+    Refetched observations must only ever grow."""
+    import pandas as pd
+    import fetch_station_obs as fso
+
+    out = tmp_path / "chicago_obs_hourly.csv"
+    _obs_frame(40000).to_csv(out, index=False)
+
+    monkeypatch.setattr(fso, "OUT_DIR", str(tmp_path))
+    monkeypatch.setattr(fso, "OBS_STATIONS", {"chicago": ("ORD", "America/Chicago")})
+    monkeypatch.setattr(fso.time, "sleep", lambda *_: None)
+    # every chunk "succeeds" but the total is smaller than what is already on disk
+    monkeypatch.setattr(fso, "_fetch_range",
+                        lambda station, tz, start, end: _obs_frame(5000, start_year=start.year))
+
+    fso.fetch_station_obs(recent_only=False)
+    kept = pd.read_csv(out)
+    assert len(kept) == 40000, "a shrinking refetch overwrote the larger existing file"
+
+
+def test_obs_fetch_still_writes_when_the_refetch_grows(tmp_path, monkeypatch):
+    """The guards must not block the normal path — a genuinely larger refetch still lands, or
+    the file would freeze forever and go stale silently, which is the same class of bug."""
+    import pandas as pd
+    import fetch_station_obs as fso
+
+    out = tmp_path / "seoul_obs_hourly.csv"
+    _obs_frame(21000).to_csv(out, index=False)
+
+    monkeypatch.setattr(fso, "OUT_DIR", str(tmp_path))
+    monkeypatch.setattr(fso, "OBS_STATIONS", {"seoul": ("RKSI", "Asia/Seoul")})
+    monkeypatch.setattr(fso.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(fso, "_fetch_range",
+                        lambda station, tz, start, end: _obs_frame(9000, start_year=start.year))
+
+    fso.fetch_station_obs(recent_only=False)
+    assert len(pd.read_csv(out)) > 21000, "a healthy growing refetch was wrongly rejected"

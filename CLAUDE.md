@@ -368,9 +368,46 @@ lower — hourly METARs miss peaks the CLI's 1-minute sensors catch) and **18/57
 a live nomination). **Any workflow that grades must run `fetch_station_obs.py` first** — full,
 not `--recent`, since a 3-day top-up onto a nonexistent file leaves the same gap.
 
+⚠️ **The SAME trap, worse form — a TRUNCATED obs file (2026-07-30 incident, fixed, do not
+regress).** The trap above is about a *missing* file. A **partially-written** one is far more
+dangerous: it has the right name, a plausible row count, and produces a green run.
+
+What happened: `fetch_station_obs.py` fetches one chunk per year (2022…now). LGA's **2026** chunk
+failed all four retries; the loop **silently skipped it** and concatenated the rest. The surviving
+35,032 rows cleared the only guard — an *absolute* floor of `len(df) < 20000` — so the complete
+40,071-row file was **overwritten, losing every 2026 observation**. `wu_truth` then returned `None`
+for all 2026 dates and NYC grading fell back to the CLI ruler.
+
+Measured cost, both directions, same sample (n=421 / 178 city-days):
+
+| | settlement audit | pooled model−market gap |
+|---|---|---|
+| healthy | 129/133 = **97.0%** ✅ | **+0.0178** CI [+0.0040, +0.0317] |
+| truncated | 126/133 = **94.7%** ❌ | **+0.0122** CI [−0.0012, **+0.0257**] |
+
+The interval went from entirely-above-zero to **spanning zero** — i.e. the project's headline
+verdict flipped from "the model is measurably worse than the market" to "indistinguishable" **on a
+dropped HTTP request**, and was published to the public dashboard. Nothing errored.
+
+Three fixes, all in place:
+1. **`fetch_station_obs` GUARD 1** — if any year chunk fails after retries, keep the existing CSV.
+   A partial fetch must never overwrite a complete file.
+2. **`fetch_station_obs` GUARD 2** — refuse to write when the refetch has fewer rows *or* an older
+   latest observation than what is on disk. Refetched obs must only ever grow. This catches what
+   guard 1 misses (an upstream range quietly returning less, a station rename).
+3. **`dashboard.yml` now runs `audit_settlements.py` before building.** `truth-eval` has run the
+   audit since W0; the dashboard never did, and *that asymmetry is why this reached the public
+   page*. A degraded ruler now blocks the publish and the last good copy stays up.
+
+The absolute `< 20000` floor is kept as a third, weakest guard — it is what failed here, because
+35,032 > 20,000. **An absolute floor cannot detect a regression; only a comparison against the
+previous state can.**
+
 Corollary worth remembering: the eval trackers carry **no grade column**. Grading is applied at
 *read time* by `evaluate_oos.py` / `data_status.py` / `build_dashboard.py`. So a truth-source bug
-corrupts *reported numbers*, never stored data — which is why the fix above needed no backfill.
+corrupts *reported numbers*, never stored data — which is why these fixes need no backfill. It also
+means a bad run leaves **no trace**: the numbers were simply wrong while it was live, and correct
+again afterwards. Judge truth health from `audit_settlements.py`, never from a green workflow run.
 
 ⚠️ **Training targets go stale silently.** `train_calibrator.py` reads
 `{slug}_settlement_actuals.csv` via `settlement_truth.load_training_truth`. That file **is

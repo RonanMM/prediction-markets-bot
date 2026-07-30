@@ -61,6 +61,17 @@ jobs:
         working-directory: src/polymarket_weather
         run: python fetch_station_obs.py || echo "obs refresh skipped (network) — NYC/Chicago fall back to CLI truth"
 
+      # Settlement audit BEFORE building. truth-eval has run this since W0; the dashboard never
+      # did, and that asymmetry is why the 2026-07-30 incident reached the public page: LGA's
+      # 2026 obs chunk failed, wu_truth silently fell back to the CLI ruler, and the published
+      # pooled gap moved from +0.0178 (CI entirely above zero) to +0.0122 (CI spanning zero) —
+      # the project's headline verdict, flipped by a dropped HTTP request, on a green run.
+      # audit_settlements.py exits 1 below 95% agreement, so a degraded ruler now BLOCKS the
+      # publish and the last good copy stays up. Failing loudly beats publishing a wrong number.
+      - name: Settlement audit — refuse to publish on a degraded ruler
+        working-directory: src/polymarket_weather
+        run: python audit_settlements.py
+
       - name: Build dashboard
         working-directory: src/polymarket_weather
         run: python build_dashboard.py "${GITHUB_WORKSPACE}/site/index.html"

@@ -84,13 +84,33 @@ def fetch_station_obs(recent_only: bool = False):
                       for y in range(START_YEAR, now.year + 1)]
 
         chunks = []
+        failed_ranges = []
         for start, end in ranges:
             df = _fetch_range(station, tz, start, min(end, now + timedelta(days=1)))
             if df is not None and not df.empty:
                 chunks.append(df)
+            else:
+                failed_ranges.append(start.year)
             time.sleep(0.5)
         if not chunks:
             logger.error(f"{slug}: nothing fetched — keeping existing CSV")
+            continue
+
+        # GUARD 1 — a partial year-set must never overwrite a complete file.
+        #
+        # 2026-07-30 incident: LGA's 2026 chunk failed all four retries while 2022-2025 succeeded.
+        # The failure was silently skipped, the 35,032 surviving rows cleared the old absolute
+        # floor of 20,000, and the file was overwritten — dropping every 2026 observation. wu_truth
+        # then returned None for all 2026 dates and NYC grading fell back to the NWS CLI (the
+        # pre-W0 ruler), taking the settlement audit 97.0% -> 94.7% and the published pooled
+        # model-market gap from +0.0178 (CI entirely above zero) to +0.0122 (CI spanning zero).
+        # The project's headline verdict flipped on a dropped HTTP request, with a green run.
+        if not recent_only and failed_ranges:
+            logger.error(
+                f"{slug}: year chunk(s) {sorted(failed_ranges)} FAILED after retries — keeping "
+                f"the existing CSV. A partial fetch must never overwrite a complete file: the "
+                f"missing year would silently disappear from wu_truth and grading would fall "
+                f"back to the CLI ruler.")
             continue
 
         df = pd.concat(chunks, ignore_index=True)
@@ -106,6 +126,31 @@ def fetch_station_obs(recent_only: bool = False):
         if not recent_only and len(df) < 20000:
             logger.error(f"{slug}: only {len(df)} rows — keeping existing CSV")
             continue
+
+        # GUARD 2 — never regress against what is already on disk.
+        #
+        # Guard 1 catches a chunk that errored. This catches everything else: an upstream range
+        # that starts returning fewer rows, a silently-emptied response that still parses, a
+        # station rename. Refetched data should only ever grow — obs_hourly is append-only in
+        # spirit even though it is rewritten wholesale — so fewer rows or an older latest
+        # observation means the NEW copy is worse and must be rejected.
+        if os.path.exists(out):
+            try:
+                prev = pd.read_csv(out)
+            except Exception as exc:                      # unreadable existing file: nothing to
+                logger.warning(f"{slug}: existing CSV unreadable ({exc}) — writing fresh")
+                prev = None
+            if prev is not None and len(prev):
+                new_latest = str(df["valid_local"].max())
+                old_latest = str(prev["valid_local"].max())
+                if len(df) < len(prev) or new_latest < old_latest:
+                    logger.error(
+                        f"{slug}: REGRESSION — refetched {len(df)} rows (latest {new_latest}) "
+                        f"vs existing {len(prev)} rows (latest {old_latest}). Keeping the "
+                        f"existing CSV. Refetched observations must never shrink; a smaller "
+                        f"file means the upstream fetch was incomplete.")
+                    continue
+
         df.to_csv(out, index=False)
         logger.info(f"{slug}: saved {out} — {len(df)} rows, latest {df['valid_local'].max()}")
 
