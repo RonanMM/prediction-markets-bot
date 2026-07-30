@@ -19,7 +19,7 @@ outcome bins, no forecasting required. Everything is measured against **settleme
 what the market actually paid out on — behind pre-committed sample-size gates, because this
 project has been burned by flattering measurements four separate times.
 
-## The four broken rulers (all found, all fixed)
+## The six broken rulers (all found, all fixed)
 1. **Self-grading (2026-06):** bets were graded against the same forecast grid that produced
    them → the fictional "127.5% ROI". Fixed by grading against station observations.
 2. **Corrupted truth feed (2026-07-03):** Meteostat was up to 9 °C off recent official
@@ -32,7 +32,31 @@ project has been burned by flattering measurements four separate times.
    exactly at bin boundaries. 4 of 60 audited markets had been graded *backwards*. Truth for
    NYC/Chicago is now reconstructed the way Wunderground computes it (`wu_truth.py`), and
    `audit_settlements.py` permanently checks our grades against how markets actually settled
-   (currently 60/61; the one standing miss is a Seoul data-source subtlety).
+   (currently 129/133 = 97.0%; the standing misses are Seoul/London tenths-of-a-degree
+   boundary cases).
+5. **We were only collecting 3% of the markets (2026-07-30).** Discovery asked Polymarket for
+   every active market sorted by trading volume, then picked out the weather ones by name. That
+   list **stops at 2100 markets**, and weather markets trade too little to be in it until they're
+   nearly expired — so we found each one late, once, if at all. Worse, when the list hit its
+   limit the API returned an error the code read as *"that's the end"*, so a hard ceiling and
+   "we've seen everything" looked identical. Measured live: the old scan found **24** markets
+   across the five cities; asking for Polymarket's `weather` tag directly finds **264**. This is
+   why 44% of collected markets had only one snapshot, why the staleness signal reported "fresh"
+   for half the data, and why the long-lead buckets were starved. Now fixed and verified in
+   production at 264/cycle.
+6. **A partial download silently overwrote good data (2026-07-30).** Hourly observations are
+   fetched one chunk per year. New York's **2026** chunk failed; the loop skipped it silently,
+   and the surviving 35,032 rows cleared the only guard — an *absolute* floor of 20,000 — so the
+   complete 40,071-row file was overwritten, losing the whole year. Grading then fell back to
+   the old NWS ruler. Measured cost on the same sample: settlement audit **97.0% → 94.7%**, and
+   the headline model-vs-market gap **+0.0178 (interval entirely above zero) → +0.0122 (interval
+   spanning zero)** — the project's central verdict flipped from "the model is measurably worse"
+   to "indistinguishable", **because one HTTP request was dropped**, and it was published. The
+   run was green throughout. Fixed three ways: a failed chunk now keeps the existing file;
+   refetched observations may never shrink; and the dashboard now runs the settlement audit
+   *before* building, so a degraded ruler blocks publishing instead of reaching the public page.
+   An absolute floor cannot detect a regression — only a comparison against the previous state
+   can.
 
 ## Verdict on the forecasting strategy: no edge — it stays OFF
 
@@ -45,6 +69,9 @@ RAW tradeable price:
 n = 401 markets over 171 independent city-days
 model-minus-market Brier gap  +0.0211   95% CI [+0.0068, +0.0353]   t = 2.90
 → the interval sits ENTIRELY ABOVE zero: the model is WORSE than the market, decisively
+
+latest (2026-07-30, n = 421 over 178 city-days):  +0.0178  CI [+0.0040, +0.0317]
+→ unchanged conclusion; the estimate drifts as sample grows, the interval stays above zero
 ```
 
 That is not "no edge found yet" — it is a positive finding that the model is measurably worse
@@ -73,6 +100,28 @@ this is a real verdict, not a small-sample tease. Accuracy (Brier, lower = bette
 Backtest ROI at production parameters is **−8.7% over 213 bets** — note this number swings
 several points a day as fresh bets resolve (it was −22.5% the day before); the Brier gap above
 is the stable signal, and it says the market clearly out-predicts the model.
+
+### The last open question, now closed: could we just bet more selectively? (2026-07-29)
+Average accuracy across all markets is not the same as being right on the bets you actually
+place — so a *subset* could in principle be profitable even with a worse overall Brier. This was
+the only reading of "positive ROI" the evidence above did not already rule out, so we tested it
+properly (`src/polymarket_weather/bet_selection.py`, `docs/EDGE_MEGAPLAN.md` §12).
+
+32 pre-registered selection rules were searched on a training split. **Four had a negative gap,
+and every one of them was smaller than its own margin of error** — not distinguishable from zero
+*on the data they were chosen from*. Flat-stake ROI was negative in 31 of 32. The held-out set
+was never spent, because nothing earned it. Repeating the whole search on a universe 2.3× larger
+(production filters removed) found one candidate that cleared the plain test — and it turned out
+to be Hong Kong markets where **all 13 outcomes were NO**, so the "winner" was just whoever
+stated lower numbers; it also loses money and fails the multiple-testing correction.
+
+Two useful warnings came out of it. First, **ROI cannot be the test statistic at this sample
+size** — its interval is ~46 percentage points wide and cannot tell +3% from −20%. Second, the
+three highest-ROI candidates in that search all had *worse* Brier than the market: positive ROI
+on worse accuracy is sizing luck, and is exactly the "127.5%" mirage this file opens with.
+
+**Four independent instruments now agree the model has no edge:** the pooled Brier gap, the
+production ROI, no profitable subset in the live universe, and none in a much wider one.
 
 **Why a ~53% win rate still loses money:** win rate only matters relative to the price paid.
 Our bets average ~51¢ per $1 of payout (stake-weighted 54¢), so break-even is ~54–55% after
@@ -142,9 +191,17 @@ hypothesis the accruing book will test, not a finding.
 
 ## Bottom line
 1. The evaluation machinery is now trustworthy end-to-end: settlement-faithful labels, a
-   permanent settlement audit, honest costs, pre-committed gates.
-2. **Forecast betting: no edge, off.** Revisit after the settlement-truth retrain and the
-   same-day obs overhaul (`docs/EDGE_MEGAPLAN.md` Book A / W1).
+   permanent settlement audit, honest costs, pre-committed gates. As of 2026-07-30 the audit
+   also gates *publishing*, so a degraded ruler can no longer reach the dashboard.
+2. **Forecast betting: no edge, off — and the "bet more selectively" escape hatch is now closed
+   too** (2026-07-29, four independent instruments agree). Revisit only on a genuinely new
+   information source, not a thirteenth modelling approach.
+2b. **Data collection was the real problem all along.** Until 2026-07-30 we were capturing ~3%
+   of the available markets (24 per cycle out of 264). That is now fixed and verified in
+   production. It creates no edge — but the structure books, the only live candidate, have been
+   accumulating from a fraction of the market universe, so their gates should resolve far sooner
+   than the ~3-year estimates elsewhere in this file assume. Those estimates were computed at the
+   old collection rate and are now pessimistic.
 3. **Structure betting: unproven, still paper.** The full-band gate was met on 2026-07-27 and
    does not count — CI spans zero and the 4×-larger breadth book replicates it at ~0 with the
    core band's sign flipped (see above). Gates are now power-aware. Real money only when a gate
