@@ -102,7 +102,7 @@ def _paged_events(tag_slug: str, page_size: int = 100) -> tuple[list[dict], bool
                 tag_slug, _MAX_EVENT_PAGES, len(events))
             return events, True
         page = _get(url, {"tag_slug": tag_slug, "limit": page_size,
-                          "offset": offset, "closed": "false"})
+                          "offset": offset, "closed": "false", "active": "true"})
         if page is None:
             if events:
                 logger.warning(
@@ -112,7 +112,15 @@ def _paged_events(tag_slug: str, page_size: int = 100) -> tuple[list[dict], bool
                 return events, True
             logger.warning("/events?tag_slug=%s unavailable at offset 0", tag_slug)
             return [], False
-        if not isinstance(page, list):
+        if not isinstance(page, (list, dict)):
+            # A body that is neither list nor dict (e.g. a bare string like "rate limited")
+            # must degrade to a clean stop, not an AttributeError out of .get() — see
+            # search_markets_by_query for the twin fix and why this matters for the collector.
+            logger.warning(
+                "/events?tag_slug=%s returned a non-list/non-dict body at offset %d "
+                "(%s) — treating as an empty page.", tag_slug, offset, type(page).__name__)
+            page = []
+        elif not isinstance(page, list):
             page = page.get("data", []) or []
         if not page:
             return events, False
@@ -145,7 +153,20 @@ def search_markets_by_query(query: str, limit: int = 100) -> list[dict]:
         if not data:
             break
 
-        page: list[dict] = data if isinstance(data, list) else data.get("data", [])
+        if isinstance(data, list):
+            page: list[dict] = data
+        elif isinstance(data, dict):
+            page = data.get("data", [])
+        else:
+            # A truthy body that is neither list nor dict (e.g. a bare string like
+            # "rate limited") must degrade to a clean stop, not an AttributeError that
+            # propagates out of fetch_weather_markets -> step_fetch_polymarket -> main.py,
+            # which has no try/except and would abort the whole collect cycle before
+            # step_fetch_weather/step_fetch_ensemble even run.
+            logger.warning(
+                "GET %s returned a non-list/non-dict body (%s) at offset %d — "
+                "treating as an empty page.", url, type(data).__name__, offset)
+            page = []
         if not page:
             break
 
@@ -375,6 +396,25 @@ def _reset_tag_cache() -> None:
     _TAG_CACHE.clear()
 
 
+def _matching_cities(question: str) -> list[str]:
+    """Every configured city whose search terms appear in *question*, not just the first.
+
+    `match_city` deliberately keeps returning the FIRST match in CITIES order (its contract is
+    unchanged here — reordering CITIES would silently change that answer, and 0/2747 real
+    questions have hit this so far, so there is no data yet to justify picking a real
+    disambiguation rule). This helper exists only so `discover_by_tag` can DETECT the ambiguous
+    case and skip it loudly instead of silently filing it under whichever city sorts first.
+    """
+    q = question or ""
+    matches = []
+    for city, cfg in CITIES.items():
+        for term in cfg.get("search_terms", [city]):
+            if re.search(rf"\b{re.escape(term)}\b", q, re.I):
+                matches.append(city)
+                break
+    return matches
+
+
 def discover_by_tag(tag_slug: str = "weather") -> dict[str, list[dict]]:
     """{city: [raw Gamma market dicts]} for every configured city, from one tag enumeration.
 
@@ -402,6 +442,18 @@ def discover_by_tag(tag_slug: str = "weather") -> dict[str, list[dict]]:
             q = m.get("question") or ""
             if not is_temperature_question(q):
                 continue
+            candidates = _matching_cities(q)
+            if len(candidates) > 1:
+                # An ambiguous market (names >=2 configured cities) is worth less than a
+                # mislabeled one: filing it under match_city's first-match winner would be a
+                # SILENT, permanent corruption of that city's committed CSV series. Skipping it
+                # loudly converts a latent silent-corruption bug into a visible, cheap event —
+                # three lines now, versus discovering it later in a data audit. Measured 0/2747
+                # real questions today, so this is not expected to fire in practice.
+                logger.warning(
+                    "tag '%s': ambiguous market matches multiple cities %s, skipping: %r",
+                    tag_slug, candidates, q)
+                continue
             city = match_city(q)
             if city is None:
                 continue
@@ -416,9 +468,13 @@ def discover_by_tag(tag_slug: str = "weather") -> dict[str, list[dict]]:
     logger.info("tag '%s': %d markets across %d cities (%s)", tag_slug, len(seen), len(by_city),
                 ", ".join(f"{c}={len(v)}" for c, v in sorted(by_city.items())))
 
-    # Only cache a non-empty partition. Caching an empty result would freeze one transient
-    # /events blip in for the rest of the process: every later city in the same collect cycle
-    # would pay the expensive fallback instead of just retrying the tag lookup.
-    if by_city:
+    # Only cache a non-empty, COMPLETE partition. Caching an empty result would freeze one
+    # transient /events blip in for the rest of the process: every later city in the same
+    # collect cycle would pay the expensive fallback instead of just retrying the tag lookup.
+    # Caching a TRUNCATED partition is the same failure in a quieter shape: city 1 gets the
+    # FLOOR warning above, but cities 2-5 would silently read a partial partition from cache —
+    # `found` is non-empty for them, so fetch_weather_markets never falls back and nothing signals
+    # the loss.
+    if by_city and not truncated:
         _TAG_CACHE[tag_slug] = by_city
     return by_city

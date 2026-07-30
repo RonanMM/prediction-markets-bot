@@ -3287,3 +3287,122 @@ def test_discover_by_tag_does_not_cache_an_empty_result(monkeypatch):
     second = fp.discover_by_tag("weather")
     assert len(calls) == 2, "an empty partition must not be cached -- the next call should retry"
     assert "London" in second and len(second["London"]) == 2
+
+
+# ── Final review fix wave: unguarded shape assumption, unpinned fallback write, ──
+# ── truncated-partition caching, missing active filter, multi-city ambiguity. ────
+
+def test_search_markets_by_query_survives_a_non_list_body(caplog):
+    """A truthy Gamma body that is neither list nor dict (e.g. a rate-limit message returned as
+    HTTP 200 JSON) used to raise AttributeError out of `data.get("data", [])` -- straight out of
+    fetch_weather_markets -> step_fetch_polymarket -> main.py, which has NO try/except around the
+    fallback path, aborting the whole collect cycle before step_fetch_weather/step_fetch_ensemble
+    even run. It must degrade to an empty result instead, loudly (a WARNING), not silently."""
+    import logging
+    import fetch_polymarket as fp
+    import unittest.mock as m
+    with caplog.at_level(logging.WARNING), m.patch.object(
+            fp, "_get", lambda url, params=None: "rate limited"):
+        got = fp.search_markets_by_query("highest temperature London")
+    assert got == [], "a non-list/non-dict body must degrade to an empty result, not raise"
+    assert any(r.levelno >= logging.WARNING for r in caplog.records), \
+        "a non-list/non-dict body must warn loudly -- silent-empty is the failure mode this " \
+        "whole branch exists to eliminate"
+
+
+def test_paged_events_survives_a_non_list_body(caplog):
+    """The same unguarded-shape bug, one layer down: `_paged_events` must not raise either, since
+    it feeds the tag path that the fallback above degrades to when it fails."""
+    import logging
+    import fetch_polymarket as fp
+    import unittest.mock as m
+    with caplog.at_level(logging.WARNING), m.patch.object(
+            fp, "_get", lambda url, params=None: "rate limited"):
+        events, truncated = fp._paged_events("weather", page_size=100)
+    assert events == []
+    assert truncated is False
+    assert any(r.levelno >= logging.WARNING for r in caplog.records)
+
+
+def test_paged_events_requests_active_and_closed_filters():
+    """/events must exclude both closed AND inactive markets. Only `active=true` was missing --
+    processing.py filters `closed` on read but nothing filters `active`, so a resolved bin inside
+    an open event would otherwise reach the committed snapshots."""
+    import fetch_polymarket as fp
+    import unittest.mock as m
+    seen_params = []
+
+    def fake_get(url, params=None):
+        seen_params.append(params)
+        return []
+
+    with m.patch.object(fp, "_get", fake_get):
+        fp._paged_events("weather", page_size=100)
+    assert seen_params[0]["closed"] == "false"
+    assert seen_params[0]["active"] == "true"
+
+
+def test_fetch_weather_markets_fallback_actually_returns_the_market_it_finds(monkeypatch):
+    """The fallback's only productive behaviour is returning markets it finds -- every existing
+    fallback test only asserted 'search was called' or 'a decoy was rejected', so a fallback that
+    silently discarded every match (`found[cid] = m` replaced with `pass`) still shipped green.
+    This test is designed to fail under exactly that mutation."""
+    import fetch_polymarket as fp
+    fp._reset_tag_cache()
+    monkeypatch.setattr(fp, "discover_by_tag", lambda tag="weather": {})
+    market = {"conditionId": "ldn1",
+              "question": "Will the highest temperature in London be 22°C on July 29?"}
+    monkeypatch.setattr(fp, "search_markets_by_query", lambda q, limit=100: [market])
+    out = fp.fetch_weather_markets("London")
+    assert len(out) == 1, "a genuine match found by the fallback must actually be returned"
+    assert out[0]["city"] == "London"
+    assert out[0]["condition_id"] == "ldn1"
+
+
+def test_discover_by_tag_does_not_cache_a_truncated_partition(monkeypatch):
+    """Asymmetric with the empty-result rule right above: a truncated partition is non-empty
+    (`found` has SOME markets) so nothing about it triggers the empty-result fallback signal, yet
+    it is just as incomplete. City 1 gets the FLOOR warning from `_paged_events`; without this fix
+    cities 2-5 in the same process would silently read the partial partition from cache with no
+    warning and no retry."""
+    import fetch_polymarket as fp
+    fp._reset_tag_cache()
+    calls = []
+
+    def fake_paged(tag, page_size=100):
+        calls.append(tag)
+        return _TAG_EVENTS, True   # truncated=True
+
+    monkeypatch.setattr(fp, "_paged_events", fake_paged)
+    fp.discover_by_tag("weather")
+    fp.discover_by_tag("weather")
+    assert len(calls) == 2, "a truncated partition must not be cached -- each call should retry"
+
+
+def test_discover_by_tag_skips_ambiguous_multi_city_questions(caplog):
+    """A question naming two configured cities must not be silently filed under whichever city
+    sorts first in CITIES iteration order -- that's a latent, permanent corruption of the loser's
+    committed CSV series, and a future CITIES reorder would silently change which city loses. It
+    must be skipped from BOTH buckets, not deduped into one, and logged loudly instead: an
+    ambiguous market is worth less than a mislabeled one, and this converts a latent silent
+    corruption into a loud, visible event for the price of three lines."""
+    import logging
+    import fetch_polymarket as fp
+    import unittest.mock as m
+    fp._reset_tag_cache()
+    ambiguous_events = [
+        {"title": "ambiguous", "markets": [
+            {"conditionId": "amb1",
+             "question": "Will the highest temperature in London or Chicago be higher on July 29?"},
+        ]},
+    ]
+    with caplog.at_level(logging.WARNING), m.patch.object(
+            fp, "_paged_events", lambda tag, page_size=100: (ambiguous_events, False)):
+        out = fp.discover_by_tag("weather")
+    all_cids = [m["conditionId"] for ms in out.values() for m in ms]
+    assert "amb1" not in all_cids, "an ambiguous market must not be filed under any city"
+    assert out.get("London", []) == []
+    assert out.get("Chicago", []) == []
+    assert any("ambig" in r.message.lower()
+               for r in caplog.records if r.levelno >= logging.WARNING), \
+        "an ambiguous market must be logged loudly, naming the question and the candidates"
