@@ -37,7 +37,13 @@ permissions:
 jobs:
   collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Raised 20 -> 45 on 2026-07-30, when tag-based discovery took the cycle from ~21 markets to
+    # ~264. Each market costs a CLOB price-history fetch, so the first real run took 10m43s — 54%
+    # of the old 20-minute budget where it used to be a small fraction. A killed collect does not
+    # retry and the snapshots are PERISHABLE: a price not recorded at 14:00 is gone for good. The
+    # headroom is deliberately generous because the failure is unrecoverable and the cost of an
+    # idle runner minute is not.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
