@@ -128,7 +128,6 @@ def _paged_events(tag_slug: str, page_size: int = 100) -> tuple[list[dict], bool
 
 def search_markets_by_query(query: str, limit: int = 100) -> list[dict]:
     url = f"{GAMMA_API_BASE}/markets"
-    q_lower = query.lower()
     matched = []
     offset = 0
     page_size = 100
@@ -152,10 +151,13 @@ def search_markets_by_query(query: str, limit: int = 100) -> list[dict]:
 
         # Queries arrive as "highest temperature London", but questions read "highest temperature
         # IN London" — as one substring that never matches. Require each whitespace-separated
-        # token instead, so the fallback actually finds things.
+        # token instead, so the fallback actually finds things. WORD-BOUNDARY matching (not bare
+        # substring) mirrors match_city: a substring match would let "temperature in New York"
+        # match "...temperature in New Yorker Magazine's HQ city..." and "highest temperature
+        # London" match "...in Londonderry...".
         for m in page:
-            question = (m.get("question") or "").lower()
-            if all(tok in question for tok in q_lower.split()):
+            question = m.get("question") or ""
+            if all(re.search(rf"\b{re.escape(tok)}\b", question, re.I) for tok in query.split()):
                 matched.append(m)
 
         if len(page) < page_size:
@@ -274,11 +276,27 @@ def fetch_weather_markets(city: str) -> list[dict[str, Any]]:
     old query scan remains as a fallback, because depending on a third-party tag with no backup
     would mean silently collecting nothing if Polymarket ever retags these markets. It is a
     DEGRADED path: GET /markets 422s at offset 2100, so it can only ever see the top ~2100 active
-    markets by volume, and weather markets sit below that line until near expiry.
+    markets by volume, and weather markets sit below that line until near expiry. The fallback
+    also re-applies is_temperature_question/match_city to every hit: search_markets_by_query only
+    guarantees every query token appears somewhere in the question, so a question that happens to
+    contain every token without being ABOUT this city's temperature (e.g. "Will Bitcoin's high be
+    reached in Chicago while the London Stock Exchange sets a temperature record?") would
+    otherwise be snapshotted under the wrong city — a mislabeled row appended permanently to the
+    committed CSVs, since data/polymarket/ is never overwritten.
     """
     found: dict[str, dict] = {}
 
-    for m in discover_by_tag().get(city, []):
+    try:
+        tagged = discover_by_tag().get(city, [])
+    except Exception as exc:                      # noqa: BLE001 — deliberate: a malformed
+        # /events body must degrade discovery for THIS city only, not kill the whole collect
+        # run for the other four cities sharing this process.
+        logger.warning("Tag discovery raised for %s (%s: %s) — falling back to the query "
+                       "scan. A malformed /events body must degrade this ONE city, not kill "
+                       "the whole collect run for every city.", city, type(exc).__name__, exc)
+        tagged = []
+
+    for m in tagged:
         cid = m.get("conditionId", "")
         if cid:
             found[cid] = m
@@ -292,6 +310,9 @@ def fetch_weather_markets(city: str) -> list[dict[str, Any]]:
         for kw in MARKET_KEYWORDS:
             for term in search_terms:
                 for m in search_markets_by_query(f"{kw} {term}"):
+                    q = m.get("question") or ""
+                    if not is_temperature_question(q) or match_city(q) != city:
+                        continue
                     cid = m.get("conditionId", "")
                     if cid and cid not in found:
                         found[cid] = m
@@ -395,5 +416,9 @@ def discover_by_tag(tag_slug: str = "weather") -> dict[str, list[dict]]:
     logger.info("tag '%s': %d markets across %d cities (%s)", tag_slug, len(seen), len(by_city),
                 ", ".join(f"{c}={len(v)}" for c, v in sorted(by_city.items())))
 
-    _TAG_CACHE[tag_slug] = by_city
+    # Only cache a non-empty partition. Caching an empty result would freeze one transient
+    # /events blip in for the rest of the process: every later city in the same collect cycle
+    # would pay the expensive fallback instead of just retrying the tag lookup.
+    if by_city:
+        _TAG_CACHE[tag_slug] = by_city
     return by_city

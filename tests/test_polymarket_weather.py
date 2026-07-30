@@ -3191,3 +3191,99 @@ def test_fetch_weather_markets_falls_back_when_the_tag_yields_nothing(monkeypatc
     assert any("falling back" in r.message.lower()
                for r in caplog.records if r.levelno >= logging.WARNING), \
         "fetch_weather_markets must WARN when falling back off the tag"
+
+
+# ── Task 4, fix round 1: word-boundary matching, the fallback's second gate, ─
+# ── a raising tag lookup, and not caching an empty tag partition. ────────────
+
+def test_search_word_boundary_rejects_new_yorker_and_londonderry(monkeypatch):
+    """Token matching was substring-based, not word-boundary -- match_city already documents
+    this exact trap (fetch_polymarket.py:50-52) and search_markets_by_query must mirror it.
+    'temperature in New York' must not match a question that only contains 'New Yorker' as one
+    word, and 'highest temperature London' must not match a question that only contains
+    'Londonderry'."""
+    import fetch_polymarket as fp
+    page = [
+        {"conditionId": "ok", "question": "Will the highest temperature in London be 22°C on July 29?"},
+        {"conditionId": "nyer", "question": "Will the temperature in New Yorker Magazine's HQ city be newsworthy?"},
+        {"conditionId": "ldy", "question": "Will Londonderry see the highest temperature in Ireland?"},
+    ]
+
+    def fake_get(url, params=None):
+        return page if params["offset"] == 0 else []
+
+    monkeypatch.setattr(fp, "_get", fake_get)
+
+    assert fp.search_markets_by_query("temperature in New York") == [], \
+        "'New Yorker' must not satisfy a 'New York' token match"
+    got = fp.search_markets_by_query("highest temperature London")
+    assert [m["conditionId"] for m in got] == ["ok"], \
+        "'Londonderry' must not satisfy a 'London' token match"
+
+
+def test_fetch_weather_markets_fallback_rejects_a_question_about_another_city(monkeypatch):
+    """search_markets_by_query only guarantees every query token appears somewhere in the
+    question -- it says nothing about which city the question is ABOUT. "Will Bitcoin's high be
+    reached in Chicago while the London Stock Exchange sets a temperature record?" satisfies
+    every token of a Chicago query (high/temperature/Chicago all present, word-boundary and all)
+    and even passes is_temperature_question (a superlative followed eventually by "temperature"),
+    but match_city resolves it to London, not Chicago -- "London" is mentioned in the sentence
+    and comes first in CITIES iteration order. The fallback's second gate -- match_city(q) ==
+    city -- must keep a market like this out of Chicago's results even though it cleared the
+    token gate."""
+    import fetch_polymarket as fp
+    fp._reset_tag_cache()
+    monkeypatch.setattr(fp, "discover_by_tag", lambda tag="weather": {})
+    decoy = {"conditionId": "btc", "question": "Will Bitcoin's high be reached in Chicago while "
+             "the London Stock Exchange sets a temperature record?"}
+    monkeypatch.setattr(fp, "search_markets_by_query", lambda q, limit=100: [decoy])
+    out = fp.fetch_weather_markets("Chicago")
+    assert out == [], ("a decoy that only incidentally satisfies Chicago's query tokens must not "
+                       "enter Chicago's results when match_city resolves it to a different city")
+
+
+def test_fetch_weather_markets_survives_a_raising_tag_lookup(monkeypatch, caplog):
+    """A malformed /events body raising out of discover_by_tag must degrade THIS city to the
+    query-scan fallback, not kill the whole collect run: main.py has no try/except around
+    fetch_weather_markets, so an uncaught exception here would also skip every city queued after
+    this one in the same process."""
+    import logging
+    import fetch_polymarket as fp
+    fp._reset_tag_cache()
+
+    def raises(tag="weather"):
+        raise ValueError("malformed /events body")
+
+    monkeypatch.setattr(fp, "discover_by_tag", raises)
+    used = []
+    monkeypatch.setattr(fp, "search_markets_by_query",
+                        lambda q, limit=100: used.append(q) or [])
+    with caplog.at_level(logging.WARNING):
+        out = fp.fetch_weather_markets("London")   # must not raise
+    assert out == []
+    assert used, "a raising tag lookup must still fall back to the query scan"
+    assert any("raised" in r.message.lower()
+               for r in caplog.records if r.levelno >= logging.WARNING), \
+        "fetch_weather_markets must WARN when the tag lookup itself raised"
+
+
+def test_discover_by_tag_does_not_cache_an_empty_result(monkeypatch):
+    """A transient /events blip (e.g. an empty page) must not freeze an empty partition in for
+    the rest of the process -- the next city in the same collect cycle should get a fresh
+    pagination attempt, not inherit the miss."""
+    import fetch_polymarket as fp
+    fp._reset_tag_cache()
+    calls = []
+
+    def fake_paged(tag, page_size=100):
+        calls.append(tag)
+        if len(calls) == 1:
+            return [], False
+        return _TAG_EVENTS, False
+
+    monkeypatch.setattr(fp, "_paged_events", fake_paged)
+    first = fp.discover_by_tag("weather")
+    assert first == {}
+    second = fp.discover_by_tag("weather")
+    assert len(calls) == 2, "an empty partition must not be cached -- the next call should retry"
+    assert "London" in second and len(second["London"]) == 2
