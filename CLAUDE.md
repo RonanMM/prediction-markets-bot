@@ -124,6 +124,28 @@ from it — there are no hardcoded coords anywhere.
   must use the source Polymarket actually resolves on, for every city, even when a quicker feed
   exists. Waiting three weeks is cheaper than a fourth broken ruler — see W0, where the wrong
   source graded 4/60 settlements backwards.
+
+  ⚠️ **`resolution_unit` is the MARKET'S BIN GRID, not the source's precision (ruler #7, fixed
+  2026-07-31).** HKO publishes tenths (31.6 °C); the questions ask "be 31°C". The field read
+  `"0.1 °C"` — the *publishing precision* — so `grading.native_round` put the observation on a
+  tenths grid and compared it to a whole-degree bin. `27.8 == 27` is never true, so **every
+  Hong Kong bin graded NO: 0/179 YES in the eval tracker while the other four cities ran
+  12–23%.** Any shoulder SELL on an HK bin therefore looked like a guaranteed win, and HK was
+  **24% of the 5-city structure book** — it would have inflated Leg 1 the moment the July HKO
+  batch landed (~2026-08-21), right as that gate matured.
+
+  The rule was **inferred, not assumed**: across all 171 HK markets holding both HKO truth and a
+  real Polymarket settlement (2026-03-17 → 2026-06-30), **floor agrees 171/171 (100%)**,
+  round-to-nearest 93.6%, the old tenths rule 90.6% — and of the 42 rows that discriminate floor
+  from round, every one favours floor (truth 27.8 settled YES for bin **27**, not 28). Polymarket
+  truncates: bin "31" means [31.0, 32.0). The unit is now `"whole °C (floor)"`. The settlement
+  audit rose 129/133 (97.0%) → **131/133 (98.5%)** on the change.
+
+  🔍 **Why the audit could not catch it, and the general lesson.** `audit_settlements.py` passed
+  the whole time: HK agreement is dominated by trivially-correct NOs, so a rule that says NO to
+  *everything* still scores ~97%. **An aggregate agreement rate cannot detect a systematically
+  one-sided error.** The cheap detector is a per-city P(YES) table — 0.000 against 0.124–0.228
+  is visible instantly. Add that comparison whenever a new city or unit is introduced.
 - **Forecast anchor** — `forecast_lat`/`forecast_lon` (where Open-Meteo is pointed). Usually the
   station's location, but **not always**.
 

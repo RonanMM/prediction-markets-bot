@@ -13,6 +13,7 @@ reconstruction from hourly METARs (`wu_truth.py`) — the markets resolve on the
 extremes can differ from the CLI by 1°F at bin boundaries (4/60 settlements audited wrong
 before this fix; see docs/EDGE_MEGAPLAN.md §10a and audit_settlements.py).
 """
+import math
 from functools import lru_cache
 from pathlib import Path
 
@@ -39,15 +40,22 @@ for _city, _a in RESOLUTION_ANCHORS.items():
 
 
 def native_round(temp_c, unit):
-    """Round a °C temperature onto the market's native resolution grid.
+    """Round a °C temperature onto THE MARKET'S BIN GRID — not the source's precision.
 
     Markets settle in the units printed on the question, not in °C, so a °F market must be
     converted to °F and rounded to a whole degree BEFORE the threshold comparison — rounding
     in °C (the old behaviour) can flip boundary days. Units come from `resolution_unit` in the
-    anchor: 'whole °F', '0.1 °C' (tenths), or 'whole °C' (default).
+    anchor: 'whole °F', 'whole °C (floor)', '0.1 °C' (tenths), or 'whole °C' (default).
+
+    ⚠️ `resolution_unit` describes the grid the QUESTION's bins live on, NOT how precisely the
+    source publishes. Confusing the two is what broke Hong Kong (see resolution_anchors.py):
+    HKO publishes tenths, but the markets ask about whole degrees, and grading a whole-degree
+    bin against a tenths-rounded observation can never be equal.
     """
     if unit and "°F" in unit:
         return round(temp_c * 9.0 / 5.0 + 32.0)   # whole °F
+    if unit and "floor" in unit:
+        return math.floor(temp_c)                  # whole °C, TRUNCATED (Hong Kong)
     if unit and unit.strip().startswith("0.1"):
         return round(temp_c, 1)                    # tenths of a °C
     return round(temp_c)                           # whole °C

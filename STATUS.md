@@ -19,7 +19,7 @@ outcome bins, no forecasting required. Everything is measured against **settleme
 what the market actually paid out on — behind pre-committed sample-size gates, because this
 project has been burned by flattering measurements four separate times.
 
-## The six broken rulers (all found, all fixed)
+## The seven broken rulers (all found, all fixed)
 1. **Self-grading (2026-06):** bets were graded against the same forecast grid that produced
    them → the fictional "127.5% ROI". Fixed by grading against station observations.
 2. **Corrupted truth feed (2026-07-03):** Meteostat was up to 9 °C off recent official
@@ -32,7 +32,7 @@ project has been burned by flattering measurements four separate times.
    exactly at bin boundaries. 4 of 60 audited markets had been graded *backwards*. Truth for
    NYC/Chicago is now reconstructed the way Wunderground computes it (`wu_truth.py`), and
    `audit_settlements.py` permanently checks our grades against how markets actually settled
-   (currently 129/133 = 97.0%; the standing misses are Seoul/London tenths-of-a-degree
+   (currently 131/133 = 98.5%; the standing misses are Seoul tenths-of-a-degree
    boundary cases).
 5. **We were only collecting 3% of the markets (2026-07-30).** Discovery asked Polymarket for
    every active market sorted by trading volume, then picked out the weather ones by name. That
@@ -57,6 +57,20 @@ project has been burned by flattering measurements four separate times.
    *before* building, so a degraded ruler blocks publishing instead of reaching the public page.
    An absolute floor cannot detect a regression — only a comparison against the previous state
    can.
+7. **Every Hong Kong market graded NO (2026-07-31).** The Hong Kong Observatory publishes to a
+   tenth of a degree (31.6 °C); Polymarket asks "will the high be 31°C". We had recorded *the
+   observatory's precision* where the code expected *the market's bin size*, so grading asked
+   whether 31.6 equals 31 — never true. **Hong Kong resolved YES 0 times out of 179**, while the
+   other four cities ran 12–23%. Selling any Hong Kong bin therefore looked like free money, and
+   Hong Kong is **24% of the five-city structure book** — the distortion would have landed in one
+   lump when the observatory's July batch published (~2026-08-21), inflating a paper strategy
+   just as its gate matured. The correct rule was measured, not guessed: across all 171 Hong Kong
+   markets where we hold both the observatory reading and Polymarket's real settlement,
+   truncation matches **171/171**, rounding 93.6%, the old rule 90.6%. The settlement audit rose
+   to **131/133 = 98.5%** on the fix. Note what let it hide: the audit had been passing all
+   along, because a rule that answers "no" to everything still scores ~97% when most answers
+   genuinely are no. **An overall agreement rate cannot detect a one-sided error** — comparing
+   each city's YES rate to the others finds it immediately.
 
 ## Verdict on the forecasting strategy: no edge — it stays OFF
 

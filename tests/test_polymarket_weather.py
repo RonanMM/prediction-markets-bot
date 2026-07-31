@@ -93,6 +93,33 @@ def test_native_round_units():
     assert native_round(2.2, "whole °C") == 2
     assert native_round(2.6, "whole °C") == 3
     assert native_round(25.64, "0.1 °C") == 25.6
+    # Hong Kong: whole-°C bins TRUNCATED from HKO's tenths. 27.8 belongs to bin 27, not 28 —
+    # verified against 171 real settlements (floor 100%, round-to-nearest 93.6%).
+    assert native_round(27.8, "whole °C (floor)") == 27
+    assert native_round(31.6, "whole °C (floor)") == 31
+    assert native_round(30.0, "whole °C (floor)") == 30
+
+
+def test_hong_kong_bins_can_resolve_yes():
+    """Hong Kong's grid is whole °C, NOT HKO's 0.1 °C publishing precision.
+
+    Regression for the 2026-07-31 ruler bug: `resolution_unit` held the SOURCE's precision, so
+    an exact whole-degree bin was compared against a tenths-rounded observation (27.8 == 27 is
+    never true) and every HK market graded NO — 0/179 YES in the eval tracker against 12-23%
+    elsewhere. A shoulder SELL on any HK bin therefore looked like a guaranteed win.
+    """
+    from resolution_anchors import RESOLUTION_ANCHORS
+    from pmf import resolves_yes_temp
+    unit = RESOLUTION_ANCHORS["Hong Kong"]["resolution_unit"]
+    # The anchor must describe the market's bin grid, not the station's precision.
+    assert "0.1" not in unit, "HK unit regressed to the source's publishing precision"
+
+    # The real settled case that discriminates floor from round: HKO 27.8 -> bin 27 paid YES.
+    p_27 = parse_question("Will the highest temperature in Hong Kong be 27°C on June 2?")
+    p_28 = parse_question("Will the highest temperature in Hong Kong be 28°C on June 2?")
+    obs = native_round(27.8, unit)
+    assert resolves_yes_temp(p_27, obs, unit, native_round) is True
+    assert resolves_yes_temp(p_28, obs, unit, native_round) is False
 
 
 def test_resolves_yes_fahrenheit_boundary(monkeypatch):

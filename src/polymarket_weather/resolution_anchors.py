@@ -78,7 +78,19 @@ RESOLUTION_ANCHORS = {
     },
     "Hong Kong": {
         "resolution_url": "https://www.weather.gov.hk/en/cis/climat.htm",
-        "resolution_unit": "0.1 °C",
+        # ⚠️ This is the MARKET'S BIN GRID, not HKO's publishing precision. HKO reports tenths
+        # (31.6 °C), but the questions ask "be 31°C", and Polymarket TRUNCATES the reading onto
+        # whole degrees — bin "31" means [31.0, 32.0). Until 2026-07-31 this field read
+        # "0.1 °C" (the source's precision), so grading compared a whole-degree bin against a
+        # tenths-rounded observation: 31.6 == 31 is never true and EVERY Hong Kong bin graded
+        # NO. Measured: HK P(YES) 0/179 in the eval tracker while the other four cities ran
+        # 12-23%. `audit_settlements.py` could not see it — agreement is dominated by
+        # trivially-correct NOs, so the ruler stayed broken behind a passing gate.
+        # Rule inferred, not assumed: across all 171 HK markets with both HKO truth and a real
+        # Polymarket settlement (2026-03-17 → 2026-06-30), floor agrees 171/171 = 100%,
+        # round-to-nearest 93.6%, the old tenths rule 90.6%; 42 rows discriminate floor from
+        # round and every one favours floor (e.g. truth 27.8 settled YES for bin 27, not 28).
+        "resolution_unit": "whole °C (floor)",
         "forecast_lat": 22.3019,
         "forecast_lon": 114.1743,
         "station_code": "HKO",
