@@ -81,3 +81,6 @@ output/logs/
 
 # Brainstorming visual companion (local only)
 .superpowers/
+
+# scratch analysis caches — regenerable, often large binaries
+scratch/*.pkl
