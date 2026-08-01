@@ -294,6 +294,16 @@ structure legs in `shoulder_book.py` (see EDGE_MEGAPLAN §10b/§10d), in forward
 - **Honest backtest costs.** `evaluate_oos.py` and `historical_backtester.py` now cross a half-spread
   on entry (`config.HALF_SPREAD`) and pay the fee on the winning payout — so measured edge must
   survive realistic execution. Expect apparent ROI to drop; that is the point.
+  ⚠️ **Two fee models exist; know which one you are reading.** The model-book backtesters above
+  still settle with the LEGACY `config.FEE_RATE = 0.02` (2% of the winning payout). The REAL
+  verified schedule (E1, 2026-07-13) is `config.taker_fee_per_share` = `0.05·p·(1−p)` — max
+  1.25¢/share at p=0.50, ~0.24¢ at p=0.95 — and **makers pay NOTHING**, plus a Maker Rebates
+  Program returning 25% of collected weather taker fees (`MAKER_FEE`, `MAKER_REBATE_SHARE`).
+  `shoulder_book.py` / `shoulder_book_breadth.py` already use the real formula; migrating the
+  model-book backtesters off `FEE_RATE` is still queued. The 2% assumption is *conservative*
+  (harsher than reality, most so at extreme prices), so it depresses reported ROI — but it does
+  NOT touch Brier, which is the arbiter, so the edge verdict is unaffected either way. Live
+  schedule re-verified 2026-08-01: `{rate 0.05, takerOnly: true, rebateRate: 0.25}`.
 - **`evaluate_oos.py` is the arbiter.** It now prints per-city Brier, temperature-level CRPS
   (MODEL vs ENSEMBLE), an explicit EDGE CHECK PASS/FAIL (model Brier < market AND ≤ ensemble), and a
   shrink-to-market sweep recommending the Brier-minimizing `w`.

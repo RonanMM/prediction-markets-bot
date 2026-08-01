@@ -3524,3 +3524,33 @@ def test_obs_fetch_still_writes_when_the_refetch_grows(tmp_path, monkeypatch):
 
     fso.fetch_station_obs(recent_only=False)
     assert len(pd.read_csv(out)) > 21000, "a healthy growing refetch was wrongly rejected"
+
+
+def test_gate_ci_str_shows_the_binding_condition():
+    """A gate line must show WHY it is not passing, not just n-vs-threshold.
+
+    Regression for the 2026-07-31 reporting gap: the Leg1b forward line printed only
+    "43/80@+0.080v+0.030", which reads as "on track, just needs more n". It was in fact also
+    short on city-days (25/30) with a CI lower bound of +0.001 — hanging on one bad day. The
+    2026-07-27 amendment makes the clustered CI the binding condition, so it must be visible.
+    """
+    from shoulder_book import gate_ci_str, GATE_MIN_CLUSTERS
+
+    # Short on clusters — that is the binding reason, and it must be named.
+    short = {"n": 43, "se": 0.04, "n_clusters": 25, "ci_lo": 0.001, "ci_hi": 0.158}
+    out = gate_ci_str(short)
+    assert "CI[" in out and "+0.001" in out, "interval must be printed"
+    assert f"25/{GATE_MIN_CLUSTERS} city-days" in out, "must name the cluster shortfall"
+
+    # Enough clusters but the interval straddles zero.
+    spans = {"n": 95, "se": 0.03, "n_clusters": 57, "ci_lo": -0.002, "ci_hi": 0.112}
+    assert "CI spans 0" in gate_ci_str(spans)
+
+    # Genuinely clearing: interval above zero with enough clusters — no caveat appended.
+    clean = {"n": 120, "se": 0.01, "n_clusters": 40, "ci_lo": 0.021, "ci_hi": 0.060}
+    got = gate_ci_str(clean)
+    assert "city-days" not in got and "spans" not in got, f"unexpected caveat: {got}"
+
+    # Degenerate inputs must not raise or fabricate an interval.
+    assert gate_ci_str({"n": 0, "se": float("inf"), "n_clusters": 0,
+                        "ci_lo": 0.0, "ci_hi": 0.0}) == ""

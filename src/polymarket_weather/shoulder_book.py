@@ -334,6 +334,25 @@ def moderate_gate_stats(graded: pd.DataFrame, prereg_date: str = MOD_PREREG_DATE
     return {"context": _agg(inband), "forward": forward}
 
 
+def gate_ci_str(d: dict) -> str:
+    """Interval + the reason a gate is not passing, in the shape `_gate_line` prints.
+
+    The 2026-07-27 amendment makes the CLUSTERED CI the binding gate condition, but the Leg1b
+    lines printed only n-vs-threshold — so a forward gate short on city-days, or with an interval
+    barely off zero, read as "on track, just needs more n". That is exactly the point-estimate-as-
+    evidence failure the amendment exists to stop, printed two lines above the amendment's own
+    footnote. `d` is a `moderate_gate_stats` sub-dict (n, se, n_clusters, ci_lo, ci_hi).
+    """
+    if not d.get("n") or d.get("se", float("inf")) == float("inf"):
+        return ""
+    s = f" CI[{d['ci_lo']:+.3f},{d['ci_hi']:+.3f}]"
+    if d["n_clusters"] < GATE_MIN_CLUSTERS:
+        s += f" ({d['n_clusters']}/{GATE_MIN_CLUSTERS} city-days)"
+    elif d["ci_lo"] <= 0:
+        s += " (CI spans 0)"
+    return s
+
+
 def _gate_line(name, sub, taker_gate, maker_gate) -> None:
     """One reported band. Gates carry the 2026-07-27 amendment: the ✅ mark is awarded only
     when the clustered CI also excludes zero, and the interval is always printed so a point
@@ -415,13 +434,17 @@ def report() -> None:
     if mod:
         c, f = mod["context"], mod["forward"]
         need_n, need_e = GATE_MOD
+
+        _ci = gate_ci_str
         gate = ("✅MOD-GATE" if f["gate_pass"]
                 else f"{f['n']}/{need_n}@{f['taker']:+.3f}v{need_e:+.3f}")
         print(f"  Leg1b moderate shoulder [10,25)¢ — pre-reg {MOD_PREREG_DATE}")
-        print(f"    context (incl. in-sample): n={c['n']} wr {c['wr']:.0%} "
-              f"taker {c['taker']:+.3f} | maker {c['maker_n']}/{c['n']} {c['maker']:+.3f}")
-        print(f"    FORWARD gate (entered≥pre-reg): n={f['n']} taker {f['taker']:+.3f} "
-              f"[{gate}] | maker {f['maker_n']}/{f['n']} {f['maker']:+.3f}")
+        print(f"    context (incl. in-sample): n={c['n']} ({c['n_clusters']} city-days) "
+              f"wr {c['wr']:.0%} taker {c['taker']:+.3f}{_ci(c)} "
+              f"| maker {c['maker_n']}/{c['n']} {c['maker']:+.3f}")
+        print(f"    FORWARD gate (entered≥pre-reg): n={f['n']} ({f['n_clusters']} city-days) "
+              f"taker {f['taker']:+.3f}{_ci(f)} [{gate}] "
+              f"| maker {f['maker_n']}/{f['n']} {f['maker']:+.3f}")
     _gate_line("Leg2 favorite core [65,75)¢", fav[fav["band"] == "fav_core"], GATE_FAV_CORE, None)
     _gate_line("Leg2 favorite outer [75,85)¢", fav[fav["band"] == "fav_outer"], None, None)
     print("  (pre-registered gates; taker crosses spread + 0.05·p·(1−p) fee; maker = filled-only, "
