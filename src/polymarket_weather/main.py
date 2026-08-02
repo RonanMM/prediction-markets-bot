@@ -27,6 +27,7 @@ from pathlib import Path
 
 from config import CITIES, LOGS_DIR, PLOTS_DIR
 from fetch_polymarket import fetch_weather_markets, fetch_price_history_for_market
+from fetch_orderbook import fetch_book_summaries
 from fetch_weather import fetch_forecast, fetch_forecast_multimodel
 from fetch_ensemble import fetch_ensemble
 from processing import (
@@ -85,6 +86,37 @@ logger = logging.getLogger(__name__)
 
 # ── Pipeline steps ────────────────────────────────────────────────────────────
 
+def _annotate_order_books(snapshots: list[dict]) -> None:
+    """Attach top-of-book + depth to each snapshot, in place. Never raises.
+
+    Order books are the most perishable data this project touches — a book at 14:00 is gone
+    forever — and their absence is why `config.HALF_SPREAD` has been a hard-coded guess since it
+    was written. Two batched CLOB requests cover a whole cycle (~0.2 s for 66 markets), so this
+    is close to free.
+
+    Best-effort ON PURPOSE: a CLOB outage must never cost us the market snapshots themselves,
+    which are the irreplaceable part. Markets whose books do not return are simply left
+    un-annotated and read as NaN — the honest value, because we do not know that book's state.
+    """
+    try:
+        tokens = {}
+        for s in snapshots:
+            cid = s.get("condition_id")
+            ids = s.get("clob_token_ids") or []
+            if cid and ids:
+                tokens[cid] = (ids[0] if len(ids) > 0 else None,
+                               ids[1] if len(ids) > 1 else None)
+        if not tokens:
+            logger.warning("Order books: no clob_token_ids on any snapshot — skipping.")
+            return
+        books = fetch_book_summaries(tokens)
+        for s in snapshots:
+            s.update(books.get(s.get("condition_id"), {}))
+        logger.info("Order books: annotated %d/%d snapshots.", len(books), len(snapshots))
+    except Exception as exc:                       # noqa: BLE001 — must not break collection
+        logger.warning("Order-book annotation failed (%s) — snapshots saved without it.", exc)
+
+
 def step_fetch_polymarket(cities: list[str]) -> None:
     logger.info("═══ Step 1: Fetching Polymarket temperature markets ═══")
     all_snapshots   = []
@@ -105,6 +137,7 @@ def step_fetch_polymarket(cities: list[str]) -> None:
             all_ph_records.extend(ph)
 
     if all_snapshots:
+        _annotate_order_books(all_snapshots)
         save_market_snapshots(all_snapshots)
         logger.info("Saved %d market snapshots.", len(all_snapshots))
     if all_ph_records:

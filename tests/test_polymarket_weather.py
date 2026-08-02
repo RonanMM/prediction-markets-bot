@@ -3554,3 +3554,103 @@ def test_gate_ci_str_shows_the_binding_condition():
     # Degenerate inputs must not raise or fabricate an interval.
     assert gate_ci_str({"n": 0, "se": float("inf"), "n_clusters": 0,
                         "ci_lo": 0.0, "ci_hi": 0.0}) == ""
+
+
+# ── order-book capture (fetch_orderbook.py) ──────────────────────────────────────────────────
+
+def test_summarize_book_normal_two_sided():
+    """Best bid is the HIGHEST bid, best ask the LOWEST — CLOB returns asks worst-first."""
+    from fetch_orderbook import summarize_book
+    s = summarize_book({
+        "bids": [{"price": "0.10", "size": "100"}, {"price": "0.12", "size": "50"}],
+        "asks": [{"price": "0.20", "size": "80"}, {"price": "0.15", "size": "40"}],
+    })
+    assert s["best_bid"] == 0.12
+    assert s["best_ask"] == 0.15
+    assert s["ask_depth_usdc"] == pytest.approx(0.15 * 40 + 0.20 * 80)
+
+
+def test_summarize_book_empty_bid_side_is_none_not_zero():
+    """A bid-less book must report None, never 0.0 or 1.0.
+
+    This is the real shape of these markets — the first live book sampled had zero bids and asks
+    starting at 99.9c. `data_loader.check_orderbook_vwap` returns the sentinel 1.0 when it cannot
+    fill, which makes "no liquidity" indistinguishable from "priced at 1.0". A price of 0.0 or 1.0
+    is a tradeable claim; absence is not.
+    """
+    from fetch_orderbook import summarize_book
+    s = summarize_book({"bids": [], "asks": [{"price": "0.999", "size": "1141"}]})
+    assert s["best_bid"] is None
+    assert s["best_ask"] == 0.999
+    # Nothing on the bid side to buy against, but the ask side is genuinely deep.
+    assert s["ask_depth_usdc"] > 0
+
+    empty = summarize_book({"bids": [], "asks": []})
+    assert empty["best_bid"] is None and empty["best_ask"] is None
+    assert empty["vwap_buy_100"] is None
+    assert summarize_book({})["best_ask"] is None       # malformed input must not raise
+
+
+def test_vwap_returns_none_when_the_clip_cannot_fill():
+    """A partial fill is not a price. Returning the partial VWAP would understate slippage
+    exactly where the book is thinnest — the case that decides whether a strategy is executable."""
+    from fetch_orderbook import _vwap
+    thin = [(0.10, 100.0)]                       # $10 of depth against a $100 clip
+    assert _vwap(thin, 100.0) is None
+    # Enough depth: one level, so the VWAP is that level's price.
+    assert _vwap([(0.10, 5000.0)], 100.0) == pytest.approx(0.10)
+    # Walks two levels: $50 at 0.10 then $50 at 0.20 -> 500 + 250 shares for $100.
+    # abs=1e-6 because the return is rounded to 6dp on purpose (keeps the stored CSV compact).
+    assert _vwap([(0.10, 500.0), (0.20, 1000.0)], 100.0) == pytest.approx(100.0 / 750.0, abs=1e-6)
+    assert _vwap([], 100.0) is None
+
+
+def test_tokens_of_handles_the_real_junk_in_stored_snapshots():
+    """13% of historical snapshot rows carry '[]' or non-JSON in clob_token_ids_json."""
+    from fetch_orderbook import tokens_of, yes_token_of
+    assert tokens_of('["111","222"]') == ("111", "222")
+    assert tokens_of("[]") == (None, None)
+    assert tokens_of("not json") == (None, None)
+    assert tokens_of(None) == (None, None)
+    assert tokens_of('["111"]') == ("111", None)      # NO side absent, YES still usable
+    assert yes_token_of('["111","222"]') == "111"
+
+
+def test_fetch_book_summaries_prefixes_sides_and_tolerates_a_missing_one():
+    """YES and NO are separate books. Leg 1 SELLS YES, which executes as BUYING NO — so a
+    one-sided capture would misreport executability (measured: 71% vs 27% on the same markets)."""
+    from fetch_orderbook import fetch_book_summaries
+
+    class FakeSession:
+        def post(self, url, json=None, timeout=None):
+            ids = [d["token_id"] for d in json]
+            books = []
+            if "yes1" in ids:
+                books.append({"asset_id": "yes1", "timestamp": "1785",
+                              "bids": [{"price": "0.05", "size": "10"}],
+                              "asks": [{"price": "0.07", "size": "9000"}]})
+            if "no1" in ids:
+                books.append({"asset_id": "no1", "timestamp": "1785",
+                              "bids": [], "asks": [{"price": "0.94", "size": "9000"}]})
+            # "yes2" is deliberately never returned — a book the CLOB did not serve.
+            return _FakeResp(books)
+
+    class _FakeResp:
+        def __init__(self, payload):
+            self._p = payload
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self._p
+
+    out = fetch_book_summaries({"cidA": ("yes1", "no1"), "cidB": ("yes2", None)},
+                               session=FakeSession())
+    assert set(out) == {"cidA"}, "a market whose books did not return must be omitted, not faked"
+    a = out["cidA"]
+    assert a["yes_best_ask"] == 0.07 and a["no_best_ask"] == 0.94
+    assert a["no_best_bid"] is None                      # NO book has no bids
+    # Round-trip cost — the number config.HALF_SPREAD has been guessing at.
+    assert a["yes_best_ask"] + a["no_best_ask"] == pytest.approx(1.01)
+    assert a["no_vwap_buy_100"] == pytest.approx(0.94)    # deep enough to fill the clip
