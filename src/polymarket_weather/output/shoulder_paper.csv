@@ -370,3 +370,4 @@ entered_at_utc,city,condition_id,question,target_date,leg,side,entry_side_price,
 2026-08-01T21:12:44.377276+00:00,HongKong,0x1ca3d62c600a12596dd1367d29d491e90d72ae8f5a00f6e8c1a2b6c7931a0093,Will the lowest temperature in Hong Kong be 23°C on August 3?,2026-08-03,shoulder,No,0.905,0.095,outer,1130.04
 2026-08-01T21:12:44.377276+00:00,HongKong,0xaff70178caa79e29831dc419f981b2a26256c88e28c570af3d86f410cfc04be2,Will the lowest temperature in Hong Kong be 24°C on August 3?,2026-08-03,shoulder,No,0.725,0.275,core,1014.42
 2026-08-01T22:14:42.088480+00:00,NYC,0xca77f660aac393eb986fe233cc88f55a3ce9bed6dc3f80f56a067fded132114a,Will the lowest temperature in New York City be between 72-73°F on August 2?,2026-08-02,shoulder,No,0.875,0.125,outer,1018.79
+2026-08-02T00:20:30.081712+00:00,Seoul,0xd9ffdb78e3ee0c13bda0d67c0265440f81d5950e8fbd47b4392a7c3c6c617434,Will the highest temperature in Seoul (Incheon) be 31°C on August 3?,2026-08-03,shoulder,No,0.95,0.05,outer,3789.12
