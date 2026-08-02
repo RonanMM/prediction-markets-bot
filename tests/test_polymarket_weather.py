@@ -1058,12 +1058,17 @@ def test_moderate_gate_stats():
     need_n, need_e = GATE_MOD
 
     def rows(n, yes, won, entered):
-        # a shoulder SELL: side='No', entry_side_price = 1 - yes
+        # a shoulder SELL: side='No', entry_side_price = 1 - yes.
+        # city/target_date span 40 dates so the fixture can satisfy the 2026-08-02 temporal
+        # amendment (>= GATE_MIN_DATES distinct target dates); without them these rows carry no
+        # date component and could never pass, which is not what this test is about.
         return pd.DataFrame({
             "entry_yes_price": [yes] * n,
             "entered_at_utc": [entered] * n,
             "side_won": [won] * n,
             "entry_side_price": [round(1.0 - yes, 4)] * n,
+            "city": [f"c{i % 10}" for i in range(n)],
+            "target_date": [f"2026-06-{1 + i % 40 % 30:02d}" for i in range(n)],
         })
 
     PRE = "2026-01-01T00:00:00+00:00"    # before pre-reg
@@ -1251,8 +1256,10 @@ def test_gate_verdict_fails_when_clustered_ci_includes_zero():
 def test_gate_verdict_passes_only_when_edge_is_both_large_and_significant():
     import pandas as pd
     import shoulder_book as sb
-    # 120 bets across 40 city-days, consistently ~+0.05 -> tight CI well above zero
-    clusters = pd.Series([f"c{i % 40}" for i in range(120)])
+    # 120 bets across 40 city-days spanning 40 dates, consistently ~+0.05 -> tight CI above 0.
+    # Keys must carry a date component: since the 2026-08-02 amendment a gate also needs
+    # >= GATE_MIN_DATES distinct target dates, and a dateless key cannot demonstrate spread.
+    clusters = pd.Series([f"c{i % 40}|2026-06-{1 + (i % 40) % 30:02d}" for i in range(120)])
     values = pd.Series([0.05, 0.06, 0.04] * 40)
     v = sb.gate_verdict(values, clusters, need_n=100, need_e=0.03)
     assert v["ci_lo"] > 0
@@ -1318,7 +1325,8 @@ def test_moderate_gate_stats_reports_clustered_significance():
         "side_won": [True] * n,
         "entry_side_price": [0.85] * n,
         "city": [f"city{i % 40}" for i in range(n)],
-        "target_date": ["2026-12-30"] * n,
+        # 40 distinct dates: the 2026-08-02 amendment also requires temporal spread.
+        "target_date": [f"2026-10-{1 + i % 40 % 30:02d}" for i in range(n)],
     })
     f = sb.moderate_gate_stats(graded)["forward"]
     assert f["n_clusters"] == 40
@@ -3537,22 +3545,25 @@ def test_gate_ci_str_shows_the_binding_condition():
     from shoulder_book import gate_ci_str, GATE_MIN_CLUSTERS
 
     # Short on clusters — that is the binding reason, and it must be named.
-    short = {"n": 43, "se": 0.04, "n_clusters": 25, "ci_lo": 0.001, "ci_hi": 0.158}
+    short = {"n": 43, "se": 0.04, "n_clusters": 25, "n_dates": 40,
+             "ci_lo": 0.001, "ci_hi": 0.158}
     out = gate_ci_str(short)
     assert "CI[" in out and "+0.001" in out, "interval must be printed"
     assert f"25/{GATE_MIN_CLUSTERS} city-days" in out, "must name the cluster shortfall"
 
     # Enough clusters but the interval straddles zero.
-    spans = {"n": 95, "se": 0.03, "n_clusters": 57, "ci_lo": -0.002, "ci_hi": 0.112}
+    spans = {"n": 95, "se": 0.03, "n_clusters": 57, "n_dates": 40,
+             "ci_lo": -0.002, "ci_hi": 0.112}
     assert "CI spans 0" in gate_ci_str(spans)
 
     # Genuinely clearing: interval above zero with enough clusters — no caveat appended.
-    clean = {"n": 120, "se": 0.01, "n_clusters": 40, "ci_lo": 0.021, "ci_hi": 0.060}
+    clean = {"n": 120, "se": 0.01, "n_clusters": 40, "n_dates": 40,
+             "ci_lo": 0.021, "ci_hi": 0.060}
     got = gate_ci_str(clean)
     assert "city-days" not in got and "spans" not in got, f"unexpected caveat: {got}"
 
     # Degenerate inputs must not raise or fabricate an interval.
-    assert gate_ci_str({"n": 0, "se": float("inf"), "n_clusters": 0,
+    assert gate_ci_str({"n": 0, "se": float("inf"), "n_clusters": 0, "n_dates": 0,
                         "ci_lo": 0.0, "ci_hi": 0.0}) == ""
 
 
@@ -3654,3 +3665,52 @@ def test_fetch_book_summaries_prefixes_sides_and_tolerates_a_missing_one():
     # Round-trip cost — the number config.HALF_SPREAD has been guessing at.
     assert a["yes_best_ask"] + a["no_best_ask"] == pytest.approx(1.01)
     assert a["no_vwap_buy_100"] == pytest.approx(0.94)    # deep enough to fill the clip
+
+
+def test_gate_requires_temporal_spread_not_just_breadth():
+    """A gate must not pass on many cities over few dates (amendment 2026-08-02).
+
+    The exact regression: on 2026-08-02 the breadth book's Leg1b forward gate read n=1038,
+    362 city-days, +0.0310, CI[+0.0149,+0.0470] — clearing every condition then in force. Those
+    362 city-days were 50 cities over EIGHT target dates. Breadth inflates the cluster count
+    without buying any calendar, and the effect being gated ("extreme bins hit less often than
+    priced") is precisely what a single calm week produces.
+    """
+    import pandas as pd
+    import shoulder_book as sb
+
+    # 50 cities x 8 dates = 400 city-day clusters, a large precise positive mean.
+    wide = pd.Series([f"city{i}|2026-07-{25 + (i % 8):02d}" for i in range(400)])
+    v = sb.gate_verdict(pd.Series([0.05] * 400), wide, need_n=80, need_e=0.03)
+    assert v["n_clusters"] >= sb.GATE_MIN_CLUSTERS, "cluster count is satisfied..."
+    assert v["ci_lo"] > 0 and v["mean"] >= 0.03, "...and so are n, mean and the interval"
+    assert v["n_dates"] == 8
+    assert v["pass"] is False, "8 dates must not pass regardless of how many cities"
+
+    # Same size and mean, spread over 40 dates instead -> now legitimately passes.
+    deep = pd.Series([f"city{i % 10}|2026-{6 + (i % 40) // 31:02d}-{1 + (i % 40) % 31:02d}"
+                      for i in range(400)])
+    v2 = sb.gate_verdict(pd.Series([0.05] * 400), deep, need_n=80, need_e=0.03)
+    assert v2["n_dates"] >= sb.GATE_MIN_DATES
+    assert v2["pass"] is True
+
+    # A cluster key carrying no date component cannot demonstrate spread, so it cannot pass.
+    nodate = pd.Series([f"c{i % 40}" for i in range(400)])
+    assert sb.gate_verdict(pd.Series([0.05] * 400), nodate, need_n=80, need_e=0.03)["pass"] is False
+
+
+def test_temporal_amendment_is_tightening_only():
+    """Like the 2026-07-27 amendment, 2026-08-02 may only ever make a gate HARDER.
+
+    Anything that passes under the new rule must also have passed every prior condition.
+    """
+    import pandas as pd
+    import shoulder_book as sb
+    for n_dates in (2, 8, 29, 30, 60):
+        clusters = pd.Series([f"city{i % 12}|2026-06-{1 + (i % n_dates):02d}" for i in range(300)])
+        v = sb.gate_verdict(pd.Series([0.05] * 300), clusters, need_n=80, need_e=0.03)
+        if v["pass"]:
+            # every pre-existing condition must independently hold
+            assert v["n"] >= 80 and v["mean"] >= 0.03
+            assert v["n_clusters"] >= sb.GATE_MIN_CLUSTERS and v["ci_lo"] > 0
+            assert v["n_dates"] >= sb.GATE_MIN_DATES

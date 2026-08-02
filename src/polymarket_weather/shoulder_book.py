@@ -36,6 +36,12 @@ PRE-REGISTERED FORWARD GATES (real orders only after a gate passes):
     the CLUSTERED 95% CI to exclude zero over ≥30 independent city-days. The full-band gate
     was "met" on 2026-07-27 at n=150/+0.0234 with CI [-0.023,+0.070] — met and no-edge were
     indistinguishable. See GATE_MIN_CLUSTERS for the evidence and the tightening-only rule.
+  AMENDMENT 2026-08-02 (tightening only, applies to ALL gates above): a gate also requires the
+    sample to span ≥30 distinct TARGET DATES. On 2026-08-02 the breadth book's Leg1b forward
+    gate read n=1038, 362 city-days, +0.0310, CI [+0.0149,+0.0470] — a pass on every existing
+    condition. Those 362 city-days were 50 cities over EIGHT dates: breadth bought cities, not
+    calendar, and the effect being gated ("extreme bins hit less often than priced") is exactly
+    what one calm week looks like. See GATE_MIN_DATES.
 
 Usage (from src/polymarket_weather/; scan runs automatically each collector cycle via main.py):
     python shoulder_book.py            # record new entries, then print the report
@@ -120,6 +126,27 @@ GATE_MOD        = (80, 0.03)       # (min graded FORWARD entries, min mean net t
 # a threshold is never loosened to fit a result.
 from stats_util import MIN_CLUSTERS as GATE_MIN_CLUSTERS, Z as _GATE_Z  # noqa: E402
 
+# ── TEMPORAL-INDEPENDENCE AMENDMENT — pre-registered 2026-08-02. TIGHTENING ONLY. ──────────
+# The 2026-07-27 amendment requires >=30 independent CITY-DAYS, on the reasoning that one
+# city-day is one weather outcome. That is right about the unit and silent about the calendar,
+# and the breadth book exposed the hole: on 2026-08-02 the Leg1b forward gate read
+#   n=1038, 362 city-days, +0.0310, CI[+0.0149,+0.0470]  -> PASS
+# but those 362 city-days are 50 cities x EIGHT DATES (2026-07-25..08-01). Breadth bought
+# cities, not calendar. Clustering by date instead gives k=8 and almost the same interval, so
+# the estimate is consistent WITHIN the window and says nothing about across it — and a
+# cluster-robust SE on 8 clusters is badly downward-biased anyway.
+#
+# That matters here specifically because the effect being gated is "extreme bins hit less often
+# than priced", which is exactly what one calm week looks like. The dispersion monitor already
+# documents the seasonality: Tmax std(z) 1.78 in March, 1.76 in May, 0.98 in July. A gate that
+# can pass on 8 summer days would have passed on the strength of the weather, not the edge.
+#
+# So every gate additionally requires the forward sample to span >=30 distinct TARGET DATES.
+# Dates come from the cluster key ("City|YYYY-MM-DD"); a frame with no date component cannot
+# demonstrate temporal spread and therefore cannot pass. Tightening-only: this can only make a
+# gate harder, and no existing threshold was moved.
+GATE_MIN_DATES = 30
+
 _SNAP_WINDOW_MIN = 60             # a "run" = rows within this window of the newest row
 
 _COLS = ["entered_at_utc", "city", "condition_id", "question", "target_date",
@@ -158,17 +185,44 @@ def _net_edge(side_won: pd.Series, side_price: pd.Series) -> pd.Series:
     return side_won.astype(float) - (exec_price + fee)
 
 
+def _n_dates(clusters) -> int:
+    """Distinct target DATES in a cluster key series ("City|YYYY-MM-DD").
+
+    Returns 0 when the key carries no date component — a frame that cannot demonstrate temporal
+    spread must not be able to satisfy the temporal requirement. See GATE_MIN_DATES.
+    """
+    s = pd.Series(list(clusters)).dropna()
+    if s.empty:
+        return 0
+    s = s.astype(str)
+    # A row whose city or target_date was blank yields a key with no usable date. Such rows
+    # cannot evidence temporal spread, so they are dropped rather than counted as a date.
+    parts = s.str.split("|", n=1)
+    dates = parts.map(lambda p: p[1] if isinstance(p, list) and len(p) == 2 else None).dropna()
+    dates = dates[dates.astype(str).str.strip().ne("")]
+    return int(dates.nunique())
+
+
 def gate_verdict(values, clusters, need_n: int, need_e: float) -> dict:
-    """Pre-registered gate decision under the 2026-07-27 power amendment: a gate passes only
-    when the edge is both economically large (mean >= need_e, original) and statistically
-    real (clustered 95% CI excludes zero over >= GATE_MIN_CLUSTERS independent city-days)."""
+    """Pre-registered gate decision. A gate passes only when the edge is
+
+      * economically large        mean >= need_e                       (original, 2026-07-12)
+      * statistically real        clustered 95% CI excludes zero over
+                                  >= GATE_MIN_CLUSTERS city-days       (amendment 2026-07-27)
+      * temporally broad          spans >= GATE_MIN_DATES target dates (amendment 2026-08-02)
+
+    The last one exists because 362 city-days turned out to be 50 cities over 8 dates — breadth
+    can inflate the cluster count without buying any calendar. See GATE_MIN_DATES.
+    """
     mean, se, g = clustered_mean_se(values, clusters)
     n = len(pd.Series(list(values)))
+    d = _n_dates(clusters)
     lo, hi = (mean - _GATE_Z * se, mean + _GATE_Z * se) if se != float("inf") else (
         float("-inf"), float("inf"))
-    return {"n": n, "n_clusters": g, "mean": mean, "se": se, "ci_lo": lo, "ci_hi": hi,
+    return {"n": n, "n_clusters": g, "n_dates": d, "mean": mean, "se": se,
+            "ci_lo": lo, "ci_hi": hi,
             "pass": bool(n >= need_n and mean >= need_e
-                         and g >= GATE_MIN_CLUSTERS and lo > 0)}
+                         and g >= GATE_MIN_CLUSTERS and d >= GATE_MIN_DATES and lo > 0)}
 
 
 def _maker_net(side_won, side_price):
@@ -292,7 +346,8 @@ def _price_paths(cids: set) -> dict:
             for cid, g in allp.groupby("condition_id")}
 
 
-def moderate_gate_stats(graded: pd.DataFrame, prereg_date: str = MOD_PREREG_DATE) -> dict:
+def moderate_gate_stats(graded: pd.DataFrame, prereg_date: str = MOD_PREREG_DATE,
+                        lo: float = None, hi: float = None, gate: tuple = None) -> dict:
     """Leg 1b — the moderate-shoulder [MOD_LO, MOD_HI) refinement of Leg 1, computed at REPORT
     TIME from existing shoulder entries (no new recording). Returns 'context' (all graded
     in-band, incl. the in-sample discovery sample) and 'forward' (entries entered on/after
@@ -304,18 +359,22 @@ def moderate_gate_stats(graded: pd.DataFrame, prereg_date: str = MOD_PREREG_DATE
     need = {"entry_yes_price", "entered_at_utc", "side_won", "entry_side_price"}
     if graded.empty or not need.issubset(graded.columns):
         return {}
+    lo = MOD_LO if lo is None else lo
+    hi = MOD_HI if hi is None else hi
+    gate = GATE_MOD if gate is None else gate
     yes = graded["entry_yes_price"].astype(float)
-    inband = graded[(yes >= MOD_LO) & (yes < MOD_HI)].copy()
+    inband = graded[(yes >= lo) & (yes < hi)].copy()
     inband["_taker"] = _net_edge(inband["side_won"], inband["entry_side_price"].astype(float))
     entered = pd.to_datetime(inband["entered_at_utc"], utc=True, errors="coerce")
     prereg = pd.Timestamp(prereg_date, tz="UTC")
 
     def _agg(sub: pd.DataFrame) -> dict:
-        v = gate_verdict(sub["_taker"], cluster_key(sub), *GATE_MOD) if len(sub) else {}
+        v = gate_verdict(sub["_taker"], cluster_key(sub), *gate) if len(sub) else {}
         d = {"n": int(len(sub)),
              "wr": float(sub["side_won"].mean()) if len(sub) else 0.0,
              "taker": float(sub["_taker"].mean()) if len(sub) else 0.0,
-             "n_clusters": v.get("n_clusters", 0), "se": v.get("se", float("inf")),
+             "n_clusters": v.get("n_clusters", 0), "n_dates": v.get("n_dates", 0),
+             "se": v.get("se", float("inf")),
              "ci_lo": v.get("ci_lo", float("-inf")), "ci_hi": v.get("ci_hi", float("inf")),
              "maker_n": 0, "maker": 0.0}
         if "maker_filled" in sub.columns and len(sub):
@@ -329,7 +388,7 @@ def moderate_gate_stats(graded: pd.DataFrame, prereg_date: str = MOD_PREREG_DATE
     fwd = inband[entered >= prereg]
     forward = _agg(fwd)
     # 2026-07-27 amendment: economic size AND clustered significance (see GATE_MIN_CLUSTERS).
-    forward["gate_pass"] = (gate_verdict(fwd["_taker"], cluster_key(fwd), *GATE_MOD)["pass"]
+    forward["gate_pass"] = (gate_verdict(fwd["_taker"], cluster_key(fwd), *gate)["pass"]
                             if len(fwd) else False)
     return {"context": _agg(inband), "forward": forward}
 
@@ -348,6 +407,8 @@ def gate_ci_str(d: dict) -> str:
     s = f" CI[{d['ci_lo']:+.3f},{d['ci_hi']:+.3f}]"
     if d["n_clusters"] < GATE_MIN_CLUSTERS:
         s += f" ({d['n_clusters']}/{GATE_MIN_CLUSTERS} city-days)"
+    elif d.get("n_dates", 0) < GATE_MIN_DATES:
+        s += f" ({d.get('n_dates', 0)}/{GATE_MIN_DATES} dates)"
     elif d["ci_lo"] <= 0:
         s += " (CI spans 0)"
     return s
@@ -372,6 +433,8 @@ def _gate_line(name, sub, taker_gate, maker_gate) -> None:
         why = ""
         if v["n_clusters"] < GATE_MIN_CLUSTERS:
             why = f", {v['n_clusters']}/{GATE_MIN_CLUSTERS} city-days"
+        elif v.get("n_dates", 0) < GATE_MIN_DATES:
+            why = f", {v.get('n_dates', 0)}/{GATE_MIN_DATES} dates"
         elif v["ci_lo"] <= 0:
             why = ", CI spans 0"
         return f" ({v['n']}/{need_n}@{v['mean']:+.3f}v{need_e:+.3f}{why})"

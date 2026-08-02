@@ -25,12 +25,47 @@ import pandas as pd
 from http_util import get_json
 from pmf import parse_question_date
 from shoulder_book import (BAND_LO, BAND_HI, CORE_LO, FAV_LO, FAV_HI, FAV_CORE_HI,
-                           FAV_MIN_HOURS_TO_END, GATE_MIN_CLUSTERS, _net_edge,
+                           FAV_MIN_HOURS_TO_END, GATE_MIN_CLUSTERS, GATE_MIN_DATES, _net_edge,
                            cluster_key, clustered_mean_se, moderate_gate_stats)
 
 GAMMA = "https://gamma-api.polymarket.com"
 BREADTH_PREREG_DATE = "2026-07-23"          # forward clock (go-live)
 GATE_MOD_BREADTH    = (80, 0.03)            # (min forward graded, min mean net taker $/share)
+
+# ── DEEP BAND [5,10)¢ — pre-registered 2026-08-02 to settle a DIRECT CONTRADICTION ──────────
+# This gate exists because the project has two incompatible pre-registered/measured claims about
+# the same band, and the only honest way to choose between them is forward data.
+#
+#   §10f (shoulder_book.py, pre-registered 2026-07-23) states the deep band is "fat-tail
+#   UNDER-priced" and EXCLUDES it from Leg 1b — i.e. it predicts that SELLING deep shoulders
+#   LOSES money.
+#
+#   2026-07-31, breadth book, measured the opposite: +0.0297/share, clustered CI
+#   [+0.0167,+0.0427] over 249 city-days, robust to clustering by city / by date / by city-day,
+#   positive on 6/6 target dates, spread across 49 cities (top city 5.6%).
+#
+# The measurement does NOT get the benefit of the doubt, for three reasons, all of which are
+# why this is a forward gate and not a trading decision:
+#   1. It spans SIX calendar days (2026-07-25..30) — 294 "city-days" are 49 cities x 6 dates,
+#      and the effect is exactly "extreme bins hit less often than priced", which is what a
+#      single calm week looks like. The dispersion monitor shows Tmax std(z) 1.78 in March
+#      against 0.98 in July, so seasonality of precisely this shape is documented.
+#   2. It did NOT replicate: the 5-city book puts the same band at +0.0009 CI
+#      [-0.0617,+0.0635], and two independent re-measurements landed at -0.0076 and +0.0023.
+#   3. It concentrates in the 44 thin cities that discovery only started seeing on 2026-07-30,
+#      whose midpoints are frequently not tradeable (one London book quoted six bins summing to
+#      2.93). Order-book capture (fetch_orderbook.py, live 2026-08-02) now records whether the
+#      quoted price is real; until that forward sample exists, a mid-based edge here is suspect.
+#
+# Gate shape mirrors GATE_MOD_BREADTH by analogy — NOT tuned to the observed +0.0297. Forward
+# entries only, so the six discovery days can never be graded into it.
+#
+# ⚠️ MULTIPLE TESTING: this is the breadth book's SECOND gated band. Two gates at 95% carry a
+# ~10% family-wise false-positive rate. Whichever passes first must be read against z=2.24
+# (Bonferroni for 2), not z=1.96, before it justifies real size.
+DEEP_LO, DEEP_HI    = 0.05, 0.10
+DEEP_PREREG_DATE    = "2026-08-02"          # forward clock (UTC) — set the day the gate was written
+GATE_DEEP_BREADTH   = (80, 0.03)            # (min forward graded, min mean net taker $/share)
 PREDAY_HOURS        = 24                     # tz-free "pre-day": > this many hours to market end
 _PIN                = 0.03                   # terminal price within this of 0/1 counts as settled
 
@@ -315,11 +350,33 @@ def report_breadth(out_path=_OUT, fetch=get_json) -> None:
         print(f"  Leg1b moderate [10,25) — pre-registered {BREADTH_PREREG_DATE}")
         print(f"    context (all graded):  n={c['n']}  wr {c['wr']:.1%}  taker {c['taker']:+.4f}  "
               f"maker {c['maker_n']}/{c['n']} {c['maker']:+.4f}")
-        print(f"    FORWARD gate:          n={f['n']}/{need_n} ({f['n_clusters']} city-days)  "
+        print(f"    FORWARD gate:          n={f['n']}/{need_n} ({f['n_clusters']} city-days, "
+              f"{f.get('n_dates', 0)}/{GATE_MIN_DATES} dates)  "
               f"taker {f['taker']:+.4f} CI[{f['ci_lo']:+.4f},{f['ci_hi']:+.4f}] "
               f"v +{need_e:.3f}  [{mark}]  maker {f['maker_n']}/{f['n']} {f['maker']:+.4f}")
-        print(f"    (2026-07-27 amendment: gate also needs clustered 95% CI > 0 over "
-              f"≥{GATE_MIN_CLUSTERS} city-days)")
+        print(f"    (needs clustered 95% CI > 0 over ≥{GATE_MIN_CLUSTERS} city-days [2026-07-27] "
+              f"AND ≥{GATE_MIN_DATES} distinct target dates [2026-08-02] — 362 city-days here "
+              f"are 50 cities x 8 dates, which is breadth, not calendar)")
+
+    # Deep band [5,10)¢ — pre-registered 2026-08-02 to settle the §10f contradiction (see above).
+    dp = moderate_gate_stats(graded, prereg_date=DEEP_PREREG_DATE,
+                             lo=DEEP_LO, hi=DEEP_HI, gate=GATE_DEEP_BREADTH)
+    if dp:
+        c, f = dp["context"], dp["forward"]
+        need_n, need_e = GATE_DEEP_BREADTH
+        mark = "PASS" if f.get("gate_pass") else "pending"
+        ci = (f"CI[{f['ci_lo']:+.4f},{f['ci_hi']:+.4f}]"
+              if f["n"] and f["se"] != float("inf") else "CI —")
+        print(f"  Leg1c deep [5,10) — pre-registered {DEEP_PREREG_DATE} "
+              f"(§10f predicted UNDER-priced i.e. selling LOSES; breadth measured the opposite)")
+        print(f"    context (all graded):  n={c['n']}  wr {c['wr']:.1%}  taker {c['taker']:+.4f}  "
+              f"maker {c['maker_n']}/{c['n']} {c['maker']:+.4f}")
+        print(f"    FORWARD gate:          n={f['n']}/{need_n} ({f['n_clusters']} city-days, "
+              f"{f.get('n_dates', 0)}/{GATE_MIN_DATES} dates)  "
+              f"taker {f['taker']:+.4f} {ci} v +{need_e:.3f}  [{mark}]  "
+              f"maker {f['maker_n']}/{f['n']} {f['maker']:+.4f}")
+        print(f"    (2nd gated band in this book — read a first pass against z=2.24, "
+              f"Bonferroni for 2 tests, before it justifies size)")
 
 
 if __name__ == "__main__":
