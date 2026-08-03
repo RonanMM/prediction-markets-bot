@@ -178,3 +178,17 @@ RESOLUTION_ANCHORS = {
         "kalshi_series": "KXHIGHTSFO",
     },
 }
+
+
+def modelled_anchors() -> dict:
+    """Anchors for MODELLED cities only — the five we forecast, train and grade a model for.
+
+    Use this, never `RESOLUTION_ANCHORS.items()`, in anything that does per-city WORK: fetching
+    forecast archives, training, backtesting. Capture-tier cities have no forecast archives and
+    no models; iterating them there pulls years of Open-Meteo history nobody reads and pushes
+    retrain.yml back over its 60-minute timeout — silently, on a green run.
+
+    `RESOLUTION_ANCHORS` itself stays the full registry: lookups keyed by city (grading units,
+    slugs, resolution URLs) legitimately want every city, including capture tier.
+    """
+    return {c: a for c, a in RESOLUTION_ANCHORS.items() if a.get("tier", "modelled") == "modelled"}

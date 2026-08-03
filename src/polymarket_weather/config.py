@@ -49,6 +49,14 @@ def _city_view(tiers: tuple[str, ...]) -> dict:
 # train (train_calibrator does `for city in CITIES.keys()`). Adding capture-only cities here
 # would pull forecasts for cities we do not model and attempt EMOS training on cities with no
 # archives — silently, on a green run. Use ALL_CITIES for discovery and capture instead.
+#
+# This distinction is about per-city WORK (fetching archives, training, backtesting), not about
+# who is allowed to LOOK a city up. `grading.py` and `historical_backtester.py` legitimately build
+# lookup dicts from the full `resolution_anchors.RESOLUTION_ANCHORS` registry — including the
+# seven capture cities — because grading needs their units/slugs/resolution URLs too. Per-city
+# WORK, by contrast, must iterate `resolution_anchors.modelled_anchors()` (or this `CITIES`),
+# never the raw `RESOLUTION_ANCHORS.items()` — see the four `fetch_historical_leads*.py` archive
+# fetchers, which take no `--cities` flag and are run unconditionally by `retrain.yml`.
 CITIES         = _city_view(("modelled",))
 CAPTURE_CITIES = _city_view(("capture",))
 ALL_CITIES     = _city_view(("modelled", "capture"))

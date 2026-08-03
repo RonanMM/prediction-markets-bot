@@ -24,7 +24,7 @@ import requests
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-from resolution_anchors import RESOLUTION_ANCHORS
+from resolution_anchors import modelled_anchors
 
 PREVIOUS_RUNS_URL = "https://previous-runs-api.open-meteo.com/v1/forecast"
 START_DATE = date(2022, 1, 1)
@@ -143,7 +143,7 @@ def _fetch_series(lat, lon, leads, models: dict | None, out_path):
 
 def fetch_historical_leads_min():
     os.makedirs(OUT_DIR, exist_ok=True)
-    for city, anchor in RESOLUTION_ANCHORS.items():
+    for city, anchor in modelled_anchors().items():
         slug = city.replace(" ", "_").lower()
         lat, lon = anchor["forecast_lat"], anchor["forecast_lon"]
 

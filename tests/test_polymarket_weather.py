@@ -3756,3 +3756,30 @@ def test_venue_symmetry_kalshi_and_polymarket_cover_the_same_cities():
         assert a["station_code"] in a["resolution_url"], (
             f"{city}: resolution_url must name station {a['station_code']}")
         assert config.ALL_CITIES[city]["search_terms"], f"{city} has no search terms"
+
+
+def test_lead_fetchers_iterate_modelled_anchors_only():
+    """The archived-forecast-lead fetchers do per-city WORK: 2022->now x leads 1-7 x several
+    models, per city. They take no --cities flag and retrain.yml runs them unconditionally, so
+    they must never see capture-tier cities — that is years of Open-Meteo history for cities we
+    do not model, and it already put retrain.yml over its 60-minute timeout at five cities.
+
+    Guarding the function is not enough here: the defect is a raw `RESOLUTION_ANCHORS.items()`
+    loop, so this asserts the loop itself is gone from these four files.
+    """
+    import pathlib
+    from resolution_anchors import modelled_anchors, RESOLUTION_ANCHORS
+
+    capture = {c for c, a in RESOLUTION_ANCHORS.items() if a.get("tier") == "capture"}
+    assert capture, "expected capture-tier cities to exist"
+    assert set(modelled_anchors()) & capture == set()
+    assert len(modelled_anchors()) == 5
+
+    src = pathlib.Path(__file__).resolve().parent.parent / "src" / "polymarket_weather"
+    for name in ("fetch_historical_leads.py", "fetch_historical_leads_mm.py",
+                 "fetch_historical_leads_cand.py", "fetch_historical_leads_min.py"):
+        text = (src / name).read_text()
+        assert "RESOLUTION_ANCHORS.items()" not in text, (
+            f"{name} iterates the FULL anchor registry — it will pull forecast archives for "
+            f"capture-tier cities we do not model")
+        assert "modelled_anchors()" in text, f"{name} must iterate modelled_anchors()"
