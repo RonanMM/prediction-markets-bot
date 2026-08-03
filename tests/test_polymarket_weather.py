@@ -10,6 +10,28 @@ from engine import _kelly_size
 import grading
 from grading import native_round, resolves_yes
 
+
+def test_suite_does_not_mutate_tracked_data_or_create_stray_dirs():
+    """A unit test must never write to tracked data or hit the network.
+
+    step_fetch_weather/step_fetch_ensemble call five side-effecting fetchers beyond
+    fetch_forecast; two of them write real files — shoulder_book_breadth anchors to
+    Path(__file__).parent and mutates the TRACKED output/shoulder_paper_breadth.csv, and
+    fetch_station_obs uses the bare relative OUT_DIR "data/weather", which creates a stray
+    data/ at whatever cwd pytest ran from. Both were observed on a clean tree.
+
+    Placed FIRST in the module (pytest runs top-to-bottom within a file) so a dirty tree from an
+    earlier test is attributed to that test rather than silently tolerated.
+    """
+    import subprocess, pathlib
+    root = pathlib.Path(__file__).resolve().parent.parent
+    before = subprocess.run(["git", "status", "--porcelain"], cwd=root,
+                            capture_output=True, text=True).stdout
+    assert before.strip() == "", (
+        "working tree was already dirty before this test — cannot attribute side effects; "
+        f"clean it and re-run:\n{before}")
+
+
 def test_city_names_mapping():
     """Verify that city name mappings are correct and resolve key bugs."""
     assert CITY_NAMES["new_york_city"] == "NYC"
@@ -2947,17 +2969,64 @@ def test_discover_by_tag_skips_ambiguous_capture_tier_questions(caplog):
 def test_forecast_steps_skip_capture_tier_cities(monkeypatch, caplog):
     """Widening the collector's city list must not widen the FORECAST paths. main's
     step_fetch_weather / step_fetch_ensemble guard on `city not in CITIES`, and CITIES is
-    modelled-only — so a capture city is skipped without an API call."""
+    modelled-only — so a capture city is skipped without an API call.
+
+    step_fetch_weather calls FIVE other side-effecting functions beyond fetch_forecast, all of
+    which are real network/disk I/O if left unpatched: fetch_forecast_multimodel (per-city, same
+    guard) and four process-wide top-ups — fetch_station_obs, fetch_nbm, shoulder_book's
+    scan_and_record, and shoulder_book_breadth's scan_and_record_breadth. The last one anchors to
+    Path(__file__).parent and writes the TRACKED output/shoulder_paper_breadth.csv regardless of
+    cwd; fetch_station_obs uses a bare relative "data/weather" that creates a stray data/ dir at
+    whatever cwd pytest ran from. Both were observed mutating a clean tree. All five are
+    monkeypatched here — three (fetch_station_obs/fetch_nbm/scan_and_record/
+    scan_and_record_breadth) at their SOURCE module, because main imports them lazily inside the
+    function body (`from x import y`), so patching `main.y` would not intercept the call.
+    """
     import main
+    import fetch_station_obs
+    import fetch_nbm
+    import shoulder_book
+    import shoulder_book_breadth
+
     called = []
     monkeypatch.setattr(main, "fetch_forecast", lambda c: called.append(c) or None)
+    mm_called = []
+    monkeypatch.setattr(main, "fetch_forecast_multimodel", lambda c: mm_called.append(c) or None)
+    obs_called = []
+    monkeypatch.setattr(fetch_station_obs, "fetch_station_obs",
+                         lambda recent_only=False: obs_called.append(recent_only))
+    nbm_called = []
+    monkeypatch.setattr(fetch_nbm, "fetch_nbm",
+                         lambda recent_only=False: nbm_called.append(recent_only))
+    shoulder_called = []
+    monkeypatch.setattr(shoulder_book, "scan_and_record",
+                         lambda: shoulder_called.append(True) or 0)
+    breadth_called = []
+    monkeypatch.setattr(shoulder_book_breadth, "scan_and_record_breadth",
+                         lambda: breadth_called.append(True) or 0)
+
     main.step_fetch_weather(["Los Angeles", "London"])
+
     assert called == ["London"], f"capture city reached the forecast fetcher: {called}"
+    assert mm_called == ["London"], f"capture city reached the multimodel fetcher: {mm_called}"
+    # These four run once per step call (not per city, no tiering guard applies to them) — assert
+    # each mock was actually exercised so the patching is proven load-bearing, not dead code that
+    # happens to look like isolation while the real functions still ran underneath.
+    assert obs_called == [True], "fetch_station_obs mock was not hit — real network/disk I/O risk"
+    assert nbm_called == [True], "fetch_nbm mock was not hit — real network/disk I/O risk"
+    assert shoulder_called == [True], "scan_and_record mock was not hit — real network/disk I/O risk"
+    assert breadth_called == [True], \
+        "scan_and_record_breadth mock was not hit — would mutate tracked shoulder_paper_breadth.csv"
 
 
 def test_step_fetch_ensemble_skips_capture_tier_cities(monkeypatch):
     """Same tiering mechanism as step_fetch_weather, for the ensemble path — the docstring above
-    claims both are guarded; this is what actually proves the ensemble half of that claim."""
+    claims both are guarded; this is what actually proves the ensemble half of that claim.
+
+    Unlike step_fetch_weather, step_fetch_ensemble calls nothing beyond fetch_ensemble (no lazy
+    imports, no process-wide top-ups) — confirmed by reading main.py — so mocking fetch_ensemble
+    alone already fully isolates this test from the network/disk.
+    """
     import main
     called = []
     monkeypatch.setattr(main, "fetch_ensemble", lambda c: called.append(c) or None)
