@@ -2880,6 +2880,121 @@ def test_match_city_does_not_match_substrings_of_other_words():
     assert fp.match_city("Will the highest temperature in Paris be 30°C?") is None
 
 
+def test_discovery_matches_capture_tier_cities():
+    """The seven capture cities are already DISCOVERED by tag — only persistence was missing.
+    match_city and discover_by_tag iterate the city registry, so they must see ALL_CITIES, not
+    just the modelled five, or the capture cities are found and then dropped on the floor."""
+    from fetch_polymarket import match_city
+
+    assert match_city("Highest temperature in Los Angeles on August 4?") == "Los Angeles"
+    assert match_city("Highest temperature in Houston on August 4?") == "Houston"
+    assert match_city("Highest temperature in San Francisco on August 4?") == "San Francisco"
+    # Word-boundary matching must still hold for the new cities.
+    assert match_city("Austin Powers trivia market") == "Austin"      # bare word does match
+    assert match_city("Highest temperature in Austintown on August 4?") is None
+    # The original five are unaffected.
+    assert match_city("Highest temperature in London on August 4?") == "London"
+
+
+def test_discover_by_tag_files_capture_tier_cities():
+    """discover_by_tag partitions by calling _matching_cities (ambiguity check) and match_city
+    (filing); both must iterate ALL_CITIES too, or a capture-tier question is either filed under
+    no city or, if _matching_cities alone were left on CITIES while match_city was fixed, treated
+    as unambiguous for the wrong reason. Covering the full discover_by_tag path (not just
+    match_city in isolation) is what actually mutation-tests the _matching_cities loop."""
+    import unittest.mock as m
+    import fetch_polymarket as fp
+    fp._reset_tag_cache()
+    events = [
+        {"title": "LA temps", "markets": [
+            {"conditionId": "la1",
+             "question": "Will the highest temperature in Los Angeles be 80°F on August 4?"},
+        ]},
+    ]
+    with m.patch.object(fp, "_paged_events", lambda tag, page_size=100: (events, False)):
+        out = fp.discover_by_tag("weather")
+    assert "Los Angeles" in out, "capture-tier city never reached the discover_by_tag partition"
+    assert len(out["Los Angeles"]) == 1
+
+
+def test_discover_by_tag_skips_ambiguous_capture_tier_questions(caplog):
+    """Same ambiguity guard as the modelled-city test above, but naming two CAPTURE-tier cities.
+    _matching_cities is what detects the ambiguous case; if it were left iterating CITIES
+    (modelled-only) instead of ALL_CITIES, a question naming two capture cities would return zero
+    candidates from _matching_cities (never >1, so never flagged ambiguous) and would then be
+    silently filed under whichever city match_city's ALL_CITIES order happens to prefer -- the
+    single-city discovery test above cannot catch that, because it never presents two capture
+    cities together."""
+    import logging
+    import fetch_polymarket as fp
+    import unittest.mock as m
+    fp._reset_tag_cache()
+    ambiguous_events = [
+        {"title": "ambiguous", "markets": [
+            {"conditionId": "amb2",
+             "question": "Will the highest temperature in Los Angeles or Houston be higher on August 4?"},
+        ]},
+    ]
+    with caplog.at_level(logging.WARNING), m.patch.object(
+            fp, "_paged_events", lambda tag, page_size=100: (ambiguous_events, False)):
+        out = fp.discover_by_tag("weather")
+    all_cids = [m["conditionId"] for ms in out.values() for m in ms]
+    assert "amb2" not in all_cids, "an ambiguous capture-tier market must not be filed under any city"
+    assert out.get("Los Angeles", []) == []
+    assert out.get("Houston", []) == []
+
+
+def test_forecast_steps_skip_capture_tier_cities(monkeypatch, caplog):
+    """Widening the collector's city list must not widen the FORECAST paths. main's
+    step_fetch_weather / step_fetch_ensemble guard on `city not in CITIES`, and CITIES is
+    modelled-only — so a capture city is skipped without an API call."""
+    import main
+    called = []
+    monkeypatch.setattr(main, "fetch_forecast", lambda c: called.append(c) or None)
+    main.step_fetch_weather(["Los Angeles", "London"])
+    assert called == ["London"], f"capture city reached the forecast fetcher: {called}"
+
+
+def test_step_fetch_ensemble_skips_capture_tier_cities(monkeypatch):
+    """Same tiering mechanism as step_fetch_weather, for the ensemble path — the docstring above
+    claims both are guarded; this is what actually proves the ensemble half of that claim."""
+    import main
+    called = []
+    monkeypatch.setattr(main, "fetch_ensemble", lambda c: called.append(c) or None)
+    main.step_fetch_ensemble(["Los Angeles", "London"])
+    assert called == ["London"], f"capture city reached the ensemble fetcher: {called}"
+
+
+def test_default_cities_flag_widens_to_all_cities(monkeypatch):
+    """--cities default must be ALL_CITIES, not the five modelled cities, or the seven
+    capture-tier cities never reach step_fetch_polymarket even though discovery now finds them."""
+    import main
+    import config
+    monkeypatch.setattr("sys.argv", ["main.py"])
+    args = main.parse_args()
+    assert set(args.cities) == set(config.ALL_CITIES.keys())
+
+
+def test_main_validation_accepts_capture_tier_cities(monkeypatch, caplog):
+    """main()'s post-parse validation filter must recognize capture-tier city names as valid —
+    not just the five modelled ones — or a capture city that survived the argparse default (or
+    was passed explicitly via --cities) gets re-dropped one line later. --summary-only keeps this
+    to a local CSV read (compute_city_summary tolerates a missing/empty file), so nothing is
+    fetched over the network."""
+    import logging
+    import main
+    monkeypatch.setattr(
+        "sys.argv",
+        ["main.py", "--cities", "Los Angeles", "Nonexistent City", "--summary-only"])
+    with caplog.at_level(logging.WARNING):
+        main.main()   # must not sys.exit(1) — "Los Angeles" is a valid ALL_CITIES member
+    warnings = [r.message for r in caplog.records if "Unknown cities" in r.message]
+    assert warnings, "expected a warning naming the unknown city"
+    assert "Nonexistent City" in warnings[0]
+    assert "Los Angeles" not in warnings[0], \
+        "capture-tier city was treated as unknown by the validation filter"
+
+
 def test_is_temperature_question_keeps_tmin_markets():
     """~20% of markets settle on the daily MINIMUM. A filter written around 'highest' drops
     them silently — and Tmin is already a market type this repo excluded once before."""

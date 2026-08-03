@@ -25,7 +25,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from config import CITIES, LOGS_DIR, PLOTS_DIR
+from config import CITIES, ALL_CITIES, LOGS_DIR, PLOTS_DIR
 from fetch_polymarket import fetch_weather_markets, fetch_price_history_for_market
 from fetch_orderbook import fetch_book_summaries
 from fetch_weather import fetch_forecast, fetch_forecast_multimodel
@@ -290,7 +290,7 @@ def parse_args() -> argparse.Namespace:
         description="Polymarket Weather Tracker — daily fetch + visualize"
     )
     p.add_argument(
-        "--cities", nargs="+", default=list(CITIES.keys()),
+        "--cities", nargs="+", default=list(ALL_CITIES.keys()),
         help="City names to process (default: all configured cities)"
     )
     p.add_argument("--skip-polymarket", action="store_true",
@@ -317,10 +317,10 @@ def main() -> None:
 
     cities = args.cities
     # Validate
-    unknown = [c for c in cities if c not in CITIES]
+    unknown = [c for c in cities if c not in ALL_CITIES]
     if unknown:
         logger.warning("Unknown cities (will be skipped): %s", unknown)
-        cities = [c for c in cities if c in CITIES]
+        cities = [c for c in cities if c in ALL_CITIES]
 
     if not cities:
         logger.error("No valid cities to process. Exiting.")

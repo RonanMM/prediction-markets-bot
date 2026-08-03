@@ -24,6 +24,7 @@ from config import (
     RETRY_ATTEMPTS,
     RETRY_BACKOFF,
     CITIES,
+    ALL_CITIES,
 )
 
 logger = logging.getLogger(__name__)
@@ -52,7 +53,10 @@ def match_city(question: str) -> str | None:
     the city's series.
     """
     q = question or ""
-    for city, cfg in CITIES.items():
+    # ALL_CITIES, not CITIES: capture-tier cities must be discovered and filed too. CITIES is
+    # deliberately modelled-only (see config.py) and using it here would find the seven overlap
+    # cities and then silently drop them.
+    for city, cfg in ALL_CITIES.items():
         for term in cfg.get("search_terms", [city]):
             if re.search(rf"\b{re.escape(term)}\b", q, re.I):
                 return city
@@ -399,15 +403,15 @@ def _reset_tag_cache() -> None:
 def _matching_cities(question: str) -> list[str]:
     """Every configured city whose search terms appear in *question*, not just the first.
 
-    `match_city` deliberately keeps returning the FIRST match in CITIES order (its contract is
-    unchanged here — reordering CITIES would silently change that answer, and 0/2747 real
+    `match_city` deliberately keeps returning the FIRST match in ALL_CITIES order (its contract
+    is unchanged here — reordering ALL_CITIES would silently change that answer, and 0/2747 real
     questions have hit this so far, so there is no data yet to justify picking a real
     disambiguation rule). This helper exists only so `discover_by_tag` can DETECT the ambiguous
     case and skip it loudly instead of silently filing it under whichever city sorts first.
     """
     q = question or ""
     matches = []
-    for city, cfg in CITIES.items():
+    for city, cfg in ALL_CITIES.items():
         for term in cfg.get("search_terms", [city]):
             if re.search(rf"\b{re.escape(term)}\b", q, re.I):
                 matches.append(city)
