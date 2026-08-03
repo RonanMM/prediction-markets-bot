@@ -282,6 +282,14 @@ Temporarily change `CITIES = _city_view(("modelled",))` to `_city_view(("modelle
 Run: `pytest -o addopts="" tests/ -k capture_tier -v`
 Expected: FAIL. Restore, confirm PASS.
 
+- [ ] **Step 8b: Mutation-test the venue-symmetry guard**
+
+In `resolution_anchors.py`, temporarily set `"kalshi_series": None` on the `Miami` entry — this
+simulates the exact failure the guard exists to catch: a city captured on one venue and not the
+other, producing an unpairable row.
+Run: `pytest -o addopts="" tests/ -k venue_symmetry -v`
+Expected: FAIL with `unpairable cities — polymarket-only {'Miami'}`. Restore, confirm PASS.
+
 - [ ] **Step 9: Commit**
 
 ```bash
@@ -1628,7 +1636,7 @@ capture → Task 2. §4.6 truth → Task 7. §5 storage → Task 8. §6 error ha
 
 **All ten §7 guards have a task step:** 1 truncation (T4 S5), 2 ticker rot (T8 S6), 3 bin
 derivation (T4 S7), 4 tier isolation (T1 S8), 5 sentinel-free absence (T4 S6), 6 malformed JSON
-(T3 S6), 7 venue symmetry (T1 S1 — asserted; no mutation needed, the assertion IS the guard),
+(T3 S6), 7 venue symmetry (T1 S8b),
 8 retry-on-empty (T3 S5), 9 candle window (T6 S5), 10 backfill completeness (T6 S6).
 
 **Placeholder scan:** none — every step carries runnable code or an exact command.
