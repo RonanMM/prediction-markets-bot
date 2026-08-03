@@ -3967,3 +3967,80 @@ def test_lead_fetchers_iterate_modelled_anchors_only():
             f"{name} iterates the FULL anchor registry — it will pull forecast archives for "
             f"capture-tier cities we do not model")
         assert "modelled_anchors()" in text, f"{name} must iterate modelled_anchors()"
+
+
+class _Resp:
+    """Minimal requests.Response stand-in: .text carries the raw body."""
+    def __init__(self, text, status=200):
+        self.text = text
+        self.status_code = status
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise __import__("requests").exceptions.HTTPError(str(self.status_code))
+
+
+def test_kalshi_get_retries_on_EMPTY_not_only_on_error():
+    """An empty response and a genuine absence are indistinguishable at the call site.
+
+    Two throwaway scripts written while drafting this spec silently dropped Houston, then
+    Seattle, to transient empty results — each time producing a confident wrong overlap count
+    of 6 instead of 7. Only retrying separates the two cases.
+    """
+    from kalshi_series import kalshi_get
+
+    class FlakySession:
+        def __init__(self): self.calls = 0
+        def get(self, url, params=None, timeout=None):
+            self.calls += 1
+            body = '{"markets": []}' if self.calls < 3 else '{"markets": [{"ticker": "T1"}]}'
+            return _Resp(body)
+
+    s = FlakySession()
+    payload, ok = kalshi_get("/markets", {}, session=s, nonempty_key="markets")
+    assert ok is True
+    assert payload["markets"] == [{"ticker": "T1"}], "must retry past the transient empties"
+    assert s.calls == 3
+
+    # A genuinely empty series is accepted after the retries are exhausted — ok stays True,
+    # because the request SUCCEEDED. Only transport failure yields ok=False.
+    class EmptySession:
+        def get(self, url, params=None, timeout=None): return _Resp('{"markets": []}')
+    payload, ok = kalshi_get("/markets", {}, session=EmptySession(), retries=2,
+                             nonempty_key="markets")
+    assert ok is True and payload["markets"] == []
+
+
+def test_kalshi_get_parses_the_real_raw_newline_in_rules_secondary():
+    """Kalshi emits literal newlines inside JSON strings, which is invalid JSON. Python's
+    parser rejects it by default; strict=False is required."""
+    from kalshi_series import kalshi_get
+
+    class NewlineSession:
+        def get(self, url, params=None, timeout=None):
+            return _Resp('{"markets": [{"rules_secondary": "line one\nline two"}]}')
+
+    payload, ok = kalshi_get("/markets", {}, session=NewlineSession())
+    assert ok is True
+    assert "line one" in payload["markets"][0]["rules_secondary"]
+
+
+def test_kalshi_get_reports_transport_failure_as_not_ok():
+    """Absence is a value. A failed request must never look like 'no data'."""
+    from kalshi_series import kalshi_get
+
+    class DeadSession:
+        def get(self, url, params=None, timeout=None):
+            raise __import__("requests").exceptions.ConnectionError("down")
+
+    payload, ok = kalshi_get("/markets", {}, session=DeadSession(), retries=2)
+    assert ok is False and payload is None
+
+
+def test_target_series_covers_exactly_the_capture_cities():
+    from kalshi_series import target_series
+    from resolution_anchors import RESOLUTION_ANCHORS
+
+    ts = target_series()
+    assert set(ts) == {c for c, a in RESOLUTION_ANCHORS.items() if a.get("tier") == "capture"}
+    assert ts["Houston"] == "KXHIGHTHOU", "Houston's other three tickers are DEAD"
+    assert ts["Los Angeles"] == "KXHIGHLAX"
