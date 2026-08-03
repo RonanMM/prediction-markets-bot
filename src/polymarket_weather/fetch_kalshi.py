@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 MARKET_COLS = [
     "fetched_at_utc", "city", "series_ticker", "ticker", "event_ticker", "title",
-    "status", "result", "floor_strike", "strike_type", "yes_sub_title",
+    "status", "result", "floor_strike", "cap_strike", "strike_type", "yes_sub_title",
     "yes_bid", "yes_ask", "yes_bid_size", "yes_ask_size", "no_bid", "no_ask",
     "last_price", "previous_price", "volume", "volume_24h", "open_interest", "liquidity",
     "open_time", "close_time", "expiration_time", "rules_primary", "rules_secondary",
@@ -74,36 +74,65 @@ def fetch_series_markets(series_ticker: str, session=None, page_size: int = 200,
 
 
 def derive_bin(market: dict):
-    """Resolve floor_strike + strike_type into an explicit YES range, cross-checked against the
-    human-readable subtitle. Returns None for an unrecognised strike_type — never a guess.
+    """Resolve floor_strike/cap_strike + strike_type into an explicit YES range, cross-checked
+    against the human-readable subtitle. Returns None for an unrecognised strike_type, or a
+    recognised one missing the field it needs — never a guess.
 
-    Three representations of one threshold, and the off-by-one between them is exactly the shape
-    of the Hong Kong ruler bug (a whole-degree bin compared against a tenths-rounded reading, so
-    every market graded NO behind a passing audit). `agrees_with_subtitle` makes a disagreement
-    visible instead of silently picking a side.
+    The three live Kalshi strike types are NOT symmetric (verified against live KXHIGHLAX
+    2026-08-03, 200 markets: 34 greater / 34 less / 132 between — `between` is the dominant
+    type and floor_strike alone, the original design, silently dropped 83% of rows):
+        greater: floor_strike is EXCLUSIVE -> yes_from = floor + 1, yes_to = None
+        less:    cap_strike   is EXCLUSIVE -> yes_from = None,      yes_to = cap - 1
+        between: floor_strike AND cap_strike are BOTH INCLUSIVE -> yes_from = floor, yes_to = cap
+
+    The off-by-one on the exclusive types is exactly the shape of the Hong Kong ruler bug (a
+    whole-degree bin compared against a tenths-rounded reading, so every market graded NO behind
+    a passing audit). `agrees_with_subtitle` makes a disagreement visible instead of silently
+    picking a side; for `between` BOTH subtitle numbers are checked against BOTH bounds.
     """
     st = market.get("strike_type")
-    if st not in ("greater", "less"):
-        return None
-    try:
-        strike = float(market["floor_strike"])
-    except (KeyError, TypeError, ValueError):
+    if st not in ("greater", "less", "between"):
         return None
 
+    def _strike(key):
+        try:
+            return float(market[key])
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    floor, cap = _strike("floor_strike"), _strike("cap_strike")
+
     if st == "greater":
-        yes_from, yes_to = strike + 1, None
-        bound = yes_from
-    else:
-        yes_from, yes_to = None, strike - 1
-        bound = yes_to
+        if floor is None:
+            return None
+        yes_from, yes_to = floor + 1, None
+    elif st == "less":
+        if cap is None:
+            return None
+        yes_from, yes_to = None, cap - 1
+    else:  # between
+        if floor is None or cap is None:
+            return None
+        yes_from, yes_to = floor, cap
 
     sub = str(market.get("yes_sub_title") or "")
     digits = "".join(ch if ch.isdigit() or ch == "-" else " " for ch in sub).split()
-    sub_bound = float(digits[0]) if digits else None
+    nums = [float(d) for d in digits]
+    sub_bound = nums[0] if nums else None
+    sub_bound2 = nums[1] if len(nums) >= 2 else None
 
-    return {"op": st, "threshold_f": strike, "yes_from_f": yes_from, "yes_to_f": yes_to,
-            "subtitle_bound": sub_bound,
-            "agrees_with_subtitle": sub_bound is not None and sub_bound == bound}
+    if st == "greater":
+        agrees = sub_bound is not None and sub_bound == yes_from
+    elif st == "less":
+        agrees = sub_bound is not None and sub_bound == yes_to
+    else:  # between: both numbers must match both bounds
+        agrees = sub_bound is not None and sub_bound2 is not None \
+            and sub_bound == yes_from and sub_bound2 == yes_to
+
+    return {"op": st, "floor_strike_f": floor, "cap_strike_f": cap,
+            "yes_from_f": yes_from, "yes_to_f": yes_to,
+            "subtitle_bound": sub_bound, "subtitle_bound2": sub_bound2,
+            "agrees_with_subtitle": agrees}
 
 
 def summarize_market(market: dict) -> dict:
@@ -120,6 +149,7 @@ def summarize_market(market: dict) -> dict:
         "status": market.get("status"),
         "result": market.get("result") or None,
         "floor_strike": _num(market, "floor_strike"),
+        "cap_strike": _num(market, "cap_strike"),
         "strike_type": market.get("strike_type"),
         "yes_sub_title": market.get("yes_sub_title"),
         "yes_bid": _num(market, "yes_bid_dollars"),

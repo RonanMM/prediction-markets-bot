@@ -4165,14 +4165,39 @@ def test_summarize_market_keeps_both_rules_fields_verbatim():
     assert "recorded at Houston" in s["rules_primary"]
 
 
+def test_summarize_market_archives_cap_strike_for_less_type_markets():
+    """ARCHIVE-INTEGRITY GUARD. Kalshi's real 'less'-type markets carry their bound in
+    cap_strike with floor_strike=None (verified live KXHIGHLAX 2026-08-03: 34/34 'less' markets,
+    100%). summarize_market storing only floor_strike would silently write a blank bin threshold
+    to the archive for those rows — and Kalshi serves market objects for only ~2 months, so a
+    threshold missed at capture time is gone forever, unrecoverable at any later date. This is
+    the single most important guard in this module: a capture archive that drops the thing it
+    exists to capture, behind a green run, is the worst failure this project has.
+    """
+    from fetch_kalshi import summarize_market
+
+    s = summarize_market({"ticker": "KXHIGHLAX-26AUG04-T75", "strike_type": "less",
+                          "floor_strike": None, "cap_strike": 75,
+                          "yes_sub_title": "74° or below"})
+    assert s["cap_strike"] == 75.0, "cap_strike must be archived — it is the ONLY threshold field a 'less' market populates"
+    assert s["floor_strike"] is None
+
+
 def test_derive_bin_agrees_with_the_human_readable_subtitle():
-    """floor_strike + strike_type + yes_sub_title are three representations of ONE threshold.
-    The off-by-one between them is exactly the Hong Kong ruler bug's shape: floor_strike 82 with
-    strike_type 'greater' means YES from 83, and the subtitle says '83° or above'."""
+    """floor_strike/cap_strike + strike_type + yes_sub_title are three representations of ONE
+    threshold. The off-by-one between them is exactly the Hong Kong ruler bug's shape:
+    floor_strike 82 with strike_type 'greater' means YES from 83, and the subtitle says
+    '83° or above'.
+
+    All three payloads below are REAL shapes, verbatim from live KXHIGHLAX (2026-08-03) — not
+    hand-fabricated. The 'less' fixture matters most: an earlier version of this test supplied a
+    synthetic floor_strike for a 'less' market, which Kalshi never actually sends (real 'less'
+    markets carry the bound in cap_strike with floor_strike=None), and that let derive_bin's
+    floor_strike-only design silently return None for 100% of real 'less' markets undetected.
+    """
     from fetch_kalshi import derive_bin
 
-    # Real market, captured live 2026-08-03.
-    got = derive_bin({"floor_strike": 82, "strike_type": "greater",
+    got = derive_bin({"floor_strike": 82, "cap_strike": None, "strike_type": "greater",
                       "yes_sub_title": "83° or above"})
     assert got["op"] == "greater"
     assert got["yes_from_f"] == 83
@@ -4180,19 +4205,27 @@ def test_derive_bin_agrees_with_the_human_readable_subtitle():
     assert got["subtitle_bound"] == 83
     assert got["agrees_with_subtitle"] is True
 
-    got_less = derive_bin({"floor_strike": 97, "strike_type": "less",
-                           "yes_sub_title": "96° or below"})
+    got_less = derive_bin({"floor_strike": None, "cap_strike": 75, "strike_type": "less",
+                           "yes_sub_title": "74° or below"})
     assert got_less["op"] == "less"
-    assert got_less["yes_to_f"] == 96
+    assert got_less["yes_from_f"] is None
+    assert got_less["yes_to_f"] == 74
     assert got_less["agrees_with_subtitle"] is True
 
+    got_between = derive_bin({"floor_strike": 81, "cap_strike": 82, "strike_type": "between",
+                              "yes_sub_title": "81° to 82°"})
+    assert got_between["op"] == "between"
+    assert got_between["yes_from_f"] == 81 and got_between["yes_to_f"] == 82
+    assert got_between["agrees_with_subtitle"] is True
+
     # A disagreement must be VISIBLE, not silently resolved in favour of either side.
-    bad = derive_bin({"floor_strike": 82, "strike_type": "greater",
+    bad = derive_bin({"floor_strike": 82, "cap_strike": None, "strike_type": "greater",
                       "yes_sub_title": "99° or above"})
     assert bad["agrees_with_subtitle"] is False
 
-    # An unknown strike_type must not be guessed.
-    assert derive_bin({"floor_strike": 82, "strike_type": "between",
+    # An unknown strike_type must not be guessed. ('between' is a REAL, recognised type now —
+    # it must never be used here as the "unknown" case again.)
+    assert derive_bin({"floor_strike": 82, "strike_type": "scalar",
                        "yes_sub_title": "x"}) is None
 
 
@@ -4213,3 +4246,22 @@ def test_derive_bin_subtitle_parsing_limits():
     # A subtitle with no number at all must not crash.
     d3 = derive_bin({"floor_strike": 82, "strike_type": "greater", "yes_sub_title": "n/a"})
     assert d3["subtitle_bound"] is None and d3["agrees_with_subtitle"] is False
+
+
+def test_derive_bin_covers_every_live_strike_type():
+    """between is 66% of Kalshi's markets and less is another 17%; deriving only `greater`
+    silently drops 83% of the product. The three types are NOT symmetric: greater's
+    floor_strike is exclusive, less's cap_strike is exclusive, between's bounds are both
+    inclusive. Verified against live KXHIGHLAX 2026-08-03."""
+    from fetch_kalshi import derive_bin
+    g = derive_bin({"strike_type": "greater", "floor_strike": 82, "cap_strike": None,
+                    "yes_sub_title": "83° or above"})
+    assert (g["yes_from_f"], g["yes_to_f"]) == (83, None) and g["agrees_with_subtitle"]
+    l = derive_bin({"strike_type": "less", "floor_strike": None, "cap_strike": 75,
+                    "yes_sub_title": "74° or below"})
+    assert (l["yes_from_f"], l["yes_to_f"]) == (None, 74) and l["agrees_with_subtitle"]
+    b = derive_bin({"strike_type": "between", "floor_strike": 81, "cap_strike": 82,
+                    "yes_sub_title": "81° to 82°"})
+    assert (b["yes_from_f"], b["yes_to_f"]) == (81, 82) and b["agrees_with_subtitle"]
+    assert derive_bin({"strike_type": "scalar", "floor_strike": 1,
+                       "yes_sub_title": "x"}) is None
