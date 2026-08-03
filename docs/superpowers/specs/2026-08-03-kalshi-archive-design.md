@@ -68,7 +68,25 @@ before any use.**
 | Chicago | KORD / WU | Midway (KMDW) / CLI | no — station *and* ruler differ |
 | London, Seoul, Hong Kong | — | not listed | no |
 
-### 2.3 Seven cities ARE same-station — verified from both APIs
+### 2.3 The overlap set is SEVEN — exhaustively, not by inheritance
+
+Kalshi lists **19 live CLI high-temperature series**; Polymarket lists **47 temperature cities**
+with a Wunderground station. Every Kalshi series was resolved to an ICAO (retrying on empty
+responses — two separate runs silently dropped Houston and Seattle to transient empties before
+the retry was added) and intersected against Polymarket's stations:
+
+| outcome | count | cities |
+|---|---|---|
+| **same station — usable** | **7** | Atlanta KATL, Austin KAUS, Houston KHOU, Los Angeles KLAX, Miami KMIA, San Francisco KSFO, Seattle KSEA |
+| both venues, **different station** | 4 | Chicago (KMDW vs KORD), NYC (KNYC vs KLGA), Denver (KDEN vs KBKF), Dallas (KDFW vs KDAL) |
+| Kalshi only, no Polymarket market | 8 | Boston, Washington DC, Las Vegas, Minneapolis, New Orleans, Oklahoma City, Phoenix, San Antonio |
+
+The four different-station cities are **permanently excluded**, not deferred. Central Park vs
+LaGuardia and Midway vs O'Hare routinely differ by several °F — park versus waterfront tarmac —
+which is basis risk far larger than the ruler gap this project can correct for. Recording them
+here so they are not re-proposed.
+
+### 2.3.1 Verified station evidence for the seven
 
 Polymarket station read from each market's `wunderground.com/history/daily/.../{ICAO}` URL;
 Kalshi station read from `rules_secondary`. Independently confirmed, both sides, 2026-08-03:
@@ -145,6 +163,35 @@ that flattered us.**
 ---
 
 ## 4. Components
+
+### 4.0 ONE overlap registry drives BOTH venues
+
+The entire value of this data layer is the **paired** comparison. A Kalshi city we do not also
+capture on Polymarket is unusable, and a Polymarket capture city with no Kalshi counterpart is
+equally pointless. Symmetry is not a convention to maintain — it is the product.
+
+So the seven cities are declared **once**, and both venue fetchers derive their target list from
+that single declaration:
+
+```python
+# resolution_anchors.py — one entry per overlap city, both venues' identifiers together
+"Los Angeles": {
+    "tier": "capture",
+    "station_code": "KLAX",             # the SAME station on both venues — that is the point
+    "resolution_url": "https://www.wunderground.com/history/daily/us/ca/los-angeles/KLAX",
+    "resolution_unit": "whole °F",      # Polymarket's bin grid
+    "kalshi_series": "KXHIGHLAX",       # None for modelled cities with no Kalshi counterpart
+    ...
+}
+```
+
+`config.CAPTURE_CITIES` is derived from `tier == "capture"`. The Kalshi fetcher iterates the
+same set, keyed by `kalshi_series`. There is no second list to drift.
+
+**Requirement:** a test asserts that the set of capture cities with a `kalshi_series` is exactly
+the set captured on Polymarket. If someone adds a Kalshi series without the Polymarket side — or
+removes one — the suite fails rather than quietly producing an unpairable dataset. This directly
+encodes the design constraint that a one-sided capture is worthless.
 
 ### 4.1 City tiering — `resolution_anchors.py`, `config.py`
 
@@ -296,6 +343,14 @@ Required cases, each with its mutation:
 4. **Tier isolation** — fails if a capture-tier city appears in `config.CITIES`.
 5. **Sentinel-free absence** — fails if a missing bid is reported as `0.0` rather than `None`.
 6. **Malformed JSON** — the real `rules_secondary` newline case parses.
+7. **Venue symmetry (§4.0)** — fails if any city carries a `kalshi_series` without Polymarket
+   capture, or is captured on Polymarket as an overlap city without a `kalshi_series`. An
+   unpairable city is a bug, not a partial success.
+8. **Retry on empty, not just on error** — fails if a series returning an empty market list is
+   accepted as "no markets" without retrying. Two throwaway scripts written while drafting this
+   spec silently dropped Houston and then Seattle to transient empty responses, each time
+   producing a confident wrong overlap count (6 instead of 7). An empty response and a genuine
+   absence are indistinguishable at the call site; only retry separates them.
 
 Network is faked in all unit tests via an injected session, following the pattern established
 in `fetch_orderbook`'s tests.
