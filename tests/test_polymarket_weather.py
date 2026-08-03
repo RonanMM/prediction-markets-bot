@@ -4265,3 +4265,143 @@ def test_derive_bin_covers_every_live_strike_type():
     assert (b["yes_from_f"], b["yes_to_f"]) == (81, 82) and b["agrees_with_subtitle"]
     assert derive_bin({"strike_type": "scalar", "floor_strike": 1,
                        "yes_sub_title": "x"}) is None
+
+
+def test_ladder_converts_kalshi_pairs_and_inverts_for_the_opposite_side():
+    """Kalshi's `/orderbook` levels are `[price, size]` STRING PAIRS, not the `{"price","size"}`
+    dicts summarize_book consumes elsewhere -- verified live 2026-08-03. `invert=True` must
+    reconstruct one side's asks from the OTHER side's bids (price -> 1 - price, size unchanged),
+    because Kalshi publishes only bid ladders (see fetch_orderbooks' docstring)."""
+    from fetch_kalshi import _ladder
+
+    got = _ladder([["0.0100", "9471.47"]])
+    assert got == [{"price": 0.01, "size": 9471.47}]
+
+    inv = _ladder([["0.0100", "9471.47"]], invert=True)
+    assert inv == [{"price": 0.99, "size": 9471.47}], \
+        "invert must map price -> 1 - price; size must survive unchanged"
+
+    assert _ladder([]) == [], "a genuinely empty ladder is a real, quiet answer"
+    assert _ladder(None) == []
+
+
+def test_ladder_logs_loudly_when_every_level_is_unparseable(caplog):
+    """A NONEMPTY ladder where every level fails to parse is a payload SHAPE CHANGE (e.g. Kalshi
+    changes format again), not a legitimately empty book -- it must not silently look identical
+    to a genuinely empty ladder. This is exactly how the original dict-shaped assumption would
+    have failed against the real list-of-pairs payload: quietly, plausibly, and wrong."""
+    import logging
+    from fetch_kalshi import _ladder
+
+    with caplog.at_level(logging.ERROR):
+        got = _ladder([{"unexpected": "shape"}, {"another": "bad one"}])
+    assert got == []
+    assert any("SHAPE CHANGE" in r.message for r in caplog.records)
+
+    caplog.clear()
+    with caplog.at_level(logging.ERROR):
+        assert _ladder([]) == []
+    assert not caplog.records, "a genuinely empty ladder must NOT log an error"
+
+
+def test_fetch_orderbooks_reconstructs_asks_from_the_opposite_bid_ladder():
+    """THE semantics-pinning test, not just a plumbing check. Kalshi's orderbook publishes only
+    BID ladders for each side -- verified live 2026-08-03 against KXHIGHLAX-26AUG03-B80.5, whose
+    own quote was yes_bid_dollars=0.0400 / yes_ask_dollars=0.0500. `yes_dollars` and `no_dollars`
+    below are the VERBATIM payload from that request (not fabricated).
+
+    yes_best_bid must be the highest yes_dollars price (0.04, matching the live quote), and
+    yes_best_ask must be 1 - the highest no_dollars price (1 - 0.95 = 0.05, ALSO matching the
+    live quote) -- NOT a raw yes_dollars price read directly as an ask, which is the exact
+    mistake an earlier draft of this module's docstring made and would have produced a plausible,
+    wrong number silently.
+    """
+    import json as _json
+    from fetch_kalshi import fetch_orderbooks
+
+    YES_DOLLARS = [["0.0100", "9471.47"], ["0.0200", "2867.00"], ["0.0300", "2623.94"],
+                   ["0.0400", "211.76"]]
+    NO_DOLLARS = [
+        ["0.0100", "805.71"], ["0.0200", "152.00"], ["0.0300", "27.00"], ["0.0400", "1.00"],
+        ["0.0500", "102.00"], ["0.0600", "2.00"], ["0.0700", "1.00"], ["0.0800", "1.00"],
+        ["0.0900", "100.80"], ["0.1000", "26.00"], ["0.1100", "216.73"], ["0.1200", "1.00"],
+        ["0.1400", "13.74"], ["0.1500", "153.26"], ["0.1700", "38.25"], ["0.1800", "80.00"],
+        ["0.2000", "57.46"], ["0.2100", "1.00"], ["0.2300", "41.48"], ["0.2500", "217.74"],
+        ["0.3000", "25.00"], ["0.3200", "50.00"], ["0.3500", "172.47"], ["0.3700", "1611.67"],
+        ["0.3800", "313.37"], ["0.3900", "80.00"], ["0.4000", "124.94"], ["0.4300", "26.26"],
+        ["0.4400", "47.09"], ["0.4500", "25.00"], ["0.4800", "50.00"], ["0.5000", "47.00"],
+        ["0.5400", "15.53"], ["0.5500", "63.84"], ["0.5600", "58.71"], ["0.6000", "63.00"],
+        ["0.6500", "62.00"], ["0.6900", "700.70"], ["0.7000", "82.00"], ["0.7300", "123.89"],
+        ["0.7400", "6.00"], ["0.7500", "60.35"], ["0.7600", "245.00"], ["0.7700", "1106.00"],
+        ["0.7800", "6.00"], ["0.7900", "6.00"], ["0.8000", "30.30"], ["0.8100", "6.00"],
+        ["0.8200", "50.27"], ["0.8300", "6.00"], ["0.8400", "16.00"], ["0.8500", "65.00"],
+        ["0.8600", "198.95"], ["0.8700", "26.00"], ["0.8800", "6.00"], ["0.8900", "82.00"],
+        ["0.9000", "440.90"], ["0.9100", "73.00"], ["0.9200", "561.00"], ["0.9300", "51.00"],
+        ["0.9400", "365.66"], ["0.9500", "88.44"],
+    ]
+
+    class RealShapeSession:
+        def get(self, url, params=None, timeout=None):
+            return _Resp(_json.dumps({"orderbook_fp": {
+                "yes_dollars": YES_DOLLARS, "no_dollars": NO_DOLLARS}}))
+
+    out = fetch_orderbooks(["KXHIGHLAX-26AUG03-B80.5"], session=RealShapeSession())
+    book = out["KXHIGHLAX-26AUG03-B80.5"]
+    assert book["yes_best_bid"] == 0.04, "best YES bid is the highest yes_dollars price"
+    assert book["yes_best_ask"] == 0.05, \
+        "best YES ask == 1 - best NO bid (0.95) -- the live yes_ask_dollars quote, not a raw " \
+        "yes_dollars price"
+    assert book["no_best_bid"] == 0.95, "best NO bid is the highest no_dollars price"
+    assert book["no_best_ask"] == 0.96, "best NO ask == 1 - best YES bid (0.04)"
+    assert book["yes_ask_depth_usdc"] > 0
+
+
+def test_kalshi_orderbooks_use_the_shared_summary_shape_and_omit_failures():
+    """Both venues' books must be analysable by ONE code path, and a book that did not return
+    must be OMITTED rather than faked -- reading only one side of a two-sided Polymarket market
+    produced a confidently wrong executability figure (71% vs 27% on the same markets).
+
+    A DEAD (settled/nonexistent) ticker's REAL shape, verified live 2026-08-03, is
+    present-but-empty arrays -- `{"orderbook_fp": {"yes_dollars": [], "no_dollars": []}}` -- not
+    the fabricated `{"orderbook_fp": {}}` an earlier draft assumed.
+    """
+    import json as _json
+    from fetch_kalshi import fetch_orderbooks
+
+    class BookSession:
+        def get(self, url, params=None, timeout=None):
+            if "T_DEAD" in url:
+                return _Resp(_json.dumps({"orderbook_fp": {"yes_dollars": [], "no_dollars": []}}))
+            return _Resp(_json.dumps({"orderbook_fp": {
+                "yes_dollars": [["0.0500", "100"], ["0.0700", "9000"]],
+                "no_dollars":  [["0.9000", "500"]],
+            }}))
+
+    out = fetch_orderbooks(["T_LIVE", "T_DEAD"], session=BookSession())
+    assert "T_LIVE" in out
+    live = out["T_LIVE"]
+    assert live["yes_best_bid"] == 0.07, "best bid is the HIGHEST yes_dollars price"
+    assert live["yes_best_ask"] == 0.10, "yes ask is reconstructed from the NO bid (1 - 0.90)"
+    assert live["no_best_bid"] == 0.90
+    assert live["yes_ask_depth_usdc"] > 0
+    # A genuinely empty book (both ladders present, no levels) yields None fields for the ticker
+    # that IS in the result -- never 0.0 masquerading as a price.
+    assert "T_DEAD" in out
+    assert out["T_DEAD"]["yes_best_bid"] is None
+    assert out["T_DEAD"]["yes_best_ask"] is None
+
+
+def test_fetch_orderbooks_omits_a_ticker_whose_book_never_returns(monkeypatch):
+    """ok=False means the transport failed -- we do not know the book's state -- so the ticker
+    must be OMITTED from the result entirely, never included with faked/zero fields."""
+    import kalshi_series
+    from fetch_kalshi import fetch_orderbooks
+
+    monkeypatch.setattr(kalshi_series.time, "sleep", lambda *_: None)
+
+    class DeadSession:
+        def get(self, url, params=None, timeout=None):
+            raise __import__("requests").exceptions.ConnectionError("down")
+
+    out = fetch_orderbooks(["T1"], session=DeadSession())
+    assert out == {}, "a ticker whose book never returned must not appear in the result at all"

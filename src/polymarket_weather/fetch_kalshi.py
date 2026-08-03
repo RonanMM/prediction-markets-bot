@@ -14,6 +14,7 @@ so a Kalshi leg never hedges a Polymarket leg (spec 2026-08-03 sect 2.1).
 
 import logging
 
+from fetch_orderbook import summarize_book
 from kalshi_series import kalshi_get, LIVE_STATUSES
 
 logger = logging.getLogger(__name__)
@@ -175,3 +176,79 @@ def summarize_market(market: dict) -> dict:
 def count_live(markets: list) -> int:
     """Markets that are tradeable or about to be. See kalshi_series.LIVE_STATUSES."""
     return sum(1 for m in markets if m.get("status") in LIVE_STATUSES)
+
+
+BOOK_COLS = ["fetched_at_utc", "city", "ticker",
+             "yes_best_bid", "yes_best_ask", "yes_ask_depth_usdc", "yes_vwap_buy_100",
+             "no_best_bid", "no_best_ask", "no_ask_depth_usdc", "no_vwap_buy_100"]
+
+
+def _ladder(levels, invert: bool = False) -> list:
+    """Kalshi's `[price, size]` string pairs -> the `{"price", "size"}` dicts summarize_book wants.
+
+    Kalshi's `/orderbook` endpoint publishes only BID ladders: `yes_dollars` and `no_dollars`
+    are BOTH resting bids, and there is no ask ladder anywhere in the payload — a bid of `p` for
+    NO *is* an offer to sell YES at `1 - p` (Kalshi nets the two representations onto one book).
+    Verified live 2026-08-03 against KXHIGHLAX-26AUG03-B80.5: max(yes_dollars price) == 0.04 ==
+    that market's own yes_bid_dollars, and 1 - max(no_dollars price) == 0.05 == yes_ask_dollars.
+
+    `invert=True` performs exactly that conversion, reconstructing one token's ASKS from the
+    OTHER token's bids: price -> 1 - price, size unchanged.
+
+    A level that fails to parse is skipped, not raised — but if `levels` is non-empty and EVERY
+    level fails, that is a payload SHAPE CHANGE, not a legitimately empty book, and must be
+    visible rather than silently read as "no orders" (this is exactly how the original
+    dict-shaped assumption would have failed: silently, plausibly, and wrong).
+    """
+    out = []
+    bad = 0
+    for lvl in levels or []:
+        try:
+            price, size = float(lvl[0]), float(lvl[1])
+        except (IndexError, KeyError, TypeError, ValueError):
+            bad += 1
+            continue
+        out.append({"price": round(1 - price, 4) if invert else price, "size": size})
+    if levels and bad == len(levels):
+        logger.error("kalshi ladder: all %d levels failed to parse — this is a SHAPE CHANGE, "
+                     "not an empty book; investigate before trusting any book from this run",
+                     len(levels))
+    return out
+
+
+def fetch_orderbooks(tickers: list, session=None) -> dict:
+    """{ticker: summary} for every book that returned. One request per ticker.
+
+    Reuses fetch_orderbook.summarize_book so BOTH venues are analysed by one code path — the
+    Polymarket work established that a mid without a book is misleading, and that reading one
+    side of a two-sided market gives a confidently wrong answer.
+
+    Kalshi nests its ladders under `orderbook_fp` as `yes_dollars` / `no_dollars`, each a list of
+    `[price, size]` pairs — BOTH are bid ladders (see `_ladder`), so each token's asks are
+    reconstructed from the OTHER token's bids before handing them to summarize_book, which then
+    sees a normal-shaped two-sided book for each side.
+
+    Best-effort: a ticker whose book does not return is OMITTED, so a missing book reads as NaN
+    downstream (the honest value) rather than as an empty book.
+    """
+    out = {}
+    for t in tickers:
+        payload, ok = kalshi_get(f"/markets/{t}/orderbook", {}, session=session)
+        if not ok:
+            logger.warning("kalshi orderbook %s: no response — omitted, not faked", t)
+            continue
+        ob = (payload or {}).get("orderbook_fp") or {}
+        yes_bids_raw = ob.get("yes_dollars") or []
+        no_bids_raw = ob.get("no_dollars") or []
+        yes = summarize_book({"bids": _ladder(yes_bids_raw),
+                              "asks": _ladder(no_bids_raw, invert=True)})
+        no = summarize_book({"bids": _ladder(no_bids_raw),
+                             "asks": _ladder(yes_bids_raw, invert=True)})
+        out[t] = {
+            "yes_best_bid": yes["best_bid"], "yes_best_ask": yes["best_ask"],
+            "yes_ask_depth_usdc": yes["ask_depth_usdc"], "yes_vwap_buy_100": yes["vwap_buy_100"],
+            "no_best_bid": no["best_bid"], "no_best_ask": no["best_ask"],
+            "no_ask_depth_usdc": no["ask_depth_usdc"], "no_vwap_buy_100": no["vwap_buy_100"],
+        }
+    logger.info("kalshi order books: %d/%d returned", len(out), len(tickers))
+    return out
