@@ -43,6 +43,17 @@ OBS_STATIONS = {
     "chicago": ("ORD", "America/Chicago"),
     "london": ("EGLC", "Europe/London"),
     "seoul": ("RKSI", "Asia/Seoul"),
+    # ── capture tier (spec 2026-08-03) — Polymarket's ruler, Wunderground, reconstructed from
+    # hourly METARs (wu_truth). Kalshi's ruler for these same stations is the NWS CLI, archived
+    # separately in fetch_historical_truth.SOURCES. IEM uses the 3-letter form for US stations,
+    # matching the existing LGA / ORD entries.
+    "los_angeles":   ("LAX", "America/Los_Angeles"),
+    "austin":        ("AUS", "America/Chicago"),
+    "atlanta":       ("ATL", "America/New_York"),
+    "houston":       ("HOU", "America/Chicago"),
+    "miami":         ("MIA", "America/New_York"),
+    "seattle":       ("SEA", "America/Los_Angeles"),
+    "san_francisco": ("SFO", "America/Los_Angeles"),
 }
 
 

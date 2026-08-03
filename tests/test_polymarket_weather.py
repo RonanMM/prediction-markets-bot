@@ -3969,6 +3969,25 @@ def test_lead_fetchers_iterate_modelled_anchors_only():
         assert "modelled_anchors()" in text, f"{name} must iterate modelled_anchors()"
 
 
+def test_both_rulers_are_configured_for_every_capture_city():
+    """Each overlap city needs BOTH rulers archived, because the venues differ:
+    Kalshi resolves on the NWS CLI, Polymarket on Wunderground (reconstructed from hourly
+    METARs by wu_truth). Neither is converted at write time — the transfer function is a later
+    spec. A city with only one ruler is half-useless."""
+    from resolution_anchors import RESOLUTION_ANCHORS, slug
+    from fetch_historical_truth import SOURCES
+    from fetch_station_obs import OBS_STATIONS
+
+    capture = {c: a for c, a in RESOLUTION_ANCHORS.items() if a.get("tier") == "capture"}
+    for city, anchor in capture.items():
+        s = slug(city)
+        assert s in SOURCES, f"{city}: no CLI truth source (Kalshi's ruler)"
+        kind, kw = SOURCES[s]
+        assert kind == "cli" and kw["station"] == anchor["station_code"]
+        assert s in OBS_STATIONS, f"{city}: no METAR obs (Polymarket's WU ruler)"
+        assert OBS_STATIONS[s][0] == anchor["station_code"].lstrip("K")
+
+
 class _Resp:
     """Minimal requests.Response stand-in: .text carries the raw body."""
     def __init__(self, text, status=200):

@@ -53,6 +53,17 @@ SOURCES = {
     "london": ("iem_daily", {"network": "GB__ASOS", "station": "EGLC"}),
     "seoul": ("iem_daily", {"network": "KR__ASOS", "station": "RKSI"}),
     "hong_kong": ("hko", {"station": "HKO"}),
+    # ── capture tier (spec 2026-08-03) — KALSHI's ruler, the NWS Climatological Report.
+    # Polymarket's ruler for these same cities is Wunderground, reconstructed from the hourly
+    # METARs fetched by fetch_station_obs. BOTH are archived; NEITHER is converted at write
+    # time — the CLI<->WU transfer function is a later spec.
+    "los_angeles":   ("cli", {"station": "KLAX"}),
+    "austin":        ("cli", {"station": "KAUS"}),
+    "atlanta":       ("cli", {"station": "KATL"}),
+    "houston":       ("cli", {"station": "KHOU"}),
+    "miami":         ("cli", {"station": "KMIA"}),
+    "seattle":       ("cli", {"station": "KSEA"}),
+    "san_francisco": ("cli", {"station": "KSFO"}),
 }
 
 
