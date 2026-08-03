@@ -4072,6 +4072,57 @@ def test_fetch_series_markets_reports_truncation_explicitly():
     assert len(markets) == 1
 
 
+def test_fetch_series_markets_never_reports_unknown_as_complete(monkeypatch):
+    """kalshi_get's ok=False means "every attempt failed" — we do not know. That must never
+    surface as truncated=False, which downstream reads as "confirmed complete". A dead ticker
+    (genuinely 0 markets) and an API outage would otherwise look identical, and telling them
+    apart is the whole point of the series manifest.
+
+    fetch_series_markets takes no `retries` kwarg (none was added — that would be a production
+    logic change out of scope for a test-coverage fix), so this patches kalshi_series' own
+    time.sleep to a no-op, same technique already used for fetch_station_obs's retry tests
+    (test_obs_fetch_keeps_existing_file_when_a_year_chunk_fails and neighbours). Without the
+    patch this test still passes but burns kalshi_get's real ~15s retry-exhaustion sleep
+    (DEFAULT_RETRIES=4, 1.5*(1+2+3+4)s) — kalshi_get itself is untouched.
+    """
+    import kalshi_series
+    from fetch_kalshi import fetch_series_markets
+
+    monkeypatch.setattr(kalshi_series.time, "sleep", lambda *_: None)
+
+    class DeadSession:
+        def get(self, url, params=None, timeout=None):
+            raise __import__("requests").exceptions.ConnectionError("down")
+
+    markets, truncated = fetch_series_markets("KXHIGHLAX", session=DeadSession())
+    assert markets == []
+    assert truncated is True, "an outage must NOT read as a confirmed-complete empty series"
+
+
+def test_fetch_series_markets_truncates_on_a_later_page_failure(monkeypatch):
+    """A transport failure on page 2+ (not just page 0) must still report truncated=True and
+    return the PARTIAL markets already gathered, not discard them."""
+    import kalshi_series
+    from fetch_kalshi import fetch_series_markets
+
+    monkeypatch.setattr(kalshi_series.time, "sleep", lambda *_: None)
+
+    class FailsOnPage2:
+        def __init__(self):
+            self.calls = 0
+
+        def get(self, url, params=None, timeout=None):
+            self.calls += 1
+            if self.calls == 1:
+                page = [{"ticker": f"T{i}", "status": "active"} for i in range(3)]
+                return _Resp(__import__("json").dumps({"markets": page, "cursor": "more"}))
+            raise __import__("requests").exceptions.ConnectionError("down")
+
+    markets, truncated = fetch_series_markets("KXHIGHLAX", session=FailsOnPage2(), page_size=3)
+    assert truncated is True
+    assert len(markets) == 3, "the partial list from page 1 must be returned, not discarded"
+
+
 def test_summarize_market_absence_is_none_never_a_sentinel():
     """data_loader.check_orderbook_vwap returns 1.0 when it cannot fill, which makes 'no
     liquidity' indistinguishable from 'priced at 1.0'. A price of 0 or 1 is a tradeable claim;
@@ -4088,6 +4139,14 @@ def test_summarize_market_absence_is_none_never_a_sentinel():
     assert s2["yes_bid"] == 0.0, "a real zero bid is 0.0, NOT None"
     assert s2["yes_ask"] == 0.07
     assert s2["volume"] == 0.0
+
+    # Kalshi sends "" — not a missing key — for unsettled markets and unquoted fields.
+    s3 = summarize_market({"ticker": "T3", "result": "", "yes_bid_dollars": "",
+                           "volume_fp": "0.00", "open_interest_fp": ""})
+    assert s3["result"] is None, "unsettled '' must be None, not an empty-string 'result'"
+    assert s3["yes_bid"] is None, "'' is absence, not a price"
+    assert s3["open_interest"] is None
+    assert s3["volume"] == 0.0, "a real zero must survive as 0.0"
 
 
 def test_summarize_market_keeps_both_rules_fields_verbatim():
@@ -4135,3 +4194,22 @@ def test_derive_bin_agrees_with_the_human_readable_subtitle():
     # An unknown strike_type must not be guessed.
     assert derive_bin({"floor_strike": 82, "strike_type": "between",
                        "yes_sub_title": "x"}) is None
+
+
+def test_derive_bin_subtitle_parsing_limits():
+    """The subtitle bound is taken as the FIRST number in yes_sub_title. That holds for every
+    live Kalshi format seen (2026-08-03), and negative temperatures parse correctly. If a format
+    ever leads with a different number the check fails LOUDLY (agrees_with_subtitle False)
+    rather than silently deriving a wrong bin — which is the behaviour being pinned here."""
+    from fetch_kalshi import derive_bin
+    # Negative temperatures must parse — Chicago in winter is a real case.
+    d = derive_bin({"floor_strike": -6, "strike_type": "greater",
+                    "yes_sub_title": "-5° or above"})
+    assert d["yes_from_f"] == -5 and d["agrees_with_subtitle"] is True
+    # A leading non-bound number is detected, not silently trusted.
+    d2 = derive_bin({"floor_strike": 82, "strike_type": "greater",
+                     "yes_sub_title": "2026: 83° or above"})
+    assert d2["agrees_with_subtitle"] is False
+    # A subtitle with no number at all must not crash.
+    d3 = derive_bin({"floor_strike": 82, "strike_type": "greater", "yes_sub_title": "n/a"})
+    assert d3["subtitle_bound"] is None and d3["agrees_with_subtitle"] is False
