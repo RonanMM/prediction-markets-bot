@@ -3714,3 +3714,45 @@ def test_temporal_amendment_is_tightening_only():
             assert v["n"] >= 80 and v["mean"] >= 0.03
             assert v["n_clusters"] >= sb.GATE_MIN_CLUSTERS and v["ci_lo"] > 0
             assert v["n_dates"] >= sb.GATE_MIN_DATES
+
+
+def test_capture_tier_cities_never_enter_config_cities():
+    """CITIES is consumed by twelve modules, several of which iterate it to fetch forecasts
+    or to TRAIN (train_calibrator does `for city in CITIES.keys()`). A capture-only city
+    reaching those paths would pull forecasts we do not model and attempt EMOS training on
+    cities with no archives — silently, on a green run."""
+    import config
+    from resolution_anchors import RESOLUTION_ANCHORS
+
+    capture = {c for c, a in RESOLUTION_ANCHORS.items() if a.get("tier") == "capture"}
+    assert capture, "expected capture-tier cities to exist"
+    assert capture & set(config.CITIES) == set(), (
+        f"capture-tier cities leaked into config.CITIES: {capture & set(config.CITIES)}")
+    assert capture <= set(config.ALL_CITIES), "ALL_CITIES must contain every capture city"
+    assert set(config.CITIES) <= set(config.ALL_CITIES)
+    # The original five must still be modelled — this plan must not change their behaviour.
+    for city in ("London", "Seoul", "Chicago", "New York City", "Hong Kong"):
+        assert RESOLUTION_ANCHORS[city].get("tier", "modelled") == "modelled"
+        assert city in config.CITIES
+
+
+def test_venue_symmetry_kalshi_and_polymarket_cover_the_same_cities():
+    """The entire value of this data layer is the PAIRED comparison. A Kalshi city we do not
+    also capture on Polymarket is unusable, and vice versa. Symmetry is the product, not a
+    convention to maintain."""
+    import config
+    from resolution_anchors import RESOLUTION_ANCHORS
+
+    with_kalshi = {c for c, a in RESOLUTION_ANCHORS.items() if a.get("kalshi_series")}
+    capture = {c for c, a in RESOLUTION_ANCHORS.items() if a.get("tier") == "capture"}
+    assert with_kalshi == capture, (
+        f"unpairable cities — kalshi-only {with_kalshi - capture}, "
+        f"polymarket-only {capture - with_kalshi}")
+    assert len(with_kalshi) == 7, f"expected the 7 verified overlap cities, got {len(with_kalshi)}"
+    # Every capture city must also be Polymarket-capturable: it needs search terms and a
+    # Wunderground resolution URL naming the SAME station Kalshi reads.
+    for city in capture:
+        a = RESOLUTION_ANCHORS[city]
+        assert a["station_code"] in a["resolution_url"], (
+            f"{city}: resolution_url must name station {a['station_code']}")
+        assert config.ALL_CITIES[city]["search_terms"], f"{city} has no search terms"

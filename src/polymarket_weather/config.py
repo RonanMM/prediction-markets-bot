@@ -18,18 +18,40 @@ _CITY_META = {
     "Chicago":       {"timezone": ZoneInfo("America/Chicago"),  "search_terms": ["Chicago", "chicago"]},
     "New York City": {"timezone": ZoneInfo("America/New_York"), "search_terms": ["New York", "NYC", "new york"]},
     "Hong Kong":     {"timezone": ZoneInfo("Asia/Hong_Kong"),   "search_terms": ["Hong Kong", "hong kong"]},
+    # capture tier — see resolution_anchors.py
+    "Los Angeles":   {"timezone": ZoneInfo("America/Los_Angeles"), "search_terms": ["Los Angeles", "los angeles"]},
+    "Austin":        {"timezone": ZoneInfo("America/Chicago"),     "search_terms": ["Austin", "austin"]},
+    "Atlanta":       {"timezone": ZoneInfo("America/New_York"),    "search_terms": ["Atlanta", "atlanta"]},
+    "Houston":       {"timezone": ZoneInfo("America/Chicago"),     "search_terms": ["Houston", "houston"]},
+    "Miami":         {"timezone": ZoneInfo("America/New_York"),    "search_terms": ["Miami", "miami"]},
+    "Seattle":       {"timezone": ZoneInfo("America/Los_Angeles"), "search_terms": ["Seattle", "seattle"]},
+    "San Francisco": {"timezone": ZoneInfo("America/Los_Angeles"), "search_terms": ["San Francisco", "san francisco"]},
 }
 
-CITIES = {
-    city: {
-        "timezone":     meta["timezone"],
-        "station_id":   RESOLUTION_ANCHORS[city]["station_code"],   # == anchor station_code (ICAO/obs)
-        "lat":          RESOLUTION_ANCHORS[city]["forecast_lat"],
-        "lon":          RESOLUTION_ANCHORS[city]["forecast_lon"],
-        "search_terms": meta["search_terms"],
+
+def _city_view(tiers: tuple[str, ...]) -> dict:
+    """Cities whose anchor tier is in *tiers*, in _CITY_META order."""
+    return {
+        city: {
+            "timezone":     meta["timezone"],
+            "station_id":   RESOLUTION_ANCHORS[city]["station_code"],
+            "lat":          RESOLUTION_ANCHORS[city]["forecast_lat"],
+            "lon":          RESOLUTION_ANCHORS[city]["forecast_lon"],
+            "search_terms": meta["search_terms"],
+        }
+        for city, meta in _CITY_META.items()
+        if RESOLUTION_ANCHORS[city].get("tier", "modelled") in tiers
     }
-    for city, meta in _CITY_META.items()
-}
+
+
+# ⚠️ CITIES MEANS MODELLED CITIES and must keep meaning exactly that. It is consumed by twelve
+# modules, several of which iterate it to fetch forecasts (fetch_weather, fetch_ensemble) or to
+# train (train_calibrator does `for city in CITIES.keys()`). Adding capture-only cities here
+# would pull forecasts for cities we do not model and attempt EMOS training on cities with no
+# archives — silently, on a green run. Use ALL_CITIES for discovery and capture instead.
+CITIES         = _city_view(("modelled",))
+CAPTURE_CITIES = _city_view(("capture",))
+ALL_CITIES     = _city_view(("modelled", "capture"))
 
 # ── Polymarket API ───────────────────────────────────────────────────────────
 GAMMA_API_BASE = "https://gamma-api.polymarket.com"
@@ -61,6 +83,7 @@ OPEN_METEO_PARAMS = {
 DATA_DIR          = "data"
 POLYMARKET_DIR    = "data/polymarket"
 WEATHER_DIR       = "data/weather"
+KALSHI_DIR        = "data/kalshi"
 PLOTS_DIR         = "plots"
 LOGS_DIR          = "logs"
 

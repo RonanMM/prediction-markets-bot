@@ -44,6 +44,9 @@ RESOLUTION_ANCHORS = {
         # Truth = IEM METAR daily for EGLC itself (whole °C, matching the market unit);
         # resolves the old concern that Meteostat EGLC0 was labelled "Abbey Wood" ~5 km away.
         "meteostat_id": "EGLC0",   # legacy/reference only
+        "tier": "modelled",
+        "kalshi_series": None,   # Kalshi lists NYC on Central Park and Chicago on Midway —
+                                 # different stations from ours. See spec §2.2.
     },
     "Seoul": {
         "resolution_url": "https://www.wunderground.com/history/daily/kr/incheon/RKSI",
@@ -58,6 +61,9 @@ RESOLUTION_ANCHORS = {
         "forecast_lon": 126.7660,
         "station_code": "RKSI",
         "meteostat_id": "47113",   # TRUTH = Incheon Intl Airport (RKSI), confirmed via meteostat.net
+        "tier": "modelled",
+        "kalshi_series": None,   # Kalshi lists NYC on Central Park and Chicago on Midway —
+                                 # different stations from ours. See spec §2.2.
     },
     "Chicago": {
         "resolution_url": "https://www.wunderground.com/history/daily/us/il/chicago/KORD",
@@ -66,6 +72,9 @@ RESOLUTION_ANCHORS = {
         "forecast_lon": -87.9048,
         "station_code": "KORD",
         "meteostat_id": "72530",   # confirmed = Chicago O'Hare (KORD) via meteostat.net
+        "tier": "modelled",
+        "kalshi_series": None,   # Kalshi lists NYC on Central Park and Chicago on Midway —
+                                 # different stations from ours. See spec §2.2.
     },
     "New York City": {
         "resolution_url": "https://www.wunderground.com/history/daily/us/ny/new-york-city/KLGA",
@@ -74,7 +83,10 @@ RESOLUTION_ANCHORS = {
         "forecast_lon": -73.8726,
         "station_code": "KLGA",
         "meteostat_id": "72503",   # confirmed = New York LaGuardia (KLGA) via meteostat.net
-        "aliases": ["NYC"]
+        "aliases": ["NYC"],
+        "tier": "modelled",
+        "kalshi_series": None,   # Kalshi lists NYC on Central Park and Chicago on Midway —
+                                 # different stations from ours. See spec §2.2.
     },
     "Hong Kong": {
         "resolution_url": "https://www.weather.gov.hk/en/cis/climat.htm",
@@ -98,6 +110,71 @@ RESOLUTION_ANCHORS = {
         # resolution page publishes. The old ⚠️ was justified: Meteostat 45007 disagreed
         # with HKO by >1.5 °C on ~66 days/yr (2024 audit), so it must NOT grade HK bets.
         "meteostat_id": "45007",   # legacy/reference only — do not grade from this
-        "aliases": ["HongKong"]
+        "aliases": ["HongKong"],
+        "tier": "modelled",
+        "kalshi_series": None,   # Kalshi lists NYC on Central Park and Chicago on Midway —
+                                 # different stations from ours. See spec §2.2.
+    },
+    # ── CAPTURE TIER (spec 2026-08-03) ───────────────────────────────────────────────────
+    # Seven cities where Polymarket and Kalshi resolve on the SAME station and differ only in
+    # the RULER (Wunderground hourly-METAR max vs NWS CLI 1-minute max). Verified live against
+    # both APIs 2026-08-03. We capture prices and truth for them; we do NOT forecast or model
+    # them — see config.CITIES, which deliberately excludes this tier.
+    "Los Angeles": {
+        "resolution_url": "https://www.wunderground.com/history/daily/us/ca/los-angeles/KLAX",
+        "resolution_unit": "whole °F",
+        "forecast_lat": 33.9425, "forecast_lon": -118.4081,
+        "station_code": "KLAX",
+        "tier": "capture",
+        "kalshi_series": "KXHIGHLAX",
+    },
+    "Austin": {
+        "resolution_url": "https://www.wunderground.com/history/daily/us/tx/austin/KAUS",
+        "resolution_unit": "whole °F",
+        "forecast_lat": 30.1975, "forecast_lon": -97.6664,
+        "station_code": "KAUS",
+        "tier": "capture",
+        "kalshi_series": "KXHIGHAUS",
+    },
+    "Atlanta": {
+        "resolution_url": "https://www.wunderground.com/history/daily/us/ga/atlanta/KATL",
+        "resolution_unit": "whole °F",
+        "forecast_lat": 33.6407, "forecast_lon": -84.4277,
+        "station_code": "KATL",
+        "tier": "capture",
+        "kalshi_series": "KXHIGHTATL",
+    },
+    "Houston": {
+        # Kalshi reads Houston-HOBBY (KHOU), not Bush (KIAH) — stated only in rules_secondary.
+        "resolution_url": "https://www.wunderground.com/history/daily/us/tx/houston/KHOU",
+        "resolution_unit": "whole °F",
+        "forecast_lat": 29.6454, "forecast_lon": -95.2789,
+        "station_code": "KHOU",
+        "tier": "capture",
+        "kalshi_series": "KXHIGHTHOU",
+    },
+    "Miami": {
+        "resolution_url": "https://www.wunderground.com/history/daily/us/fl/miami/KMIA",
+        "resolution_unit": "whole °F",
+        "forecast_lat": 25.7932, "forecast_lon": -80.2906,
+        "station_code": "KMIA",
+        "tier": "capture",
+        "kalshi_series": "KXHIGHMIA",
+    },
+    "Seattle": {
+        "resolution_url": "https://www.wunderground.com/history/daily/us/wa/seattle/KSEA",
+        "resolution_unit": "whole °F",
+        "forecast_lat": 47.4444, "forecast_lon": -122.3139,
+        "station_code": "KSEA",
+        "tier": "capture",
+        "kalshi_series": "KXHIGHTSEA",
+    },
+    "San Francisco": {
+        "resolution_url": "https://www.wunderground.com/history/daily/us/ca/san-francisco/KSFO",
+        "resolution_unit": "whole °F",
+        "forecast_lat": 37.6188, "forecast_lon": -122.3750,
+        "station_code": "KSFO",
+        "tier": "capture",
+        "kalshi_series": "KXHIGHTSFO",
     },
 }
