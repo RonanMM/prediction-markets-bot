@@ -248,9 +248,46 @@ everything discovered so a new or renamed series for a target city is visible.
 - `summarize_market(market) -> dict` — pure, testable, no network. Extracts the captured fields.
 - Absence is `None`, never a sentinel. A market with no bid yields `yes_bid = None`, not `0.0`.
 
-**No per-market orderbook or candlestick calls.** Top-of-book arrives free in the markets
-response; full depth ladders are one extra request per market per cycle for a question that
-cannot yet be asked. YAGNI — easy to add later, and the module boundary makes it a local change.
+### 4.3.1 Depth and history — capture everything, because it is unrecoverable
+
+An earlier draft of this spec applied YAGNI and captured only what arrives free in the markets
+response. **That was wrong, and the reason is specific: Kalshi serves market objects for only
+~2 months.** Anything not taken now cannot be taken later, at any price. Snapshots accumulate
+forward only; they can never recover the past. So the rule for Kalshi inverts the usual default.
+
+Three streams, verified live 2026-08-03:
+
+**(a) Market snapshots** — hourly, all fields listed in §2.4.
+
+**(b) Order-book depth** — `GET /markets/{ticker}/orderbook`, hourly, per live market.
+~7 cities × ~12 live markets ≈ 84 requests per cycle, trivial. Justified directly by the
+Polymarket experience two days earlier: a mid price without a book is misleading, and reading
+only one side of a two-sided market produced a confidently wrong executability figure
+(71 % vs 27 %). Stored as a compact summary in the same shape as `fetch_orderbook.summarize_book`,
+so both venues are analysed by one code path.
+
+**(c) Hourly candlesticks — the backfill, and the time-critical piece.**
+`GET /series/{s}/markets/{m}/candlesticks?period_interval=60`. Returns per hour: OHLC plus mean
+price, **`yes_bid`, `yes_ask`**, `volume_fp`, `open_interest_fp` — i.e. a genuine bid/ask history,
+not merely last trade.
+
+`period_interval=1` (one minute) returns **HTTP 400** on multi-day windows, so hourly is the
+practical granularity. It also matches our snapshot cadence, so nothing is lost on the paired
+comparison, whose resolution is capped by the coarser Polymarket side regardless.
+
+Sizing, measured on a real settled market (`KXHIGHNY-26JUL21-B79.5`, $181 k volume, 39 hourly
+candles over its life): ~2 months × 7 cities × ~12 markets/day ≈ 5,000 markets × ~40 candles
+≈ **200 k rows**, on the order of tens of MB. Comfortably committable.
+
+Run as a **one-time initial backfill** over everything currently served, then a **daily top-up**
+that fetches candles for markets which have settled since the last run — a market's candles stay
+available while its market object is served, so each market is captured once, completely, after
+its life ends.
+
+⚠️ Query windows must bracket the market's **actual trading life**, not "the last N days". While
+drafting this, querying a 7-day trailing window against a market that settled on 21 July returned
+zero candles at every interval — indistinguishable from "no candles exist". Derive the window
+from `open_time`/`close_time` on the market object.
 
 ### 4.4 Bin semantics — derived at read time, never at write
 
@@ -299,7 +336,9 @@ convention.
 
 | file | key | contents |
 |---|---|---|
-| `data/kalshi/{city_slug}_markets.csv` | `ticker + fetched_at_utc` | per-market snapshot rows |
+| `data/kalshi/{city_slug}_markets.csv` | `ticker + fetched_at_utc` | per-market snapshot rows (§4.3) |
+| `data/kalshi/{city_slug}_books.csv` | `ticker + fetched_at_utc` | order-book summary (§4.3.1b) |
+| `data/kalshi/{city_slug}_candles.csv` | `ticker + end_period_ts` | hourly OHLC/bid/ask history (§4.3.1c) |
 | `data/kalshi/series_manifest.csv` | `series_ticker + fetched_at_utc` | discovery health per cycle |
 
 `city_slug` is the same lowercase-underscore form the Polymarket side already uses, so the two
@@ -325,6 +364,8 @@ vendor fields persist rather than being silently dropped.
 | Invalid JSON (raw newline) | Parsed with `strict=False`. A genuine parse failure keeps existing data and warns. |
 | A market lacks bid/ask | Fields are `None`. No sentinel. |
 | Kalshi wholly unreachable | Polymarket collection is unaffected. Kalshi is additive and must never block the irreplaceable Polymarket snapshot. |
+| Candle fetch returns zero for a market | Recorded with its requested window (§7.10), retried next run. Never written as "market had no trading". |
+| Order-book fetch fails for one market | That market is un-annotated for the cycle; the rest proceed. Snapshots are never withheld because depth was unavailable. |
 | A capture-tier city reaches a modelling path | Test failure (§4.1), not a runtime surprise. |
 
 ---
@@ -351,6 +392,14 @@ Required cases, each with its mutation:
    spec silently dropped Houston and then Seattle to transient empty responses, each time
    producing a confident wrong overlap count (6 instead of 7). An empty response and a genuine
    absence are indistinguishable at the call site; only retry separates them.
+9. **Candle window derived from the market's life** — fails if the request window is a trailing
+   "last N days" rather than bracketing `open_time`/`close_time`. A trailing window against a
+   market that settled outside it returns zero candles at every interval, which reads as "this
+   market has no history" and would silently produce an empty backfill.
+10. **Backfill completeness is recorded** — each market's candle fetch records the window
+    requested and the candle count returned, so a market archived with zero candles is
+    distinguishable from one never attempted. A backfill that quietly covers half the window is
+    the obs-truncation failure in a new costume.
 
 Network is faked in all unit tests via an injected session, following the pattern established
 in `fetch_orderbook`'s tests.
@@ -363,7 +412,6 @@ Deferred to their own specs, each requiring weeks of accumulated data:
 
 - **Ruler conversion function** — per-station CLI↔WU transfer, measured not assumed.
 - **The paired test** — does transferred Kalshi price beat Polymarket's own price on Brier.
-- **Order-book depth and candlesticks** from Kalshi.
 - **Any trading.** A UK-resident operator's access to either venue is unresolved and is a
   precondition for any execution work, not for data capture.
 
