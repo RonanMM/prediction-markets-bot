@@ -4405,3 +4405,114 @@ def test_fetch_orderbooks_omits_a_ticker_whose_book_never_returns(monkeypatch):
 
     out = fetch_orderbooks(["T1"], session=DeadSession())
     assert out == {}, "a ticker whose book never returned must not appear in the result at all"
+
+
+def test_candle_window_brackets_the_markets_life_not_a_trailing_window():
+    """A trailing 'last N days' window against a market that settled outside it returns zero
+    candles at every interval — indistinguishable from 'this market never traded'. That mistake
+    was made live while drafting the spec, against KXHIGHNY-26JUL21-B79.5 ($181k volume)."""
+    from fetch_kalshi import fetch_candles
+
+    captured = {}
+
+    class CandleSession:
+        def get(self, url, params=None, timeout=None):
+            captured.update(params or {})
+            return _Resp('{"candlesticks": [{"end_period_ts": 1784628000, '
+                         '"price": {"close_dollars": "0.35"}, "volume_fp": "633.96", '
+                         '"open_interest_fp": "7230.16", "yes_bid": {}, "yes_ask": {}}]}')
+
+    market = {"ticker": "KXHIGHNY-26JUL21-B79.5",
+              "open_time": "2026-07-19T14:00:00Z", "close_time": "2026-07-22T04:00:00Z"}
+    candles, meta = fetch_candles("KXHIGHNY", market, session=CandleSession())
+
+    assert len(candles) == 1
+    assert captured["period_interval"] == 60, "1-minute returns HTTP 400 on multi-day windows"
+    # The window must come from the market's own life, with a margin, not from 'now'.
+    import datetime as _dt
+    open_ts = int(_dt.datetime.fromisoformat("2026-07-19T14:00:00+00:00").timestamp())
+    close_ts = int(_dt.datetime.fromisoformat("2026-07-22T04:00:00+00:00").timestamp())
+    assert captured["start_ts"] <= open_ts, "window must start at or before open_time"
+    assert captured["end_ts"] >= close_ts, "window must end at or after close_time"
+
+
+def test_candle_backfill_records_completeness(monkeypatch):
+    """A market archived with zero candles must be distinguishable from one never attempted.
+    A backfill quietly covering half its window is the obs-truncation failure in a new costume."""
+    import kalshi_series
+    from fetch_kalshi import fetch_candles
+
+    monkeypatch.setattr(kalshi_series.time, "sleep", lambda *_: None)
+
+    class EmptySession:
+        def get(self, url, params=None, timeout=None):
+            return _Resp('{"candlesticks": []}')
+
+    market = {"ticker": "T1", "open_time": "2026-07-19T14:00:00Z",
+              "close_time": "2026-07-22T04:00:00Z"}
+    candles, meta = fetch_candles("KXHIGHNY", market, session=EmptySession())
+    assert candles == []
+    assert meta["candles"] == 0
+    assert meta["ok"] is True, "the request SUCCEEDED and returned nothing — that is a fact"
+    assert meta["start_ts"] and meta["end_ts"], "the requested window must be recorded"
+
+    class DeadSession:
+        def get(self, url, params=None, timeout=None):
+            raise __import__("requests").exceptions.ConnectionError("down")
+
+    candles, meta = fetch_candles("KXHIGHNY", market, session=DeadSession())
+    assert meta["ok"] is False, "a failed fetch must NOT look like 'this market had no trading'"
+
+
+def test_fetch_candles_refuses_a_market_with_no_life_window():
+    """Without open_time/close_time there is no honest window to request."""
+    from fetch_kalshi import fetch_candles
+    candles, meta = fetch_candles("KXHIGHNY", {"ticker": "T1"}, session=None)
+    assert candles == [] and meta["ok"] is False and meta["reason"] == "no_window"
+
+
+def test_summarize_candle_matches_the_verified_live_shape():
+    """Verified live 2026-08-03 against KXHIGHNY-26JUL21-B79.5 ($181k volume, settled): `price`,
+    `yes_bid`, `yes_ask` are all DICTS keyed by `*_dollars` (never bare scalars), `end_period_ts`
+    is an int, `volume_fp`/`open_interest_fp` are numeric strings — this is the real shape, not a
+    fixture guess. A zero-trade minute can carry an EMPTY `price` dict (`{}`) or a `price` with
+    only `previous_dollars` (no close/open/high/low/mean) — absence must stay None, not 0.0 or a
+    KeyError."""
+    from fetch_kalshi import summarize_candle
+
+    live_candle = {
+        "end_period_ts": 1784606400,
+        "open_interest_fp": "4592.95",
+        "price": {"open_dollars": "0.2500", "high_dollars": "0.3400", "low_dollars": "0.1600",
+                  "close_dollars": "0.2900", "mean_dollars": "0.2601"},
+        "volume_fp": "5855.06",
+        "yes_ask": {"open_dollars": "1.0000", "high_dollars": "1.0000", "low_dollars": "0.1800",
+                    "close_dollars": "0.2900"},
+        "yes_bid": {"open_dollars": "0.0100", "high_dollars": "0.3300", "low_dollars": "0.0100",
+                    "close_dollars": "0.2800"},
+    }
+    row = summarize_candle(live_candle, "NYC", "KXHIGHNY", "KXHIGHNY-26JUL21-B79.5")
+    assert row["end_period_ts"] == 1784606400
+    assert row["close_dollars"] == 0.29
+    assert row["open_dollars"] == 0.25
+    assert row["yes_bid_close"] == 0.28
+    assert row["yes_ask_close"] == 0.29
+    assert row["volume"] == 5855.06
+    assert row["open_interest"] == 4592.95
+    assert set(row) == set(__import__("fetch_kalshi").CANDLE_COLS)
+
+    idle_candle = {"end_period_ts": 1784556240, "open_interest_fp": "5.00",
+                   "price": {"previous_dollars": "0.2500"}, "volume_fp": "0.00",
+                   "yes_ask": {"close_dollars": "0.2700"}, "yes_bid": {"close_dollars": "0.2200"}}
+    row = summarize_candle(idle_candle, "NYC", "KXHIGHNY", "T1")
+    assert row["close_dollars"] is None, "an idle candle's price dict has no close_dollars key"
+    assert row["open_dollars"] is None
+    assert row["yes_bid_close"] == 0.22
+
+    empty_price_candle = {"end_period_ts": 1784556060, "open_interest_fp": "0.00",
+                          "price": {}, "volume_fp": "0.00",
+                          "yes_ask": {"close_dollars": "0.5400"}, "yes_bid": {}}
+    row = summarize_candle(empty_price_candle, "NYC", "KXHIGHNY", "T1")
+    assert row["close_dollars"] is None
+    assert row["yes_bid_close"] is None, "an empty yes_bid dict must yield None, not 0.0"
+    assert row["yes_ask_close"] == 0.54

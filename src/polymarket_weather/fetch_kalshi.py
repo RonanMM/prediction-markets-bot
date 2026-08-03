@@ -12,6 +12,7 @@ Nothing here trades or sizes. Kalshi resolves on the NWS CLI and Polymarket on w
 so a Kalshi leg never hedges a Polymarket leg (spec 2026-08-03 sect 2.1).
 """
 
+import datetime as _dt
 import logging
 
 from fetch_orderbook import summarize_book
@@ -252,3 +253,89 @@ def fetch_orderbooks(tickers: list, session=None) -> dict:
         }
     logger.info("kalshi order books: %d/%d returned", len(out), len(tickers))
     return out
+
+
+CANDLE_PERIOD_MINUTES = 60      # period_interval=1 returns HTTP 400 once a multi-day window
+                                 # exceeds Kalshi's 5000-candlestick cap; 60 (hourly) stays well
+                                 # under it for any market's whole life. Verified live 2026-08-03:
+                                 # accepted period_interval values are {1, 60, 1440} only.
+CANDLE_MARGIN_SECONDS = 3600    # a little slack either side of the market's life
+
+CANDLE_COLS = ["city", "series_ticker", "ticker", "end_period_ts",
+               "open_dollars", "high_dollars", "low_dollars", "close_dollars", "mean_dollars",
+               "yes_bid_close", "yes_ask_close", "volume", "open_interest"]
+
+
+def _ts(value):
+    """Unix seconds from a Kalshi ISO timestamp, or None."""
+    if not value:
+        return None
+    try:
+        return int(_dt.datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp())
+    except (TypeError, ValueError):
+        return None
+
+
+def fetch_candles(series_ticker: str, market: dict, session=None):
+    """Hourly candles covering ONE market's whole life. Returns (candles, meta).
+
+    Candles are the ONLY route to Kalshi's ~2-month backfill — snapshots accumulate forward only
+    and can never recover the past.
+
+    ⚠️ The window is derived from the market's own open_time/close_time, never from a trailing
+    "last N days". A trailing window against a market that settled outside it returns zero
+    candles at every interval, which reads as "this market never traded". That mistake was made
+    live while drafting the spec against KXHIGHNY-26JUL21-B79.5, a market with $181k of volume.
+
+    `meta` records the window requested and the candle count, so a market archived with zero
+    candles is distinguishable from one never attempted:
+        {"ticker", "start_ts", "end_ts", "candles", "ok", "reason"}
+    ok=False (transport failure) must never look like "this market had no trading" — the caller
+    reads `ok` before `candles`, exactly like kalshi_get itself.
+    """
+    start = _ts(market.get("open_time"))
+    end = _ts(market.get("close_time"))
+    ticker = market.get("ticker")
+    if start is None or end is None:
+        return [], {"ticker": ticker, "start_ts": None, "end_ts": None, "candles": 0,
+                    "ok": False, "reason": "no_window"}
+
+    start -= CANDLE_MARGIN_SECONDS
+    end += CANDLE_MARGIN_SECONDS
+    payload, ok = kalshi_get(
+        f"/series/{series_ticker}/markets/{ticker}/candlesticks",
+        {"start_ts": start, "end_ts": end, "period_interval": CANDLE_PERIOD_MINUTES},
+        session=session,
+    )
+    if not ok:
+        return [], {"ticker": ticker, "start_ts": start, "end_ts": end, "candles": 0,
+                    "ok": False, "reason": "fetch_failed"}
+    candles = (payload or {}).get("candlesticks") or []
+    return candles, {"ticker": ticker, "start_ts": start, "end_ts": end,
+                     "candles": len(candles), "ok": True, "reason": ""}
+
+
+def summarize_candle(candle: dict, city: str, series_ticker: str, ticker: str) -> dict:
+    """One archive row from a Kalshi candlestick. Absence is None.
+
+    `price`/`yes_bid`/`yes_ask` are DICTS keyed by `*_dollars` (verified live 2026-08-03 against
+    a settled $181k-volume market) — never bare scalars. A zero-trade candle can carry an EMPTY
+    dict at any of the three, or a `price` holding only a carry-forward `previous_dollars` with
+    no close/open/high/low/mean; `_num` reads those as None, never 0.0 or a KeyError.
+    """
+    price = candle.get("price") or {}
+    bid = candle.get("yes_bid") or {}
+    ask = candle.get("yes_ask") or {}
+    return {
+        "city": city, "series_ticker": series_ticker, "ticker": ticker,
+        "end_period_ts": candle.get("end_period_ts"),
+        "open_dollars": _num(price, "open_dollars"),
+        "high_dollars": _num(price, "high_dollars"),
+        "low_dollars": _num(price, "low_dollars"),
+        "close_dollars": _num(price, "close_dollars"),
+        "mean_dollars": _num(price, "mean_dollars"),
+        "yes_bid_close": _num(bid, "close_dollars"),
+        "yes_ask_close": _num(ask, "close_dollars"),
+        "volume": _num(candle, "volume_fp"),
+        "open_interest": _num(candle, "open_interest_fp"),
+    }
