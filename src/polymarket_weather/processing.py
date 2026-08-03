@@ -20,7 +20,7 @@ import json
 
 import pandas as pd
 
-from config import POLYMARKET_DIR, WEATHER_DIR
+from config import KALSHI_DIR, POLYMARKET_DIR, WEATHER_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,8 @@ def _ensemble_path(city: str) -> Path:
 
 def _weather_daily_mm_path(city: str) -> Path:
     return Path(WEATHER_DIR) / f"{_slug(city)}_daily_mm.csv"
+
+_KALSHI_DIR = Path(KALSHI_DIR)
 
 def _slug(city: str) -> str:
     # F7: delegate to the single canonical slug in resolution_anchors (the source of truth), so
@@ -209,6 +211,39 @@ def save_ensemble_forecast(forecast: dict) -> None:
         forecast.get("daily", []),
         dedup_cols=["city", "date_local", "fetched_at_utc"],
     )
+
+
+# ── Kalshi persistence ────────────────────────────────────────────────────────
+
+def kalshi_manifest_path() -> Path:
+    """Path to the Kalshi series-health manifest."""
+    return _KALSHI_DIR / "series_manifest.csv"
+
+
+def kalshi_candles_path(city_slug: str) -> Path:
+    """Path to one city's Kalshi candle archive — also the read side of the already-archived
+    skip (a finalized market's candles are immutable, so a ticker already in this file never
+    needs re-fetching)."""
+    return _KALSHI_DIR / f"{city_slug}_candles.csv"
+
+
+def save_kalshi_rows(kind: str, city_slug: str, rows: list[dict], dedup_cols: list[str]) -> int:
+    """Append Kalshi rows to data/kalshi/{city_slug}_{kind}.csv. Append-only + dedupe on read,
+    matching the Polymarket convention. `_append_csv` already unions columns on schema widening,
+    so new vendor fields persist rather than being silently dropped."""
+    if not rows:
+        return 0
+    _KALSHI_DIR.mkdir(parents=True, exist_ok=True)
+    return _append_csv(_KALSHI_DIR / f"{city_slug}_{kind}.csv", rows, dedup_cols=dedup_cols)
+
+
+def save_kalshi_manifest(rows: list[dict]) -> int:
+    """Append series-health rows to data/kalshi/series_manifest.csv."""
+    if not rows:
+        return 0
+    _KALSHI_DIR.mkdir(parents=True, exist_ok=True)
+    return _append_csv(kalshi_manifest_path(), rows,
+                       dedup_cols=["series_ticker", "fetched_at_utc"])
 
 
 # ── Implied temperature ───────────────────────────────────────────────────────

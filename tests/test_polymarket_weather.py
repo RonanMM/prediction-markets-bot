@@ -4556,3 +4556,115 @@ def test_ts_rejects_falsy_and_malformed_timestamps():
     _, meta = fetch_candles("KXHIGHNY", {"ticker": "T", "open_time": 0, "close_time": 0})
     assert meta["ok"] is False and meta["reason"] == "no_window"
     assert meta["start_ts"] is None and meta["end_ts"] is None
+
+
+def test_ticker_rot_is_an_error_not_an_absence():
+    """A series that previously served markets and now serves none is the rot signature —
+    KXHIGHHOU is already dead. It must be loud, not logged at debug."""
+    import pandas as pd
+    from main import _kalshi_rot_alarms
+
+    prev = pd.DataFrame([
+        {"series_ticker": "KXHIGHLAX", "markets_returned": 200},
+        {"series_ticker": "KXHIGHTHOU", "markets_returned": 200},
+    ])
+    now = [{"series_ticker": "KXHIGHLAX", "markets_returned": 200},
+           {"series_ticker": "KXHIGHTHOU", "markets_returned": 0}]
+    alarms = _kalshi_rot_alarms(now, prev)
+    assert alarms == ["KXHIGHTHOU"]
+
+    # A series that has NEVER served markets is not rot — nothing was lost.
+    prev2 = pd.DataFrame([{"series_ticker": "KXNEW", "markets_returned": 0}])
+    assert _kalshi_rot_alarms([{"series_ticker": "KXNEW", "markets_returned": 0}], prev2) == []
+
+
+def test_kalshi_rot_alarms_returns_nothing_with_no_previous_manifest():
+    """First-ever run: there is no previous manifest to compare against, so nothing can be
+    rot yet — this is the branch a naive 'no previous -> everything is new/rot' mutation would
+    break (see the mutation test that proves this in the task-8 report)."""
+    from main import _kalshi_rot_alarms
+
+    now = [{"series_ticker": "KXHIGHLAX", "markets_returned": 0}]
+    assert _kalshi_rot_alarms(now, None) == []
+
+    import pandas as pd
+    assert _kalshi_rot_alarms(now, pd.DataFrame()) == []
+
+
+def test_kalshi_failure_never_blocks_polymarket_collection(monkeypatch, caplog):
+    """The Kalshi step is additive and must NEVER block the irreplaceable Polymarket snapshot.
+    main() wraps step_fetch_kalshi() in its own try/except — this proves that wrapper actually
+    swallows a raising Kalshi step rather than letting it propagate and kill the whole run."""
+    import logging
+    import main
+
+    poly_called = []
+    monkeypatch.setattr(main, "step_fetch_polymarket", lambda cities: poly_called.append(cities))
+
+    def _boom():
+        raise RuntimeError("kalshi outage")
+    monkeypatch.setattr(main, "step_fetch_kalshi", _boom)
+    monkeypatch.setattr(main, "step_fetch_weather", lambda cities: None)
+    monkeypatch.setattr(main, "step_fetch_ensemble", lambda cities: None)
+    monkeypatch.setattr(
+        "sys.argv", ["main.py", "--cities", "Los Angeles", "--collect-only"])
+
+    with caplog.at_level(logging.WARNING):
+        main.main()   # must not raise despite step_fetch_kalshi blowing up
+
+    assert poly_called == [["Los Angeles"]], "Polymarket collection must still have run"
+    assert any("Kalshi archive failed" in r.message for r in caplog.records), \
+        "the swallowed failure must be logged, not silently dropped"
+
+
+def test_step_fetch_kalshi_uses_the_verified_settled_status_not_a_guess():
+    """main._SETTLED_STATUSES gates the candle backfill (the ONLY route to Kalshi's ~2-month
+    history). Verified live 2026-08-03 across all 7 capture-tier series (3,066 markets): the
+    only terminal status Kalshi actually returns is "finalized" — "settled" and "closed" (an
+    earlier draft's guess) never appear. Pin the real value so a future edit can't silently
+    revert to the unverified guess."""
+    from main import _SETTLED_STATUSES
+    assert _SETTLED_STATUSES == {"finalized"}
+
+
+def test_archived_tickers_distinguishes_absence_from_corruption(tmp_path):
+    """A finalized market's candles are immutable, so main._archived_tickers is the read side
+    of skipping already-archived tickers on every later cycle. Absence (no file yet, a normal
+    first run) must return an EMPTY SET so the one-time backfill still runs — but a file that
+    EXISTS and fails to parse is corruption, not absence, and must return None so the caller
+    skips that city's candle phase rather than silently re-fetching everything or, worse,
+    duplicating what is already archived."""
+    import pandas as pd
+    from main import _archived_tickers
+
+    missing = tmp_path / "atlanta_candles.csv"
+    assert _archived_tickers(missing) == set(), "no file yet must read as EMPTY, not unknown"
+
+    existing = tmp_path / "austin_candles.csv"
+    pd.DataFrame([{"ticker": "KXHIGHAUS-OLD", "end_period_ts": 1},
+                  {"ticker": "KXHIGHAUS-OLD2", "end_period_ts": 2}]).to_csv(existing, index=False)
+    assert _archived_tickers(existing) == {"KXHIGHAUS-OLD", "KXHIGHAUS-OLD2"}
+
+    corrupt = tmp_path / "la_candles.csv"
+    corrupt.write_text("not_a_ticker_column\nfoo\nbar\n")
+    assert _archived_tickers(corrupt) is None, \
+        "a file that exists but cannot be parsed must be None, never read as 'nothing archived'"
+
+
+def test_candle_backfill_skips_already_archived_tickers():
+    """A finalized market's candles are immutable. Re-fetching all ~426 per city every hour is
+    ~3,000 requests/cycle for data we already hold — it triggers HTTP 429s and cannot fit the
+    hourly collector's shared 45-minute timeout. Measured 2026-08-03: 0.33s per candle fetch,
+    ~2.4 min per city, ~17 min for seven."""
+    from main import _markets_needing_candles
+
+    markets = [
+        {"ticker": "T_OLD", "status": "finalized"},    # already archived -> must be skipped
+        {"ticker": "T_NEW", "status": "finalized"},    # newly settled -> must still be fetched
+        {"ticker": "T_LIVE", "status": "active"},      # not settled at all -> never candled
+    ]
+    need = _markets_needing_candles(markets, archived={"T_OLD"})
+    tickers = {m["ticker"] for m in need}
+
+    assert "T_OLD" not in tickers, "an already-archived ticker must not be re-fetched"
+    assert tickers == {"T_NEW"}, "a genuinely new settled ticker must still be fetched"

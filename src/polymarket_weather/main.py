@@ -83,6 +83,17 @@ def _setup_logging(verbose: bool = False) -> None:
 
 logger = logging.getLogger(__name__)
 
+# Terminal (settled) Kalshi market status. An earlier draft of this step guessed
+# {"finalized", "settled", "closed"} without checking; that guess was partly fiction. VERIFIED
+# LIVE 2026-08-03 across all 7 capture-tier series (3,066 markets total via full pagination):
+# Kalshi returns exactly two status values — "active" (84) and "finalized" (2982). "settled" and
+# "closed" never appear, and neither does "initialized" (kalshi_series.LIVE_STATUSES allows for
+# it, but no currently-enumerable market for these series is in that state). Candle backfill is
+# the ONLY route to Kalshi's ~2-month history, so under-matching here silently and permanently
+# loses a settled market's whole price history; using the real observed value instead of the
+# unverified guess is the point.
+_SETTLED_STATUSES = {"finalized"}
+
 
 # ── Pipeline steps ────────────────────────────────────────────────────────────
 
@@ -115,6 +126,128 @@ def _annotate_order_books(snapshots: list[dict]) -> None:
         logger.info("Order books: annotated %d/%d snapshots.", len(books), len(snapshots))
     except Exception as exc:                       # noqa: BLE001 — must not break collection
         logger.warning("Order-book annotation failed (%s) — snapshots saved without it.", exc)
+
+
+def _kalshi_rot_alarms(rows: list[dict], previous) -> list[str]:
+    """Series that HAVE served markets before and serve none now — the ticker-rot signature.
+
+    Kalshi renames series (HIGHNY -> KXHIGHNY) and leaves the old ticker enumerable but empty.
+    A series that never served markets is not rot; nothing was lost.
+    """
+    if previous is None or not len(previous):
+        return []
+    ever = set(previous.loc[previous["markets_returned"].astype(float) > 0, "series_ticker"])
+    return [r["series_ticker"] for r in rows
+            if r["series_ticker"] in ever and int(r["markets_returned"]) == 0]
+
+
+def _archived_tickers(path) -> set | None:
+    """Tickers already present in an existing Kalshi {city}_candles.csv.
+
+    A finalized market's candle history is IMMUTABLE, so once it is archived it never needs
+    re-fetching. Re-fetching all ~426 settled markets per city on EVERY hourly cycle is ~3,000
+    wasted requests across 7 cities and triggers HTTP 429s — measured 2026-08-03: 0.33s/fetch,
+    ~2.4 min/city, ~17 min for one full 7-city cycle if nothing is skipped, which does not fit
+    an hourly collector sharing a 45-minute CI timeout with the Polymarket work. This is the
+    read side of the skip.
+
+    Absence is a NORMAL first run: no candles file yet -> empty set, so every settled market
+    still gets backfilled once (the one-time ~17-minute cost that is actually wanted).
+
+    A file that EXISTS but fails to parse is NOT the same as absence — it is corruption, and
+    must never be silently read as "nothing archived": that would look exactly like a fresh
+    backfill and either re-fetch everything (wasteful, rate-limited) or — worse, if some rows
+    did parse — quietly duplicate what is already there. Returns None so the caller can tell the
+    two cases apart and skip the whole candle phase for that city rather than guess.
+    """
+    import pandas as pd
+    if not path.exists():
+        return set()
+    try:
+        df = pd.read_csv(path, usecols=["ticker"], dtype=str)
+    except Exception:
+        return None
+    return set(df["ticker"].dropna())
+
+
+def _markets_needing_candles(markets: list[dict], archived: set) -> list[dict]:
+    """Settled markets (see _SETTLED_STATUSES) whose candles are not already archived.
+
+    Pure and separately testable from the network/disk side of the skip (_archived_tickers) —
+    together they are the whole "skip already-archived tickers" guard.
+    """
+    return [m for m in markets
+            if m.get("status") in _SETTLED_STATUSES and m.get("ticker") not in archived]
+
+
+def step_fetch_kalshi() -> None:
+    """Archive Kalshi markets, order books and candles for the capture-tier cities.
+
+    Additive and best-effort: a Kalshi outage must never block the irreplaceable Polymarket
+    snapshot, so every failure here is logged and swallowed by the caller.
+    """
+    import pandas as pd
+    from kalshi_series import target_series, manifest_row
+    from fetch_kalshi import (fetch_series_markets, summarize_market, count_live,
+                              fetch_orderbooks, fetch_candles, summarize_candle)
+    from processing import (save_kalshi_rows, save_kalshi_manifest, kalshi_manifest_path,
+                            kalshi_candles_path)
+    from resolution_anchors import slug
+
+    logger.info("═══ Step 1b: Kalshi archive ═══")
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        previous = pd.read_csv(kalshi_manifest_path()) if kalshi_manifest_path().exists() else None
+    except Exception:
+        previous = None
+
+    manifest = []
+    for city, series in target_series().items():
+        cslug = slug(city)
+        markets, truncated = fetch_series_markets(series)
+        manifest.append(manifest_row(series, city, len(markets), count_live(markets),
+                                     truncated, now))
+        if not markets:
+            continue
+
+        rows = [{**summarize_market(m), "fetched_at_utc": now, "city": city,
+                 "series_ticker": series} for m in markets]
+        save_kalshi_rows("markets", cslug, rows, ["ticker", "fetched_at_utc"])
+
+        live = [m["ticker"] for m in markets if m.get("status") in ("active", "initialized")]
+        books = fetch_orderbooks(live)
+        if books:
+            save_kalshi_rows("books", cslug,
+                             [{"fetched_at_utc": now, "city": city, "ticker": t, **b}
+                              for t, b in books.items()],
+                             ["ticker", "fetched_at_utc"])
+
+        # Candle backfill: settled markets only, and only those NOT already archived — a
+        # finalized market's candles are immutable (see _archived_tickers for the measured cost
+        # of not skipping). A corrupt/unreadable existing archive skips this city's candle phase
+        # entirely rather than risk a mass re-fetch or silent duplication.
+        archived = _archived_tickers(kalshi_candles_path(cslug))
+        if archived is None:
+            logger.error("kalshi candles %s: existing archive at %s is unreadable — skipping "
+                         "the candle phase for this city rather than re-fetching or "
+                         "duplicating; investigate before the next cycle.",
+                         cslug, kalshi_candles_path(cslug))
+        else:
+            for m in _markets_needing_candles(markets, archived):
+                candles, meta = fetch_candles(series, m)
+                if not meta["ok"]:
+                    logger.warning("kalshi candles %s: %s", meta["ticker"], meta["reason"])
+                    continue
+                if candles:
+                    save_kalshi_rows("candles", cslug,
+                                     [summarize_candle(c, city, series, m["ticker"]) for c in candles],
+                                     ["ticker", "end_period_ts"])
+
+    save_kalshi_manifest(manifest)
+    for rotted in _kalshi_rot_alarms(manifest, previous):
+        logger.error("KALSHI TICKER ROT: %s served markets before and serves NONE now. Kalshi "
+                     "renames series and leaves the old ticker enumerable but empty; a "
+                     "hardcoded list would archive nothing behind a green run.", rotted)
 
 
 def step_fetch_polymarket(cities: list[str]) -> None:
@@ -340,6 +473,10 @@ def main() -> None:
     # Full pipeline
     if not args.skip_polymarket:
         step_fetch_polymarket(cities)
+        try:
+            step_fetch_kalshi()
+        except Exception as exc:            # noqa: BLE001 — Kalshi must never block collection
+            logger.warning("Kalshi archive failed (%s) — Polymarket collection unaffected.", exc)
 
     if not args.skip_weather:
         step_fetch_weather(cities)
