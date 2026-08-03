@@ -4044,3 +4044,94 @@ def test_target_series_covers_exactly_the_capture_cities():
     assert set(ts) == {c for c, a in RESOLUTION_ANCHORS.items() if a.get("tier") == "capture"}
     assert ts["Houston"] == "KXHIGHTHOU", "Houston's other three tickers are DEAD"
     assert ts["Los Angeles"] == "KXHIGHLAX"
+
+
+def test_fetch_series_markets_reports_truncation_explicitly():
+    """The Polymarket discovery bug was a hard API ceiling read as 'that is the end of the
+    list', which captured ~3% of markets for months. Pagination must return truncation as a
+    VALUE, never leave the caller to infer it."""
+    from fetch_kalshi import fetch_series_markets
+
+    class CappedSession:
+        """Always returns a full page with a cursor — an infinite list."""
+        def get(self, url, params=None, timeout=None):
+            page = [{"ticker": f"T{i}", "status": "active"} for i in range(3)]
+            return _Resp(__import__("json").dumps({"markets": page, "cursor": "more"}))
+
+    markets, truncated = fetch_series_markets("KXHIGHLAX", session=CappedSession(),
+                                              page_size=3, max_pages=4)
+    assert truncated is True, "hitting the page cap MUST report truncation"
+    assert len(markets) == 12
+
+    class ShortSession:
+        def get(self, url, params=None, timeout=None):
+            return _Resp(__import__("json").dumps({"markets": [{"ticker": "T1"}], "cursor": ""}))
+
+    markets, truncated = fetch_series_markets("KXHIGHLAX", session=ShortSession(), page_size=3)
+    assert truncated is False, "a short page is a legitimate end of list"
+    assert len(markets) == 1
+
+
+def test_summarize_market_absence_is_none_never_a_sentinel():
+    """data_loader.check_orderbook_vwap returns 1.0 when it cannot fill, which makes 'no
+    liquidity' indistinguishable from 'priced at 1.0'. A price of 0 or 1 is a tradeable claim;
+    absence is not."""
+    from fetch_kalshi import summarize_market
+
+    s = summarize_market({"ticker": "T1", "status": "active"})
+    assert s["yes_bid"] is None and s["yes_ask"] is None
+    assert s["volume"] is None
+    assert s["ticker"] == "T1"
+
+    s2 = summarize_market({"ticker": "T2", "yes_bid_dollars": "0.0000",
+                           "yes_ask_dollars": "0.0700", "volume_fp": "0.00"})
+    assert s2["yes_bid"] == 0.0, "a real zero bid is 0.0, NOT None"
+    assert s2["yes_ask"] == 0.07
+    assert s2["volume"] == 0.0
+
+
+def test_summarize_market_keeps_both_rules_fields_verbatim():
+    """The station is stated in a DIFFERENT FIELD per series generation: older KXHIGH* name the
+    airport in rules_primary with no product code, newer KXHIGHT* give a bare city there and put
+    the station in rules_secondary. Neither field alone identifies the station, and 'Houston' is
+    ambiguous between Bush and Hobby."""
+    from fetch_kalshi import summarize_market
+
+    s = summarize_market({
+        "ticker": "KXHIGHTHOU-26AUG04-T94",
+        "rules_primary": "...recorded at Houston for Aug 4, 2026...",
+        "rules_secondary": 'Data for CLIHOU ... location "Houston-Hobby, TX" ...',
+    })
+    assert "Houston-Hobby, TX" in s["rules_secondary"]
+    assert "recorded at Houston" in s["rules_primary"]
+
+
+def test_derive_bin_agrees_with_the_human_readable_subtitle():
+    """floor_strike + strike_type + yes_sub_title are three representations of ONE threshold.
+    The off-by-one between them is exactly the Hong Kong ruler bug's shape: floor_strike 82 with
+    strike_type 'greater' means YES from 83, and the subtitle says '83° or above'."""
+    from fetch_kalshi import derive_bin
+
+    # Real market, captured live 2026-08-03.
+    got = derive_bin({"floor_strike": 82, "strike_type": "greater",
+                      "yes_sub_title": "83° or above"})
+    assert got["op"] == "greater"
+    assert got["yes_from_f"] == 83
+    assert got["yes_to_f"] is None
+    assert got["subtitle_bound"] == 83
+    assert got["agrees_with_subtitle"] is True
+
+    got_less = derive_bin({"floor_strike": 97, "strike_type": "less",
+                           "yes_sub_title": "96° or below"})
+    assert got_less["op"] == "less"
+    assert got_less["yes_to_f"] == 96
+    assert got_less["agrees_with_subtitle"] is True
+
+    # A disagreement must be VISIBLE, not silently resolved in favour of either side.
+    bad = derive_bin({"floor_strike": 82, "strike_type": "greater",
+                      "yes_sub_title": "99° or above"})
+    assert bad["agrees_with_subtitle"] is False
+
+    # An unknown strike_type must not be guessed.
+    assert derive_bin({"floor_strike": 82, "strike_type": "between",
+                       "yes_sub_title": "x"}) is None
