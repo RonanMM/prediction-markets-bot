@@ -4516,3 +4516,24 @@ def test_summarize_candle_matches_the_verified_live_shape():
     assert row["close_dollars"] is None
     assert row["yes_bid_close"] is None, "an empty yes_bid dict must yield None, not 0.0"
     assert row["yes_ask_close"] == 0.54
+
+
+def test_ts_rejects_falsy_and_malformed_timestamps():
+    """A 0 or a malformed string must yield None, never a 1970 window.
+
+    `if not value` is what catches the literal 0 — a later tidy-up to `if value is None`
+    would make open_time=0 produce start=-3600, ok=True and candles=0, which reads as
+    "this market never traded". Kalshi serves market objects ~2 months, so a market wrongly
+    skipped is unrecoverable.
+    """
+    from fetch_kalshi import _ts, fetch_candles
+    assert _ts(0) is None
+    assert _ts("") is None
+    assert _ts(None) is None
+    assert _ts("garbage") is None
+    assert _ts("2026-07-19T14:00:00Z") == 1784469600     # Z-suffixed ISO parses correctly
+
+    # End to end: a falsy window must refuse, not silently request 1970.
+    _, meta = fetch_candles("KXHIGHNY", {"ticker": "T", "open_time": 0, "close_time": 0})
+    assert meta["ok"] is False and meta["reason"] == "no_window"
+    assert meta["start_ts"] is None and meta["end_ts"] is None
