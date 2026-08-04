@@ -203,6 +203,50 @@ The one number still worth watching is breadth `outer` [5,20)¢ at +0.023 (t≈2
 one of ~4 bands examined and all its graded entries fall in a 3-day window, so treat it as a
 hypothesis the accruing book will test, not a finding.
 
+## Cross-venue capture — started 2026-08-04, first read due ~2026-08-11
+
+We now archive **Kalshi** alongside Polymarket for the seven US cities where **both venues
+resolve on the same weather station**: Los Angeles, Austin, Atlanta, Houston, Miami, Seattle and
+San Francisco. Verified exhaustively — 19 live Kalshi temperature series intersected against 47
+Polymarket cities gives exactly seven. Chicago and New York are deliberately excluded: Kalshi
+reads Midway and Central Park where we read O'Hare and LaGuardia, and those stations differ by
+several degrees. That is basis risk, not opportunity.
+
+The two venues differ only in the **ruler**: Polymarket settles on Wunderground's hourly-METAR
+maximum, Kalshi on the NWS Climatological Report's 1-minute maximum. We measured that gap at our
+own stations — the CLI reading is greater than or equal to the Wunderground reading on **99.4%**
+of 1,668 station-days, averaging **+0.66 °F**. So the two are never interchangeable, but the
+difference is measurable rather than mysterious.
+
+**Why bother.** Kalshi's books on these markets are 5–20× deeper than Polymarket's. Its price is
+therefore a genuinely different opinion, not another reading of the same public forecast we
+already consume — which is the only kind of new information this project has said is worth
+revisiting the forecasting question for.
+
+**Nothing is claimed yet.** This is data capture. No model runs on these cities, no money moves,
+and the dashboard shows only whether collection is alive.
+
+### ⏳ DUE ~2026-08-11 — add market-only calibration for the seven
+
+Today the dashboard shows a **capture panel** (markets collected per venue) and nothing more,
+because we began collecting these cities on 2026-08-04 and every market we hold settles on
+2026-08-04 or later. **Zero have resolved, so there is nothing to score.**
+
+Once about a week of markets has settled, add a per-city panel showing **market Brier and
+calibration** — how well the *price* predicted the outcome. That needs no model, which is the
+point: these cities are deliberately unmodelled.
+
+Two things to respect when doing it:
+- **Do NOT add these cities to `build_dashboard.CITY_ORDER`.** That list drives the publish
+  guard, which refuses to build when any of its cities has no gradable markets. A test
+  (`test_capture_cities_can_never_block_the_dashboard_publish`) enforces this.
+- Report their numbers **separately** from the original five. Different cities, different
+  ruler, no model — pooling them would be comparing unlike things.
+
+The paired question these cities exist to answer — *does Kalshi's price, converted through the
+measured ruler function, predict the Polymarket outcome better than Polymarket's own price?* —
+needs roughly six weeks of overlap and gets its own spec. Do not attempt it early on thin data.
+
 ## Bottom line
 1. The evaluation machinery is now trustworthy end-to-end: settlement-faithful labels, a
    permanent settlement audit, honest costs, pre-committed gates. As of 2026-07-30 the audit

@@ -48,6 +48,22 @@ CITY_META = {
 }
 CITY_ORDER = ["Seoul", "London", "Chicago", "NYC", "HongKong"]
 
+# ── CAPTURE-TIER cities (added 2026-08-04) ────────────────────────────────────────────────
+# The seven US cities where Polymarket and Kalshi resolve on the SAME station and differ only
+# in the RULER (Wunderground hourly-METAR max vs NWS CLI 1-minute max). We capture prices and
+# truth for them; we do NOT forecast or model them, so they have no model-vs-market Brier and
+# CANNOT go in CITY_ORDER — `_missing_cities` would refuse to publish while they have no
+# gradable markets, freezing the live dashboard. This panel reports COLLECTION HEALTH only.
+CAPTURE_META = {
+    "Los Angeles":   ("KLAX", "KXHIGHLAX"),
+    "Austin":        ("KAUS", "KXHIGHAUS"),
+    "Atlanta":       ("KATL", "KXHIGHTATL"),
+    "Houston":       ("KHOU", "KXHIGHTHOU"),
+    "Miami":         ("KMIA", "KXHIGHMIA"),
+    "Seattle":       ("KSEA", "KXHIGHTSEA"),
+    "San Francisco": ("KSFO", "KXHIGHTSFO"),
+}
+
 
 # ────────────────────────────── scalars (stdout parse) ──────────────────────────────
 def _run(args: list[str]) -> str:
@@ -202,7 +218,10 @@ def _city_rows(c) -> list[dict]:
 
 def compute_series() -> dict:
     out: dict = {"acc": [], "roll": [], "city": [], "calib": [], "growth": [],
-                 "heartbeat": [], "buckets": [], "recent": [], "equity": []}
+                 "heartbeat": [], "buckets": [], "recent": [], "equity": [], "capture": []}
+    # Capture-tier coverage FIRST, and outside the eval machinery: it reads only collected files,
+    # so it must still render if anything downstream fails. capture_coverage never raises.
+    out["capture"] = capture_coverage()
     if str(PKG) not in sys.path:
         sys.path.insert(0, str(PKG))
     try:
@@ -636,9 +655,73 @@ def build_payload(d: dict, series: dict) -> dict:
             "EDGE_CHIP": edge_chip,
             "TAKEAWAY": takeaway,
             "CITIES_HTML": _cities_html(series.get("city", []), d),
+            "CAPTURE_HTML": _capture_html(series.get("capture", [])),
         },
         "series": series,
     }
+
+
+def capture_coverage() -> list:
+    """Per-city collection health for the CAPTURE tier. Never raises.
+
+    This answers one question — "is the new pipeline actually alive?" — and deliberately reports
+    NO accuracy figures: these cities have no model, and until their markets resolve there is
+    nothing to score either. Reporting a Brier here would be inventing one.
+
+    Exception-safe by contract. `main()` refuses to publish when `compute_series` raises
+    (`_series_error`), so a missing or malformed capture file must degrade to zeroes rather than
+    take the whole dashboard down with it — the five-city page must keep publishing regardless.
+    """
+    import pandas as pd
+
+    rows = []
+    for city, (station, series_ticker) in CAPTURE_META.items():
+        rec = {"city": city, "station": station, "series": series_ticker,
+               "pm_markets": 0, "pm_snaps": 0, "kal_markets": 0, "kal_books": 0,
+               "kal_candles": 0, "graded": 0, "first_target": None}
+        try:
+            slug = re.sub(r"[^a-z0-9]+", "_", city.lower()).strip("_")
+
+            pm = PKG / "data" / "polymarket" / f"{slug}_snapshots.csv"
+            if pm.exists():
+                d = pd.read_csv(pm, low_memory=False)
+                rec["pm_snaps"] = int(len(d))
+                if "condition_id" in d.columns:
+                    rec["pm_markets"] = int(d["condition_id"].nunique())
+                dates = pd.to_datetime(d.get("end_date_iso"), errors="coerce", utc=True)
+                if dates is not None and dates.notna().any():
+                    rec["first_target"] = str(dates.min().date())
+
+            for key, fname in (("kal_markets", "markets"), ("kal_books", "books"),
+                               ("kal_candles", "candles")):
+                p = PKG / "data" / "kalshi" / f"{slug}_{fname}.csv"
+                if p.exists():
+                    rec[key] = int(len(pd.read_csv(p, low_memory=False)))
+        except Exception as exc:                      # noqa: BLE001 — must never block publish
+            sys.stderr.write(f"::warning::capture coverage for {city} unavailable: {exc}\n")
+        rows.append(rec)
+    return rows
+
+
+def _capture_html(rows: list) -> str:
+    """The capture-tier panel. Shows collection health, never accuracy."""
+    if not rows:
+        return '<div class="cb mono">capture tier not configured</div>'
+    out = []
+    for r in rows:
+        live = r["pm_markets"] > 0 and r["kal_markets"] > 0
+        chip = ('<span class="chip good">both venues</span>' if live
+                else '<span class="chip warn">awaiting data</span>')
+        awaiting = ('<span class="chip">awaiting first resolution</span>'
+                    if r["graded"] == 0 else
+                    f'<span class="chip good">{r["graded"]} graded</span>')
+        out.append(
+            f'<div class="city"><div class="cn">{r["city"]} '
+            f'<span class="cc mono">{r["station"]}</span></div>'
+            f'<div class="cb mono">PM {r["pm_markets"]} mkts · '
+            f'KAL {r["kal_markets"]}/{r["kal_books"]}/{r["kal_candles"]}</div>'
+            f'{chip}{awaiting}</div>')
+    return "\n      ".join(out)
 
 
 def _cities_html(city_series: list, d: dict) -> str:
@@ -1016,6 +1099,12 @@ TEMPLATE = r"""<meta charset="utf-8">
       <div class="find" style="font-size:13px">Settlement-truth freshness</div>
       <div class="findsub">each market grades against the reading it settles on · Hong Kong lags ~3 weeks by design</div>
       <div class="cities" data-bind-html="CITIES_HTML"></div>
+    </div>
+
+    <div class="panel" style="margin-top:14px">
+      <div class="find" style="font-size:13px">Cross-venue capture (new 2026-08-04)</div>
+      <div class="findsub">seven US cities where Polymarket and Kalshi resolve on the SAME station, differing only in the ruler &middot; collection health only &mdash; these cities are deliberately not modelled, so there is no accuracy figure to report yet</div>
+      <div class="cities" data-bind-html="CAPTURE_HTML"></div>
     </div>
   </section>
 

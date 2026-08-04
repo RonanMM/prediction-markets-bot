@@ -5357,3 +5357,44 @@ def test_collect_workflow_commits_every_data_directory_the_collector_writes():
     assert re.search(r"main\.py\s+--collect-only", workflow), (
         "collect.yml no longer runs `main.py --collect-only` — re-check which workflow "
         "persists collector output before trusting this test")
+
+
+def test_capture_cities_can_never_block_the_dashboard_publish():
+    """Capture-tier cities must stay OUT of CITY_ORDER.
+
+    `build_dashboard._missing_cities` refuses to publish when any CITY_ORDER city has no
+    gradable markets — deliberately, because a partial build silently corrupts every Brier,
+    ROI and bucket figure (a truth outage published a 3-of-5-cities dashboard on 2026-07-23).
+    The seven capture cities have no model and, until their markets resolve, nothing gradable.
+    Listing them in CITY_ORDER would therefore freeze the live dashboard at its last good copy.
+    """
+    import build_dashboard as bd
+
+    assert set(bd.CAPTURE_META) & set(bd.CITY_ORDER) == set(), (
+        "a capture-tier city is in CITY_ORDER — the publish guard will refuse every build "
+        "until that city has gradable markets")
+    assert bd.CITY_ORDER == ["Seoul", "London", "Chicago", "NYC", "HongKong"]
+    # The guard must judge ONLY CITY_ORDER, so a payload carrying capture rows still publishes.
+    payload = {"series": {"city": [{"city": c} for c in bd.CITY_ORDER],
+                          "capture": [{"city": "Los Angeles"}]}}
+    assert bd._missing_cities(payload) == []
+
+
+def test_capture_coverage_degrades_instead_of_blocking_the_build(monkeypatch, tmp_path):
+    """`capture_coverage` must never raise: main() refuses to publish when compute_series
+    fails, so an unreadable capture file would take the whole five-city dashboard down with it.
+    """
+    import build_dashboard as bd
+
+    # Point it at an empty tree — every file missing.
+    monkeypatch.setattr(bd, "PKG", tmp_path)
+    rows = bd.capture_coverage()
+    assert len(rows) == len(bd.CAPTURE_META)
+    assert all(r["pm_markets"] == 0 and r["kal_markets"] == 0 for r in rows)
+    assert bd._capture_html(rows)          # renders rather than raising
+
+    # And a corrupt file must degrade to zeroes, not propagate.
+    (tmp_path / "data" / "polymarket").mkdir(parents=True)
+    (tmp_path / "data" / "polymarket" / "los_angeles_snapshots.csv").write_text("not,a\nvalid csv\x00\x00")
+    rows = bd.capture_coverage()
+    assert len(rows) == len(bd.CAPTURE_META)
