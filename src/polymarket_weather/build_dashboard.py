@@ -413,33 +413,10 @@ def compute_series() -> dict:
     # Reads the SHARED graded frame (`_book_graded`); it used to re-derive grading inline, a
     # second copy that could drift from the report it sits beside.
     try:
-        import pandas as pd
-        import config
-        import shoulder_book as sb
+        # Same function as the breadth panel, so the two charts carry identical semantics: Leg 1
+        # (all shoulder) and Leg 1b (moderate band), ROI on deployed capital, Leg 2 excluded.
         _, graded = _book_graded()
-        if not graded.empty:
-            df = pd.DataFrame({
-                "t": pd.to_datetime(graded["target_date"], errors="coerce"),
-                "net": graded["net_edge"].astype(float),
-                "cost": graded["entry_side_price"].astype(float) + config.HALF_SPREAD,
-                "won": graded["side_won"].astype(bool),
-            }).dropna(subset=["t"])
-            g = df.groupby("t").agg(net=("net", "sum"), cost=("cost", "sum"),
-                                    n=("net", "size"), wr=("won", "mean")).sort_index()
-            cum = g[["net", "cost"]].cumsum()
-            be = sb.breakeven_win_rate(df["net"], df["won"])
-            out["equity"] = [{
-                "t": t.strftime("%b %-d"),
-                # ROI on capital deployed, not summed units — see _breadth_equity for why the
-                # units version read as performance while behaving like a volume chart.
-                "roi": round(float(cum["net"].loc[t] / cum["cost"].loc[t] * 100), 3)
-                       if cum["cost"].loc[t] else 0.0,
-                "wr": round(float(g["wr"].loc[t]) * 100, 2),
-                "be": round(be * 100, 2) if be is not None else None,
-                "n": int(g["n"].loc[t]),
-                "u": round(float(cum["net"].loc[t]), 2),          # tooltip only
-                "cap": round(float(cum["cost"].loc[t]), 2),
-            } for t in g.index]
+        out["equity"] = roi_series(graded)
     except Exception as e:
         out["eq_error"] = f"{type(e).__name__}: {e}"
 
@@ -664,41 +641,41 @@ def _breadth_binds() -> dict:
 BK_CITY_MIN_N = 20
 
 
-def _breadth_equity() -> list:
-    """Cumulative RETURN ON CAPITAL by target date, all-shoulder vs the gated moderate band.
+def roi_series(graded, mod_lo: float = 0.10, mod_hi: float = 0.25) -> list:
+    """Cumulative RETURN ON CAPITAL by target date for Leg 1 (all shoulder) and Leg 1b (the
+    gated [mod_lo, mod_hi) sub-band), plus each day's win rate and the payoff's break-even.
 
-    This plotted summed "net units" until 2026-08-04, and that was misleading in a way worth
-    recording. A cumulative sum of per-contract edge is exactly `n × mean`: +38.0u was 1344
-    contracts × 2.83¢, not a portfolio compounding. Its SLOPE was set by how many markets the
-    collector happened to pick up — doubling the city list would have doubled the steepness with
-    the edge completely unchanged, so it read as a performance chart while behaving like a volume
-    chart. Return on capital deployed is invariant to that: adding contracts at the same edge
-    leaves the line flat, and only a change in edge moves it.
+    Shared by BOTH books so the two panels cannot drift apart — they were separate copies for
+    about an hour and the 5-city one was already aggregating a different set of legs than the
+    breadth one.
 
-    Each point also carries that DAY's win rate, so the page can show it against the break-even
-    (see shoulder_book.breakeven_win_rate) — the margin is ~0.7pp on the full band, which a raw
-    85% win rate hides completely.
+    Why ROI and not summed units. Until 2026-08-04 these charts plotted a cumulative sum of
+    per-contract edge. That quantity is exactly `n × mean` — the breadth headline +38.0u was 1344
+    contracts × 2.83¢ — so its SLOPE tracked how many markets the collector picked up, not how
+    good the bets were: widening the city list would have steepened the line at identical edge.
+    It read as a performance chart while behaving like a volume chart. ROI on deployed capital is
+    invariant to inventory; only a change in edge moves it.
+
+    Leg 2 (favourites) is excluded: these are the shoulder legs, and mixing a 4-contract leg into
+    the same line would put two different trades on one axis.
     """
     import pandas as pd
     import config
     import shoulder_book as sb
-    _, graded = _breadth_graded()
-    if graded.empty or "leg" not in graded.columns:
+    if graded is None or graded.empty or "leg" not in graded.columns:
         return []
     sh = graded[graded["leg"] == "shoulder"].copy()
     if sh.empty:
         return []
     yes = sh["entry_yes_price"].astype(float)
-    inmod = (yes >= 0.10) & (yes < 0.25)
-    day = pd.to_datetime(sh["target_date"], errors="coerce")
     df = pd.DataFrame({
-        "t": day,
+        "t": pd.to_datetime(sh["target_date"], errors="coerce"),
         "net": sh["net_edge"].astype(float),
-        # capital actually laid out per contract, on the same taker-conservative basis the P&L
-        # uses: the entry price plus the half-spread crossed on entry.
+        # capital actually laid out per contract, on the same taker-conservative basis as the
+        # P&L: the entry price plus the half-spread crossed on entry.
         "cost": sh["entry_side_price"].astype(float) + config.HALF_SPREAD,
         "won": sh["side_won"].astype(bool),
-        "inmod": inmod,
+        "inmod": (yes >= mod_lo) & (yes < mod_hi),
     }).dropna(subset=["t"])
     if df.empty:
         return []
@@ -707,12 +684,14 @@ def _breadth_equity() -> list:
     g = df.groupby("t").agg(net=("net", "sum"), cost=("cost", "sum"),
                             mnet=("mnet", "sum"), mcost=("mcost", "sum"),
                             n=("net", "size"), wr=("won", "mean")).sort_index()
-    mwr = df[df["inmod"]].groupby("t")["won"].mean()
+    mn = df[df["inmod"]].groupby("t").agg(mwr=("won", "mean"), mn=("won", "size"))
     cum = g[["net", "cost", "mnet", "mcost"]].cumsum()
 
     def _roi(num, den):
         return round(float(num / den * 100.0), 3) if den else 0.0
 
+    be = sb.breakeven_win_rate(df["net"], df["won"])
+    mbe = sb.breakeven_win_rate(df.loc[df["inmod"], "net"], df.loc[df["inmod"], "won"])
     out = []
     for t in g.index:
         c = cum.loc[t]
@@ -720,16 +699,22 @@ def _breadth_equity() -> list:
                     "roi": _roi(c["net"], c["cost"]),
                     "mroi": _roi(c["mnet"], c["mcost"]),
                     "wr": round(float(g["wr"].loc[t]) * 100, 2),
-                    "mwr": (round(float(mwr.loc[t]) * 100, 2) if t in mwr.index else None),
+                    "mwr": (round(float(mn["mwr"].loc[t]) * 100, 2) if t in mn.index else None),
                     "n": int(g["n"].loc[t]),
+                    "mn": (int(mn["mn"].loc[t]) if t in mn.index else 0),
+                    # constant on every point so the JS can draw them as reference lines
+                    "be": round(be * 100, 2) if be is not None else None,
+                    "mbe": round(mbe * 100, 2) if mbe is not None else None,
                     # kept for the tooltip only — never the y-axis again
-                    "u": round(float(c["net"]), 2), "mu": round(float(c["mnet"]), 2)})
-    be = sb.breakeven_win_rate(df["net"], df["won"])
-    mbe = sb.breakeven_win_rate(df.loc[df["inmod"], "net"], df.loc[df["inmod"], "won"])
-    for r in out:                       # constant on every point so the JS can draw the line
-        r["be"] = round(be * 100, 2) if be is not None else None
-        r["mbe"] = round(mbe * 100, 2) if mbe is not None else None
+                    "u": round(float(c["net"]), 2), "mu": round(float(c["mnet"]), 2),
+                    "cap": round(float(c["cost"]), 2)})
     return out
+
+
+def _breadth_equity() -> list:
+    """Breadth book's ROI curve — see `roi_series`."""
+    _, graded = _breadth_graded()
+    return roi_series(graded)
 
 
 def _breadth_cities() -> list:
@@ -1198,6 +1183,7 @@ TEMPLATE = r"""<meta charset="utf-8">
         <div class="find" id="sb_title">Shoulder book · return on capital</div>
         <div class="findsub">Cumulative return on the capital actually laid out · taker fees paid. <b>Not</b> a running total of units — that number grows with how many tickets we buy, so it climbs even when the edge doesn't. The early points sit on a handful of contracts and swing wildly; the line settling downward is the sample growing, <b>not</b> the edge improving.</div>
         <div class="chartwrap"><div id="c_equity"></div></div>
+        <div class="leg" style="margin-top:8px"><span><i style="background:var(--good)"></i>Leg 1 · all shoulder [5–35¢]</span><span><i style="background:var(--market)"></i>Leg 1b · moderate [10–25¢]</span></div>
         <div class="statrow">
           <div class="st"><div class="k">Return on capital</div><div class="v" id="sb_net" data-bind="BOOK_NET">—</div></div>
           <div class="st"><div class="k">Capital laid out</div><div class="v" data-bind="BOOK_CAP">—</div></div>
@@ -1664,11 +1650,13 @@ TEMPLATE = r"""<meta charset="utf-8">
     function lastOf(s) { var l = s.points.slice(-1)[0]; return l != null ? pct2(l) : ""; }
 
     var eq = D.equity || [];
-    var eqCol = (eq.length && eq[eq.length - 1].roi < 0) ? css("--model") : css("--good");
     if (eq.length) lineChart("c_equity", {
-      h: 210, area: true, xLabels: eq.map(function (r) { return r.t; }),
+      h: 210, xLabels: eq.map(function (r) { return r.t; }),
       yFmt: pct, tipFmt: pct2, endFmt: lastOf,
-      series: [{ name: "Return on capital", color: eqCol, points: eq.map(function (r) { return r.roi; }), fill: true, thick: 2.2 }]
+      series: [
+        { name: "Leg 1 · all shoulder", color: css("--good"), points: eq.map(function (r) { return r.roi; }), thick: 2.2 },
+        { name: "Leg 1b · moderate", color: css("--market"), points: eq.map(function (r) { return r.mroi; }), thick: 1.8 }
+      ]
     });
     else { var he = document.getElementById("c_equity"); if (he) he.innerHTML = '<div style="color:var(--faint);font-size:12px;padding:20px 0">No settled paper entries yet.</div>'; }
 

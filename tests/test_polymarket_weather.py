@@ -1906,6 +1906,43 @@ def test_equity_curves_plot_return_on_capital_not_summed_units():
     assert 'id="c_bkwr"' in src
 
 
+def test_both_books_plot_leg1_and_leg1b_from_one_shared_function():
+    """Both panels show Leg 1 and Leg 1b. They must come from the SAME function: while they were
+    two copies the 5-city curve silently aggregated a different set of legs (it included Leg 2
+    favourites) than the breadth curve, and its stat row compared a SHOULDER win rate against an
+    ALL-LEGS break-even."""
+    import inspect
+    import build_dashboard as bd
+    src = inspect.getsource(bd)
+    assert "def roi_series(" in src
+    assert src.count("roi_series(graded)") == 2          # breadth + 5-city, no third copy
+    # both charts draw the same pair of series
+    for arr in ("eq", "bkeq"):
+        assert f"points: {arr}.map(function (r) {{ return r.roi; }})" in src
+        assert f"points: {arr}.map(function (r) {{ return r.mroi; }})" in src
+
+
+def test_roi_series_excludes_leg2_and_scopes_the_moderate_band():
+    """Leg 2 is a different trade on a different price range; folding its 4 contracts into the
+    shoulder line would put two instruments on one axis. And Leg 1b must be the [10,25) subset of
+    Leg 1, not a separate population."""
+    import pandas as pd
+    import build_dashboard as bd
+    rows = []
+    for i, (leg, yes, won) in enumerate([("shoulder", 0.15, True),    # in Leg 1 AND Leg 1b
+                                         ("shoulder", 0.30, True),    # Leg 1 only
+                                         ("favorite", 0.70, False)]):  # excluded entirely
+        rows.append({"target_date": "2026-07-25", "leg": leg, "entry_yes_price": yes,
+                     "entry_side_price": 1 - yes if leg == "shoulder" else yes,
+                     "net_edge": 0.1 if won else -0.9, "side_won": won})
+    out = bd.roi_series(pd.DataFrame(rows))
+    assert len(out) == 1
+    assert out[0]["n"] == 2 and out[0]["mn"] == 1        # Leg 2 dropped; 1b is a subset of 1
+    # no losses among the shoulder rows -> break-even undefined, reported as None not a number
+    assert out[0]["be"] is None
+    assert bd.roi_series(pd.DataFrame()) == []
+
+
 def test_breadth_panel_publishes_its_curve_and_per_city_table():
     """The breadth book carries ~10x the 5-city book's inventory and had no chart at all — two
     summary rows, so a reader could not tell whether its edge accrued steadily or arrived on a
