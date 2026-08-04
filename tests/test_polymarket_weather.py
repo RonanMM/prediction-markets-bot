@@ -5320,3 +5320,40 @@ def test_summarize_market_warns_about_a_vendor_field_it_does_not_know(caplog):
     assert not [r for r in caplog.records if "NEW VENDOR FIELD" in r.getMessage()], \
         "every key in a real live market object is known — this must not cry wolf"
     fetch_kalshi._WARNED_UNKNOWN_KEYS.clear()
+
+
+def test_collect_workflow_commits_every_data_directory_the_collector_writes():
+    """Every data directory the collector writes MUST be in collect.yml's `git add`.
+
+    A path the code writes but the workflow never adds is destroyed with the runner: the step
+    runs, the files appear, the run goes green, and the data is gone. That is exactly what
+    happened to data/kalshi on 2026-08-04 — merged with the path missing, so the hourly Kalshi
+    archive wrote markets, books and candles to the runner's disk every cycle and threw them
+    away. Kalshi serves market objects for only ~2 months, so those cycles are unrecoverable.
+
+    This asserts the two halves cannot drift: config declares where the collector writes, and
+    the workflow must commit all of it. Adding a new *_DIR without adding it to collect.yml
+    fails here rather than silently losing data for however long it takes someone to notice.
+    """
+    import pathlib
+    import re
+    import config
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    workflow = (root / ".github" / "workflows" / "collect.yml").read_text()
+
+    add_lines = [ln for ln in workflow.splitlines() if "git add" in ln]
+    assert add_lines, "collect.yml has no `git add` line — data would never be committed"
+    added = " ".join(add_lines)
+
+    # Directories the collector persists to, declared in config.
+    for name in ("POLYMARKET_DIR", "WEATHER_DIR", "KALSHI_DIR"):
+        rel = getattr(config, name)                     # e.g. "data/kalshi"
+        assert f"src/polymarket_weather/{rel}" in added, (
+            f"config.{name} = {rel!r} is written by the collector but is NOT in collect.yml's "
+            f"`git add`. The runner will discard it and the run will still pass.")
+
+    # And the collector must actually be the workflow that runs main.py, or this guard is moot.
+    assert re.search(r"main\.py\s+--collect-only", workflow), (
+        "collect.yml no longer runs `main.py --collect-only` — re-check which workflow "
+        "persists collector output before trusting this test")
