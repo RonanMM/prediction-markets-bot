@@ -132,8 +132,18 @@ Fields available per market, all captured: `ticker`, `event_ticker`, `title`,
    dead. Houston has four tickers of which only `KXHIGHTHOU` is live. Naming is inconsistent
    (`KXHIGHLAX` vs `KXHIGHTATL` vs `KXHOUHIGH`), and `HIGHNY` → `KXHIGHNY` shows a completed
    migration. A hardcoded ticker list would silently archive nothing.
-2. **Invalid JSON.** `rules_secondary` contains raw newline characters inside a JSON string.
-   Python's `json.loads` rejects this by default; `strict=False` is required.
+2. ~~**Invalid JSON.** `rules_secondary` contains raw newline characters inside a JSON string.
+   Python's `json.loads` rejects this by default; `strict=False` is required.~~
+   **RETRACTED 2026-08-04 — this hazard is not real and never was.** It was recorded here as
+   "verified live 2026-08-03" and propagated into the plan, `kalshi_series`'s module docstring
+   and a test name. Re-verified against all seven series: every raw body parses with plain
+   `json.loads`, no flags, and the decoded `rules_secondary` contains no literal newline —
+   Kalshi escapes newlines as `\n`, which is valid JSON. (The likely origin of the
+   misdiagnosis: the *decoded* `early_close_condition` and `rules_secondary` strings do contain
+   newlines, which is what a correctly-escaped `\n` decodes TO.) `strict=False` is KEPT, because
+   it only ever widens what parses and would absorb a genuine control character if one ever
+   appeared — but it is a defensive guard against an unobserved condition, not a workaround for
+   observed vendor behaviour.
 3. **The station is only in `rules_secondary`.** `rules_primary` for four of the seven says
    just "Atlanta" / "Houston" / "Seattle" / "San Francisco". Houston in particular has two
    plausible stations (Bush vs Hobby) that differ materially; only `rules_secondary` names
@@ -221,9 +231,11 @@ explicitly migrated.
 Responsibilities:
 
 - Enumerate temperature series from `/series/?category=Climate and Weather`.
-- Parse with `json.loads(text, strict=False)`.
+- Parse with `json.loads(text, strict=False)` — a defensive widening, not a required workaround
+  (see hazard 2's retraction).
 - Write `data/kalshi/series_manifest.csv`, append-only, one row per series per cycle:
-  `fetched_at_utc, series_ticker, title, markets_returned, live_markets, truncated`.
+  `fetched_at_utc, series_ticker, city, markets_returned, live_markets, truncated`
+  (the column was named `title` and always held the CITY; renamed 2026-08-04 to match its content).
 
   `markets_returned` counts every market the paginated fetch produced. `live_markets` counts
   those with `status` in `{"active", "initialized"}` — i.e. tradeable or about to be. Both are
@@ -361,7 +373,7 @@ vendor fields persist rather than being silently dropped.
 | Series discovery request fails | Keep the existing manifest; skip the cycle; warn. Never write an empty manifest. |
 | A target city's series serves zero markets but previously served some | **Loud error.** This is the ticker-rot signature. |
 | Pagination hits the page cap | `truncated=True` recorded in the manifest and warned. Never treated as completion. |
-| Invalid JSON (raw newline) | Parsed with `strict=False`. A genuine parse failure keeps existing data and warns. |
+| An unescaped control character in a JSON string (never observed — see hazard 2's retraction) | Parsed with `strict=False`. A genuine parse failure keeps existing data and warns. |
 | A market lacks bid/ask | Fields are `None`. No sentinel. |
 | Kalshi wholly unreachable | Polymarket collection is unaffected. Kalshi is additive and must never block the irreplaceable Polymarket snapshot. |
 | Candle fetch returns zero for a market | Recorded with its requested window (§7.10), retried next run. Never written as "market had no trading". |

@@ -3979,6 +3979,9 @@ def test_both_rulers_are_configured_for_every_capture_city():
     from fetch_station_obs import OBS_STATIONS
 
     capture = {c: a for c, a in RESOLUTION_ANCHORS.items() if a.get("tier") == "capture"}
+    # Non-vacuity guard, matching both sibling tests: an empty `capture` would make every
+    # assertion below pass by never running.
+    assert capture, "expected capture-tier cities to exist"
     for city, anchor in capture.items():
         s = slug(city)
         assert s in SOURCES, f"{city}: no CLI truth source (Kalshi's ruler)"
@@ -4029,18 +4032,39 @@ def test_kalshi_get_retries_on_EMPTY_not_only_on_error():
     assert ok is True and payload["markets"] == []
 
 
-def test_kalshi_get_parses_the_real_raw_newline_in_rules_secondary():
-    """Kalshi emits literal newlines inside JSON strings, which is invalid JSON. Python's
-    parser rejects it by default; strict=False is required."""
+def test_kalshi_get_tolerates_an_unescaped_control_character_if_one_ever_appears():
+    """DEFENSIVE GUARD AGAINST AN UNOBSERVED CONDITION — not a reproduction of live behaviour.
+
+    ⚠️ This test was called `test_kalshi_get_parses_the_real_raw_newline_in_rules_secondary` and
+    claimed Kalshi emits literal newlines inside JSON strings, i.e. invalid JSON. That claim is
+    FALSE and was carried through the spec, the plan and kalshi_series' module docstring marked
+    "verified live 2026-08-03". Re-verified 2026-08-04 against all seven series: every raw body
+    parses with plain `json.loads`, no flags, and the decoded `rules_secondary` contains no
+    literal newline — Kalshi escapes them as `\\n`, which is valid JSON.
+
+    What it actually proves, and all it proves: IF a vendor ever sent an unescaped control
+    character inside a string, `strict=False` would absorb it instead of losing the whole
+    response. The flag is kept because it only ever widens what parses, so it costs nothing —
+    but nothing here is evidence that Kalshi sends malformed JSON, and this fixture is
+    SYNTHETIC, unlike the live-confirmed payloads elsewhere in this file.
+    """
     from kalshi_series import kalshi_get
 
-    class NewlineSession:
+    class ControlCharSession:
         def get(self, url, params=None, timeout=None):
+            # A REAL raw newline inside the JSON string — strict json.loads rejects this.
             return _Resp('{"markets": [{"rules_secondary": "line one\nline two"}]}')
 
-    payload, ok = kalshi_get("/markets", {}, session=NewlineSession())
+    payload, ok = kalshi_get("/markets", {}, session=ControlCharSession())
     assert ok is True
     assert "line one" in payload["markets"][0]["rules_secondary"]
+
+    # And the counterpart fact, so the retraction is pinned by a test and not only by prose:
+    # Kalshi's REAL encoding is an escaped \n, which needs no flag at all.
+    import json
+    real_body = '{"markets": [{"rules_secondary": "line one\\nline two"}]}'
+    assert json.loads(real_body)["markets"][0]["rules_secondary"] == "line one\nline two", \
+        "escaped \\n is valid JSON — this is what Kalshi actually sends"
 
 
 def test_kalshi_get_reports_transport_failure_as_not_ok():
@@ -4159,12 +4183,17 @@ def test_summarize_market_absence_is_none_never_a_sentinel():
     assert s2["yes_ask"] == 0.07
     assert s2["volume"] == 0.0
 
-    # Kalshi sends "" — not a missing key — for unsettled markets and unquoted fields.
+    # ⚠️ CORRECTED 2026-08-04: which "" case is REAL. Measured across all 5,256 archived market
+    # rows: `result` is "" on 144 of them (every unsettled market) — that one is genuine and is
+    # why `result` gets the blank_is_absent reader. `yes_bid_dollars: ""` and
+    # `open_interest_fp: ""` were INVENTED for this fixture: both are non-empty in 5,256/5,256
+    # rows. `_num` handling "" is still correct defensive behaviour and worth pinning, but only
+    # the `result` half of this fixture reflects observed vendor behaviour.
     s3 = summarize_market({"ticker": "T3", "result": "", "yes_bid_dollars": "",
                            "volume_fp": "0.00", "open_interest_fp": ""})
-    assert s3["result"] is None, "unsettled '' must be None, not an empty-string 'result'"
-    assert s3["yes_bid"] is None, "'' is absence, not a price"
-    assert s3["open_interest"] is None
+    assert s3["result"] is None, "unsettled '' must be None — REAL: 144/5,256 archived rows"
+    assert s3["yes_bid"] is None, "'' is absence, not a price (defensive: never observed)"
+    assert s3["open_interest"] is None                      # defensive: never observed
     assert s3["volume"] == 0.0, "a real zero must survive as 0.0"
 
 
@@ -4254,10 +4283,24 @@ def test_derive_bin_subtitle_parsing_limits():
     ever leads with a different number the check fails LOUDLY (agrees_with_subtitle False)
     rather than silently deriving a wrong bin — which is the behaviour being pinned here."""
     from fetch_kalshi import derive_bin
-    # Negative temperatures must parse — Chicago in winter is a real case.
+    # ⚠️ UNVERIFIED FORMAT, kept deliberately. No negative strike exists anywhere in the 3,066
+    # markets captured 2026-08-03 (all seven series are summer US high-temperature markets), so
+    # "-5° or above" is a PLAUSIBLE GUESS at how Kalshi would render one — not a live-confirmed
+    # payload like the `greater`/`less`/`between` fixtures above. Chicago in winter would be a
+    # real case if Chicago were ever capture-tier. Keeping the test is right (the parser should
+    # handle a minus sign); citing it as evidence of Kalshi's format is not.
     d = derive_bin({"floor_strike": -6, "strike_type": "greater",
                     "yes_sub_title": "-5° or above"})
     assert d["yes_from_f"] == -5 and d["agrees_with_subtitle"] is True
+
+    # A lone "-" (a subtitle using a dash as a RANGE SEPARATOR, e.g. "80 - 82") tokenises to a
+    # bare "-", which float() raises ValueError on. A malformed subtitle must degrade to "no
+    # cross-check available", never crash the capture of a market whose strikes parsed fine.
+    dash = derive_bin({"floor_strike": 80, "cap_strike": 82, "strike_type": "between",
+                       "yes_sub_title": "80 - 82"})
+    assert dash is not None, "a dash-separated subtitle must not raise"
+    assert (dash["yes_from_f"], dash["yes_to_f"]) == (80, 82), "the STRIKES are still authoritative"
+    assert dash["subtitle_bound"] == 80 and dash["subtitle_bound2"] == 82
     # A leading non-bound number is detected, not silently trusted.
     d2 = derive_bin({"floor_strike": 82, "strike_type": "greater",
                      "yes_sub_title": "2026: 83° or above"})
@@ -4518,6 +4561,10 @@ def test_summarize_candle_matches_the_verified_live_shape():
     assert row["yes_ask_close"] == 0.29
     assert row["volume"] == 5855.06
     assert row["open_interest"] == 4592.95
+    # The FULL quote-book OHLC, not just the close: keeping only close_dollars discarded the
+    # intra-hour bid/ask range — the only record of how wide the spread actually got.
+    assert (row["yes_bid_open"], row["yes_bid_high"], row["yes_bid_low"]) == (0.01, 0.33, 0.01)
+    assert (row["yes_ask_open"], row["yes_ask_high"], row["yes_ask_low"]) == (1.0, 1.0, 0.18)
     assert set(row) == set(__import__("fetch_kalshi").CANDLE_COLS)
 
     idle_candle = {"end_period_ts": 1784556240, "open_interest_fp": "5.00",
@@ -4526,24 +4573,45 @@ def test_summarize_candle_matches_the_verified_live_shape():
     row = summarize_candle(idle_candle, "NYC", "KXHIGHNY", "T1")
     assert row["close_dollars"] is None, "an idle candle's price dict has no close_dollars key"
     assert row["open_dollars"] is None
+    assert row["previous_dollars"] == 0.25, "the carry-forward price is real data — capture it"
     assert row["yes_bid_close"] == 0.22
 
+    # ⚠️ CORRECTED 2026-08-04. This block asserted an EMPTY `yes_bid: {}` sub-dict, described as
+    # the real no-bid encoding. It is INVENTED: across all 116,995 committed candle rows
+    # `yes_bid_close`/`yes_ask_close` are non-null in every single one — an empty quote sub-dict
+    # has never been observed. Kalshi's REAL no-bid encoding is `close_dollars: "0.0000"`, which
+    # is pinned below. The empty-dict branch is retained as a defensive guard (a missing key
+    # must never become 0.0) but is explicitly NOT a live-confirmed shape.
     empty_price_candle = {"end_period_ts": 1784556060, "open_interest_fp": "0.00",
                           "price": {}, "volume_fp": "0.00",
                           "yes_ask": {"close_dollars": "0.5400"}, "yes_bid": {}}
     row = summarize_candle(empty_price_candle, "NYC", "KXHIGHNY", "T1")
     assert row["close_dollars"] is None
-    assert row["yes_bid_close"] is None, "an empty yes_bid dict must yield None, not 0.0"
+    assert row["yes_bid_close"] is None, \
+        "DEFENSIVE (never observed): a missing key must yield None, not 0.0"
     assert row["yes_ask_close"] == 0.54
+
+    # THE REAL no-bid shape, 37,856 of 116,995 archived rows: a present, explicit 0.0.
+    no_bid_candle = {"end_period_ts": 1784556000, "open_interest_fp": "0.00", "price": {},
+                     "volume_fp": "0.00", "yes_bid": {"close_dollars": "0.0000"},
+                     "yes_ask": {"close_dollars": "1.0000"}}
+    row = summarize_candle(no_bid_candle, "NYC", "KXHIGHNY", "T1")
+    assert row["yes_bid_close"] == 0.0, (
+        "0.0 is Kalshi's real 'no bid' sentinel and must be STORED RAW — deriving the meaning "
+        "is the reader's job (see summarize_candle's docstring), destroying it is not")
 
 
 def test_ts_rejects_falsy_and_malformed_timestamps():
     """A 0 or a malformed string must yield None, never a 1970 window.
 
-    `if not value` is what catches the literal 0 — a later tidy-up to `if value is None`
-    would make open_time=0 produce start=-3600, ok=True and candles=0, which reads as
-    "this market never traded". Kalshi serves market objects ~2 months, so a market wrongly
-    skipped is unrecoverable.
+    ⚠️ CORRECTED 2026-08-04. This docstring claimed `if not value` is what catches the literal 0
+    and that relaxing it to `if value is None` would make open_time=0 produce a 1970 window.
+    That is false: `str(0)` is "0", which `datetime.fromisoformat` raises ValueError on anyway,
+    so the `except (TypeError, ValueError)` is the load-bearing guard for 0 — the early return
+    is a cheap shortcut, not the protection. The BEHAVIOUR asserted below is what matters and is
+    unchanged; only the explanation of which line enforces it was wrong.
+
+    Kalshi serves market objects ~2 months, so a market wrongly skipped is unrecoverable.
     """
     from fetch_kalshi import _ts, fetch_candles
     assert _ts(0) is None
@@ -4568,14 +4636,15 @@ def test_ticker_rot_is_an_error_not_an_absence():
         {"series_ticker": "KXHIGHLAX", "markets_returned": 200},
         {"series_ticker": "KXHIGHTHOU", "markets_returned": 200},
     ])
-    now = [{"series_ticker": "KXHIGHLAX", "markets_returned": 200},
-           {"series_ticker": "KXHIGHTHOU", "markets_returned": 0}]
+    now = [{"series_ticker": "KXHIGHLAX", "markets_returned": 200, "truncated": False},
+           {"series_ticker": "KXHIGHTHOU", "markets_returned": 0, "truncated": False}]
     alarms = _kalshi_rot_alarms(now, prev)
     assert alarms == ["KXHIGHTHOU"]
 
     # A series that has NEVER served markets is not rot — nothing was lost.
     prev2 = pd.DataFrame([{"series_ticker": "KXNEW", "markets_returned": 0}])
-    assert _kalshi_rot_alarms([{"series_ticker": "KXNEW", "markets_returned": 0}], prev2) == []
+    assert _kalshi_rot_alarms(
+        [{"series_ticker": "KXNEW", "markets_returned": 0, "truncated": False}], prev2) == []
 
 
 def test_kalshi_rot_alarms_returns_nothing_with_no_previous_manifest():
@@ -4584,7 +4653,7 @@ def test_kalshi_rot_alarms_returns_nothing_with_no_previous_manifest():
     break (see the mutation test that proves this in the task-8 report)."""
     from main import _kalshi_rot_alarms
 
-    now = [{"series_ticker": "KXHIGHLAX", "markets_returned": 0}]
+    now = [{"series_ticker": "KXHIGHLAX", "markets_returned": 0, "truncated": False}]
     assert _kalshi_rot_alarms(now, None) == []
 
     import pandas as pd
@@ -4668,3 +4737,512 @@ def test_candle_backfill_skips_already_archived_tickers():
 
     assert "T_OLD" not in tickers, "an already-archived ticker must not be re-fetched"
     assert tickers == {"T_NEW"}, "a genuinely new settled ticker must still be fetched"
+
+
+# ── The full-capture guards (C1) ──────────────────────────────────────────────
+
+# VERBATIM live Kalshi market object, GET /trade-api/v2/markets/KXHIGHLAX-26AUG02-T85,
+# fetched 2026-08-04. Not hand-written, not trimmed, not reordered beyond JSON key sorting.
+# A finalized market, so it carries the settlement fields an active one does not.
+_LIVE_FINALIZED_MARKET = {
+    "can_close_early": True,
+    "close_time": "2026-08-03T07:59:00Z",
+    "created_time": "2026-08-01T09:30:35.992894Z",
+    "early_close_condition": "The Last Trading Time will be 11:59 PM ET on August 02, 2026 regardless of any data releases or events occurring. Expiration will occur on the sooner of the first 7:00 or 8:00\nAM ET following the release of the data for August 02, 2026, or one week after August 02, 2026.",
+    "event_ticker": "KXHIGHLAX-26AUG02",
+    "exchange_index": 0,
+    "expected_expiration_time": "2026-08-03T14:00:00Z",
+    "expiration_time": "2026-08-09T14:00:00Z",
+    "expiration_value": "79.00",
+    "floor_strike": 85,
+    "last_price_dollars": "0.0100",
+    "latest_expiration_time": "2026-08-09T14:00:00Z",
+    "liquidity_dollars": "0.0000",
+    "market_type": "binary",
+    "no_ask_dollars": "1.0000",
+    "no_bid_dollars": "0.0000",
+    "no_sub_title": "86° or above",
+    "notional_value_dollars": "1.0000",
+    "occurrence_datetime": "2026-08-02T14:00:00Z",
+    "open_interest_fp": "255516.05",
+    "open_time": "2026-08-01T14:00:00Z",
+    "previous_price_dollars": "0.0100",
+    "previous_yes_ask_dollars": "0.0100",
+    "previous_yes_bid_dollars": "0.0000",
+    "price_level_structure": "linear_cent",
+    "price_ranges": [{"end": "1.0000", "start": "0.0000", "step": "0.0100"}],
+    "result": "no",
+    "rules_primary": "If the highest temperature recorded in Los Angeles Airport, CA for August 02, 2026 as reported by the National Weather Service's Climatological Report (Daily), is greater than 85°, then the market resolves to Yes.",
+    "rules_secondary": "Not all weather data is the same. While checking a source like AccuWeather or Google Weather may help guide your decision, the official and final value used to determine this market is the highest temperature as reported by the corresponding NWS Climatological Report (Daily) linked in the rules above. Preliminary NWS reporting and measurement methods may be subject to underlying rounding and conversion nuances. Traders should exercise caution when interpreting preliminary NWS data.",
+    "settlement_timer_seconds": 1800,
+    "settlement_ts": "2026-08-03T11:31:21.686513Z",
+    "settlement_value_dollars": "0.0000",
+    "status": "finalized",
+    "strike_type": "greater",
+    "ticker": "KXHIGHLAX-26AUG02-T85",
+    "title": "Will the **high temp in LA** be >85° on Aug 2, 2026?",
+    "updated_time": "2026-08-03T11:31:21.739155Z",
+    "volume_24h_fp": "83964.26",
+    "volume_fp": "263897.17",
+    "yes_ask_dollars": "1.0000",
+    "yes_ask_size_fp": "0.00",
+    "yes_bid_dollars": "0.0000",
+    "yes_bid_size_fp": "0.00",
+    "yes_sub_title": "86° or above",
+}
+
+# The full union of keys across a live 200-market page (KXHIGHLAX, 2026-08-04). The two keys the
+# fixture above lacks: `cap_strike` (absent on `greater`-type markets — 166/200 carry it) and
+# nothing else. `settlement_ts`/`settlement_value_dollars` appear on the 188 finalized ones only.
+_LIVE_MARKET_KEY_UNION = set(_LIVE_FINALIZED_MARKET) | {"cap_strike"}
+
+
+def test_summarize_market_captures_kalshis_own_settlement_reading():
+    """THE highest-value field in the payload, and it was being dropped.
+
+    `expiration_value` is the CLI daily high THE RESOLVING VENUE ITSELF PUBLISHED — present on
+    188/188 finalized markets (verified live 2026-08-03/04). In a project that has shipped SEVEN
+    wrong-ruler defects, an independent settlement reading straight from the venue is a free
+    cross-check on our own IEM/CLI truth feed. Kalshi serves market objects for ~2 months, so a
+    cycle that fails to capture it loses it permanently, at any price.
+
+    It is stored BOTH ways on purpose: raw as the audit copy (a coercion failure must never
+    silently blank the one field that checks our ruler) and parsed for use.
+    """
+    from fetch_kalshi import summarize_market
+
+    s = summarize_market(_LIVE_FINALIZED_MARKET)
+    assert s["expiration_value"] == "79.00", "the vendor string must survive verbatim"
+    assert s["expiration_value_f"] == 79.0, "and be usable as a number"
+
+    # An unsettled market has no reading yet — that must be None, never 0.0.
+    live = summarize_market({"ticker": "T", "status": "active", "expiration_value": ""})
+    assert live["expiration_value_f"] is None and not live["expiration_value"]
+
+    # Settlement bookkeeping travels with it.
+    assert s["settlement_ts"] == "2026-08-03T11:31:21.686513Z"
+    assert s["settlement_value"] == 0.0
+    assert s["result"] == "no"
+
+
+def test_summarize_market_captures_every_key_a_real_market_object_carries():
+    """COMPLETENESS GUARD — the archive must drop NOTHING.
+
+    `summarize_market` captured 26 of the 45 keys a real market object carries, silently
+    discarding 19 including `expiration_value`. The archive exists to capture; curation is a
+    later, reversible decision, and capture is a now-or-never one (Kalshi serves market objects
+    ~2 months).
+
+    This diffs a VERBATIM live payload against the module's own field table, so the next vendor
+    field Kalshi adds fails the build loudly instead of vanishing behind a green run — which is
+    exactly how the first 19 were lost.
+    """
+    from fetch_kalshi import summarize_market, CAPTURED_VENDOR_KEYS, _MARKET_FIELDS
+
+    dropped = _LIVE_MARKET_KEY_UNION - CAPTURED_VENDOR_KEYS
+    assert not dropped, (
+        f"summarize_market DROPS {len(dropped)} live vendor field(s): {sorted(dropped)}. "
+        f"Kalshi serves market objects ~2 months — anything not captured now is gone forever. "
+        f"Add it to fetch_kalshi._MARKET_FIELDS.")
+
+    # And nothing in the table is imaginary: every vendor key it names is one Kalshi really sends.
+    invented = CAPTURED_VENDOR_KEYS - _LIVE_MARKET_KEY_UNION
+    assert not invented, f"_MARKET_FIELDS names keys Kalshi does not send: {sorted(invented)}"
+
+    row = summarize_market(_LIVE_FINALIZED_MARKET)
+    assert len(row) == len(_MARKET_FIELDS), "one output column per table entry"
+    # Spot-check one field of each reader kind, so a table entry cannot be wired to the wrong one.
+    assert row["notional_value"] == 1.0                      # num
+    assert row["market_type"] == "binary"                    # raw
+    assert row["can_close_early"] is True                    # raw, non-string
+    assert row["exchange_index"] == 0.0                      # num, a real zero
+    assert row["price_ranges"] == '[{"end":"1.0000","start":"0.0000","step":"0.0100"}]'  # json
+    assert row["no_sub_title"] == "86° or above"
+    assert row["previous_yes_bid"] == 0.0 and row["previous_yes_ask"] == 0.01
+    assert row["created_time"] and row["updated_time"] and row["occurrence_datetime"]
+    assert row["early_close_condition"].startswith("The Last Trading Time")
+
+
+def test_market_cols_matches_what_the_writer_actually_produces(tmp_path, monkeypatch):
+    """I9: `MARKET_COLS` listed fetched_at_utc/city/series_ticker FIRST while the writer appends
+    them LAST — the constant described a file that does not exist. A *_COLS constant that only
+    resembles the real header is worse than none: it invites code to trust an order that is
+    wrong."""
+    import processing
+    from fetch_kalshi import summarize_market, MARKET_COLS
+
+    monkeypatch.setattr(processing, "_KALSHI_DIR", tmp_path)
+    row = {**summarize_market(_LIVE_FINALIZED_MARKET), "fetched_at_utc": "2026-08-04T00:00:00",
+           "city": "Los Angeles", "series_ticker": "KXHIGHLAX"}
+    processing.save_kalshi_rows("markets", "los_angeles", [row], ["ticker", "fetched_at_utc"])
+
+    header = (tmp_path / "los_angeles_markets.csv").read_text().splitlines()[0].split(",")
+    assert header == MARKET_COLS, "MARKET_COLS must BE the header, not merely resemble it"
+
+
+def test_candle_and_book_cols_match_what_the_writer_produces(tmp_path, monkeypatch):
+    """The same guard for the other two archives."""
+    import processing
+    from fetch_kalshi import summarize_candle, CANDLE_COLS, BOOK_COLS, CANDLE_LOG_COLS
+
+    monkeypatch.setattr(processing, "_KALSHI_DIR", tmp_path)
+
+    candle = summarize_candle({"end_period_ts": 1, "price": {"close_dollars": "0.5"},
+                               "yes_bid": {"close_dollars": "0.4"},
+                               "yes_ask": {"close_dollars": "0.6"},
+                               "volume_fp": "1", "open_interest_fp": "2"},
+                              "Los Angeles", "KXHIGHLAX", "T1")
+    processing.save_kalshi_rows("candles", "la", [candle], ["ticker", "end_period_ts"])
+    assert (tmp_path / "la_candles.csv").read_text().splitlines()[0].split(",") == CANDLE_COLS
+
+    book = {"fetched_at_utc": "t", "city": "Los Angeles", "ticker": "T1",
+            "yes_best_bid": 0.4, "yes_best_ask": 0.6, "yes_ask_depth_usdc": 1.0,
+            "yes_vwap_buy_100": 0.6, "no_best_bid": 0.4, "no_best_ask": 0.6,
+            "no_ask_depth_usdc": 1.0, "no_vwap_buy_100": 0.6}
+    processing.save_kalshi_rows("books", "la", [book], ["ticker", "fetched_at_utc"])
+    assert (tmp_path / "la_books.csv").read_text().splitlines()[0].split(",") == BOOK_COLS
+
+    from fetch_kalshi import candle_log_row
+    log = candle_log_row({"ticker": "T1", "start_ts": 1, "end_ts": 2, "candles": 3,
+                          "ok": True, "reason": ""}, "Los Angeles", "KXHIGHLAX", "t")
+    processing.save_kalshi_candle_log([log])
+    assert (tmp_path / "candle_fetch_log.csv").read_text().splitlines()[0].split(",") \
+        == CANDLE_LOG_COLS
+
+
+# ── Persistence layer (I9) ────────────────────────────────────────────────────
+
+def test_save_kalshi_rows_appends_dedupes_and_widens(tmp_path, monkeypatch):
+    """The Kalshi persistence layer had ZERO tests. It is append-only with dedupe-on-read, and
+    schema widening is what makes capturing new vendor fields safe for the existing archive —
+    all three are asserted here against a real file, never against the repo's own data/."""
+    import pandas as pd
+    import processing
+
+    monkeypatch.setattr(processing, "_KALSHI_DIR", tmp_path)
+    path = tmp_path / "la_markets.csv"
+
+    assert processing.save_kalshi_rows("markets", "la", [], ["ticker", "fetched_at_utc"]) == 0
+    assert not path.exists(), "an empty write must not create a file"
+
+    r1 = {"ticker": "T1", "fetched_at_utc": "t0", "yes_bid": 0.4}
+    assert processing.save_kalshi_rows("markets", "la", [r1], ["ticker", "fetched_at_utc"]) == 1
+
+    # Same dedup key -> not appended again. Snapshots are re-fetched hourly; without this the
+    # archive would double every cycle.
+    assert processing.save_kalshi_rows("markets", "la", [r1], ["ticker", "fetched_at_utc"]) == 0
+    assert len(pd.read_csv(path)) == 1
+
+    # Same ticker, LATER timestamp -> a genuinely new snapshot, must append.
+    r2 = {"ticker": "T1", "fetched_at_utc": "t1", "yes_bid": 0.5}
+    assert processing.save_kalshi_rows("markets", "la", [r2], ["ticker", "fetched_at_utc"]) == 1
+
+    # Schema widening: a newly-captured vendor field must PERSIST, not be reindex-dropped, and
+    # must not destroy the earlier rows. This is what makes the C1 field expansion safe to run
+    # against the committed archive.
+    r3 = {"ticker": "T2", "fetched_at_utc": "t1", "yes_bid": 0.6, "expiration_value": "79.00"}
+    assert processing.save_kalshi_rows("markets", "la", [r3], ["ticker", "fetched_at_utc"]) == 1
+    df = pd.read_csv(path)
+    assert "expiration_value" in df.columns, "a new vendor column must survive the append"
+    assert len(df) == 3
+    assert df["expiration_value"].notna().sum() == 1, "old rows are NA-backfilled, not dropped"
+    assert set(df["ticker"]) == {"T1", "T2"}
+
+
+def test_save_kalshi_manifest_and_candle_log_are_append_only(tmp_path, monkeypatch):
+    """Both health records are append-only with dedupe, like every other archive here."""
+    import pandas as pd
+    import processing
+
+    monkeypatch.setattr(processing, "_KALSHI_DIR", tmp_path)
+
+    assert processing.save_kalshi_manifest([]) == 0
+    assert processing.save_kalshi_candle_log([]) == 0
+    assert not processing.kalshi_manifest_path().exists()
+    assert not processing.kalshi_candle_log_path().exists()
+
+    row = {"fetched_at_utc": "t0", "series_ticker": "KXHIGHLAX", "city": "Los Angeles",
+           "markets_returned": 438, "live_markets": 12, "truncated": False}
+    assert processing.save_kalshi_manifest([row]) == 1
+    assert processing.save_kalshi_manifest([row]) == 0, "same series+timestamp is not a new cycle"
+    assert processing.save_kalshi_manifest([{**row, "fetched_at_utc": "t1"}]) == 1
+    assert len(pd.read_csv(processing.kalshi_manifest_path())) == 2
+
+    log = {"ticker": "T1", "start_ts": 1, "end_ts": 2, "candles": 0, "ok": True,
+           "reason": "", "city": "Los Angeles", "series": "KXHIGHLAX", "fetched_at_utc": "t0"}
+    assert processing.save_kalshi_candle_log([log]) == 1
+    assert processing.save_kalshi_candle_log([log]) == 0
+    assert len(pd.read_csv(processing.kalshi_candle_log_path())) == 1
+
+
+# ── manifest_row (I6 / T3) ────────────────────────────────────────────────────
+
+def test_manifest_row_labels_the_city_column_with_the_city():
+    """THE test that was missing, and its absence is exactly why the defect shipped.
+
+    `manifest_row(series, city, …)` declared its second parameter `title` and every caller passed
+    the CITY, so the committed series_manifest.csv had a `title` column holding "Los Angeles".
+    A column whose name disagrees with its content is the silent-failure pattern this project
+    keeps paying for: it reads as plausible until someone joins on it.
+
+    Fixed by renaming the parameter AND the column to `city` (the city is what we actually want —
+    it keys the manifest to the per-city archive files), not by inventing a series title.
+    """
+    import inspect
+    from kalshi_series import manifest_row, MANIFEST_COLS
+
+    params = list(inspect.signature(manifest_row).parameters)
+    assert params[1] == "city", f"the second parameter must be named for its content: {params}"
+    assert "city" in MANIFEST_COLS and "title" not in MANIFEST_COLS
+
+    row = manifest_row("KXHIGHLAX", "Los Angeles", 438, 12, False, "2026-08-04T00:00:00")
+    assert row["city"] == "Los Angeles"
+    assert row["series_ticker"] == "KXHIGHLAX"
+    assert set(row) == set(MANIFEST_COLS), "the row must be exactly the declared columns"
+
+    # Types are coerced, so a numpy int or a truthy non-bool cannot reach the CSV as a repr.
+    row2 = manifest_row("KXHIGHAUS", "Austin", "5", "0", 1, "t")
+    assert row2["markets_returned"] == 5 and isinstance(row2["markets_returned"], int)
+    assert row2["live_markets"] == 0
+    assert row2["truncated"] is True
+
+
+def test_committed_manifest_header_names_the_city_column():
+    """The archive on disk must agree with the code. The `title` header was renamed in place —
+    its content was already the city, so the rename is lossless and leaves no dead column."""
+    import csv
+    import pathlib
+    from kalshi_series import MANIFEST_COLS
+
+    p = (pathlib.Path(__file__).resolve().parent.parent / "src" / "polymarket_weather"
+         / "data" / "kalshi" / "series_manifest.csv")
+    if not p.exists():
+        import pytest
+        pytest.skip("no committed manifest in this checkout")
+    with p.open() as fh:
+        reader = csv.DictReader(fh)
+        assert reader.fieldnames == MANIFEST_COLS
+        rows = list(reader)
+    assert rows, "the committed manifest must not be empty"
+    assert all(r["city"] and not r["city"].startswith("KX") for r in rows), \
+        "the city column must hold cities, not tickers"
+
+
+# ── The rot alarm vs an outage (I1) ───────────────────────────────────────────
+
+def test_rot_alarm_does_not_fire_on_a_truncated_fetch():
+    """AN OUTAGE IS NOT ROT, and the manifest already records which one it is.
+
+    `fetch_series_markets` returns `([], True)` on transport failure, so a Kalshi outage produces
+    `markets_returned=0, truncated=True` for ALL SEVEN series at once. Without excluding
+    truncated rows the alarm screams TICKER ROT seven times for a transient blip — and an alarm
+    that cries wolf is an alarm that gets ignored on the day a series really does die.
+
+    `truncated=True` with zero markets means WE DO NOT KNOW. That is never evidence of rot.
+    """
+    import pandas as pd
+    from main import _kalshi_rot_alarms
+
+    prev = pd.DataFrame([{"series_ticker": "KXHIGHLAX", "markets_returned": 438},
+                         {"series_ticker": "KXHIGHAUS", "markets_returned": 438}])
+
+    # A whole-API outage: every series zero AND truncated. Must be SILENT.
+    outage = [{"series_ticker": "KXHIGHLAX", "markets_returned": 0, "truncated": True},
+              {"series_ticker": "KXHIGHAUS", "markets_returned": 0, "truncated": True}]
+    assert _kalshi_rot_alarms(outage, prev) == [], \
+        "a truncated (= transport-failed) fetch must NEVER be reported as ticker rot"
+
+    # The same zero row, NOT truncated: the fetch succeeded and genuinely returned nothing.
+    # That IS rot and must still fire — the fix must not have muted the alarm entirely.
+    real_rot = [{"series_ticker": "KXHIGHLAX", "markets_returned": 0, "truncated": False},
+                {"series_ticker": "KXHIGHAUS", "markets_returned": 438, "truncated": False}]
+    assert _kalshi_rot_alarms(real_rot, prev) == ["KXHIGHLAX"]
+
+    # Mixed: one dead series during a partial outage. Only the non-truncated one alarms.
+    mixed = [{"series_ticker": "KXHIGHLAX", "markets_returned": 0, "truncated": True},
+             {"series_ticker": "KXHIGHAUS", "markets_returned": 0, "truncated": False}]
+    assert _kalshi_rot_alarms(mixed, prev) == ["KXHIGHAUS"]
+
+
+# ── Candle completeness is PERSISTED (I2 / T6) ────────────────────────────────
+
+def test_candle_log_row_records_the_whole_completeness_fact():
+    """`fetch_candles` has always COMPUTED completeness; the caller read meta["ok"] and threw the
+    rest away, so the binding "incompleteness is a recorded VALUE, not an inference" constraint
+    was aspirational. A zero-candle market, a never-attempted market and a failed fetch were all
+    indistinguishable — an absent row."""
+    from fetch_kalshi import candle_log_row, CANDLE_LOG_COLS
+
+    ok_meta = {"ticker": "T1", "start_ts": 100, "end_ts": 200, "candles": 42,
+               "ok": True, "reason": ""}
+    row = candle_log_row(ok_meta, "Los Angeles", "KXHIGHLAX", "2026-08-04T00:00:00")
+    assert set(row) == set(CANDLE_LOG_COLS)
+    assert row["candles"] == 42 and row["ok"] is True
+    assert (row["start_ts"], row["end_ts"]) == (100, 200), "the requested WINDOW must persist"
+    assert row["city"] == "Los Angeles" and row["series"] == "KXHIGHLAX"
+
+    # A market that genuinely never traded: request succeeded, zero candles. A real, recorded fact.
+    empty = candle_log_row({"ticker": "T2", "start_ts": 1, "end_ts": 2, "candles": 0,
+                            "ok": True, "reason": ""}, "Miami", "KXHIGHMIA", "t")
+    assert empty["ok"] is True and empty["candles"] == 0
+
+    # A failed fetch must NOT look like "this market had no trading".
+    dead = candle_log_row({"ticker": "T3", "start_ts": 1, "end_ts": 2, "candles": 0,
+                           "ok": False, "reason": "fetch_failed"}, "Miami", "KXHIGHMIA", "t")
+    assert dead["ok"] is False and dead["reason"] == "fetch_failed"
+    assert dead["ok"] != empty["ok"], "the two zero-candle cases must be distinguishable"
+
+
+def test_step_fetch_kalshi_persists_the_candle_log(tmp_path, monkeypatch):
+    """End to end: the log reaches disk, including the FAILED attempts — those are precisely the
+    rows that cannot be reconstructed from the candles file, because they wrote nothing to it."""
+    import pandas as pd
+    import main
+    import processing
+
+    monkeypatch.setattr(processing, "_KALSHI_DIR", tmp_path)
+    monkeypatch.setattr("kalshi_series.target_series", lambda: {"Los Angeles": "KXHIGHLAX"})
+    monkeypatch.setattr(
+        "fetch_kalshi.fetch_series_markets",
+        lambda series, **kw: ([{"ticker": "T_OK", "status": "finalized"},
+                               {"ticker": "T_DEAD", "status": "finalized"}], False))
+    monkeypatch.setattr("fetch_kalshi.fetch_orderbooks", lambda tickers, **kw: {})
+
+    def _candles(series, market, **kw):
+        if market["ticker"] == "T_OK":
+            return ([{"end_period_ts": 1, "price": {"close_dollars": "0.5"},
+                      "yes_bid": {}, "yes_ask": {}}],
+                    {"ticker": "T_OK", "start_ts": 1, "end_ts": 2, "candles": 1,
+                     "ok": True, "reason": ""})
+        return ([], {"ticker": "T_DEAD", "start_ts": 1, "end_ts": 2, "candles": 0,
+                     "ok": False, "reason": "fetch_failed"})
+    monkeypatch.setattr("fetch_kalshi.fetch_candles", _candles)
+
+    main.step_fetch_kalshi()
+
+    log = pd.read_csv(processing.kalshi_candle_log_path())
+    assert set(log["ticker"]) == {"T_OK", "T_DEAD"}, \
+        "a FAILED attempt must be logged — it is invisible in the candles file by definition"
+    assert bool(log.loc[log["ticker"] == "T_OK", "ok"].iloc[0]) is True
+    assert bool(log.loc[log["ticker"] == "T_DEAD", "ok"].iloc[0]) is False
+    assert log.loc[log["ticker"] == "T_DEAD", "reason"].iloc[0] == "fetch_failed"
+
+
+# ── Per-city isolation (I3) ───────────────────────────────────────────────────
+
+def test_one_citys_failure_still_writes_the_whole_cycles_manifest(tmp_path, monkeypatch, caplog):
+    """A mid-loop exception used to lose the ENTIRE cycle's health record: the manifest write and
+    the rot alarm both ran after the loop, and main() swallows the raise — so a failure on city 4
+    left cities 1-3's data on disk with no record that the cycle happened at all. The manifest is
+    the thing that says what happened; it must survive whatever the loop does."""
+    import logging
+    import pandas as pd
+    import main
+    import processing
+
+    monkeypatch.setattr(processing, "_KALSHI_DIR", tmp_path)
+    monkeypatch.setattr("kalshi_series.target_series",
+                        lambda: {"Los Angeles": "KXHIGHLAX", "Austin": "KXHIGHAUS",
+                                 "Miami": "KXHIGHMIA"})
+    monkeypatch.setattr("fetch_kalshi.fetch_orderbooks", lambda tickers, **kw: {})
+
+    def _markets(series, **kw):
+        if series == "KXHIGHAUS":
+            raise RuntimeError("boom mid-city")
+        return ([{"ticker": f"{series}-T1", "status": "active"}], False)
+    monkeypatch.setattr("fetch_kalshi.fetch_series_markets", _markets)
+
+    with caplog.at_level(logging.ERROR):
+        main.step_fetch_kalshi()          # must not raise
+
+    manifest = pd.read_csv(processing.kalshi_manifest_path())
+    assert set(manifest["series_ticker"]) == {"KXHIGHLAX", "KXHIGHMIA"}, \
+        "the surviving cities must still have a health record"
+    assert (tmp_path / "miami_markets.csv").exists(), \
+        "the city AFTER the failure must still have been collected"
+    assert any("FAILED mid-city" in r.message for r in caplog.records), \
+        "the isolated failure must be logged loudly, not swallowed silently"
+
+
+def test_step_fetch_kalshi_uses_one_definition_of_live(tmp_path, monkeypatch):
+    """I5: main hardcoded ("active","initialized") one line after count_live consulted
+    kalshi_series.LIVE_STATUSES, so the manifest's live_markets and the set of books actually
+    fetched could silently disagree the moment either changed. Proven by adding a status to the
+    constant and asserting the book fetch follows it."""
+    import kalshi_series
+    import main
+    import processing
+
+    monkeypatch.setattr(processing, "_KALSHI_DIR", tmp_path)
+    monkeypatch.setattr(kalshi_series, "LIVE_STATUSES", {"active", "initialized", "paused"})
+    monkeypatch.setattr("kalshi_series.target_series", lambda: {"Los Angeles": "KXHIGHLAX"})
+    monkeypatch.setattr("fetch_kalshi.fetch_series_markets", lambda series, **kw: (
+        [{"ticker": "T_ACTIVE", "status": "active"},
+         {"ticker": "T_PAUSED", "status": "paused"},
+         {"ticker": "T_DONE", "status": "finalized"}], False))
+    monkeypatch.setattr("main._markets_needing_candles", lambda markets, archived: [])
+
+    asked = {}
+
+    def _books(tickers, **kw):
+        asked["t"] = list(tickers)
+        return {}
+    monkeypatch.setattr("fetch_kalshi.fetch_orderbooks", _books)
+    main.step_fetch_kalshi()
+
+    assert asked["t"] == ["T_ACTIVE", "T_PAUSED"], (
+        "the book fetch must read kalshi_series.LIVE_STATUSES, not a hardcoded tuple — "
+        f"got {asked['t']}")
+
+
+# ── The renamed-ladder-key guard ──────────────────────────────────────────────
+
+def test_orderbook_logs_loudly_when_the_ladder_KEYS_are_renamed(caplog):
+    """_ladder's shape guard cannot see a RENAMED key.
+
+    `ob.get("yes_dollars") or []` yields [] when Kalshi renames the field, and [] is a
+    legitimately empty book — so _ladder never fires, every book archives all-None, and the run
+    log still reports "1/1 returned". A confident, plausible, wrong archive behind a green run:
+    the exact failure class this project keeps paying for. Only a check at the payload level can
+    tell a rename from a genuinely two-sided-empty book.
+    """
+    import logging
+    from fetch_kalshi import fetch_orderbooks
+
+    class RenamedSession:
+        def get(self, url, params=None, timeout=None):
+            # Same shape, new key names — indistinguishable from an empty book downstream.
+            return _Resp('{"orderbook_fp": {"yes_levels": [["0.0400","10"]], '
+                         '"no_levels": [["0.9500","10"]]}}')
+
+    with caplog.at_level(logging.ERROR):
+        out = fetch_orderbooks(["T1"], session=RenamedSession())
+
+    assert "T1" in out, "the row is still emitted (all-None) — the point is that it is NOISY"
+    assert out["T1"]["yes_best_bid"] is None
+    assert any("KEY RENAME" in r.message for r in caplog.records), (
+        "a renamed ladder key must be LOUD; silently archiving all-None while reporting "
+        "success is how a whole run's books get quietly destroyed")
+
+    # A genuinely empty two-sided book uses the KNOWN keys and must stay quiet.
+    caplog.clear()
+
+    class EmptyButKnownSession:
+        def get(self, url, params=None, timeout=None):
+            return _Resp('{"orderbook_fp": {"yes_dollars": [], "no_dollars": []}}')
+
+    with caplog.at_level(logging.ERROR):
+        fetch_orderbooks(["T2"], session=EmptyButKnownSession())
+    assert not [r for r in caplog.records if "KEY RENAME" in r.message], \
+        "a real empty book is a quiet, legitimate answer"
+
+    # A book with only ONE side present is normal too (all bids on one token) — not a rename.
+    caplog.clear()
+
+    class OneSidedSession:
+        def get(self, url, params=None, timeout=None):
+            return _Resp('{"orderbook_fp": {"yes_dollars": [["0.0400","10"]]}}')
+
+    with caplog.at_level(logging.ERROR):
+        fetch_orderbooks(["T3"], session=OneSidedSession())
+    assert not [r for r in caplog.records if "KEY RENAME" in r.message]

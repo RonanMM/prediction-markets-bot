@@ -14,7 +14,7 @@ Copied verbatim from `docs/superpowers/specs/2026-08-03-kalshi-archive-design.md
 
 - **Data layer only.** No model, no edge claim, no trading. Nothing in this plan may bet or size.
 - **Kalshi base host:** `https://api.elections.kalshi.com`, unauthenticated, no key, no account.
-- **Kalshi JSON MUST be parsed with `json.loads(text, strict=False)`.** `rules_secondary` contains raw newline characters inside a JSON string, which Python's parser rejects by default.
+- **Kalshi JSON is parsed with `json.loads(text, strict=False)` as a DEFENSIVE guard.** ⚠️ The original justification here — that `rules_secondary` contains raw newline characters inside a JSON string which Python's parser rejects — is FALSE and was retracted 2026-08-04 (see the spec's hazard 2). Every raw body parses with plain `json.loads`; Kalshi escapes newlines as `\n`, which is valid JSON. Keep the flag (it only widens what parses, and costs nothing), but do not repeat the claim that Kalshi sends invalid JSON.
 - **Store raw, derive late.** Archive vendor fields verbatim, including BOTH `rules_primary` and `rules_secondary`. Never store an interpretation.
 - **Absence is `None`, never a sentinel.** A missing bid is `None`, not `0.0` and not `1.0`.
 - **Append-only.** A partial fetch must never replace a complete file.
@@ -477,9 +477,9 @@ def test_kalshi_get_retries_on_EMPTY_not_only_on_error():
     assert ok is True and payload["markets"] == []
 
 
-def test_kalshi_get_parses_the_real_raw_newline_in_rules_secondary():
-    """Kalshi emits literal newlines inside JSON strings, which is invalid JSON. Python's
-    parser rejects it by default; strict=False is required."""
+def test_kalshi_get_tolerates_an_unescaped_control_character_if_one_ever_appears():
+    """DEFENSIVE guard, NOT a reproduction of live behaviour — see the spec's retracted
+    hazard 2. Kalshi has never been observed sending invalid JSON."""
     from kalshi_series import kalshi_get
 
     class NewlineSession:
@@ -584,8 +584,9 @@ def kalshi_get(path: str, params: dict, session=None, retries: int = DEFAULT_RET
                  a genuine absence are indistinguishable at the call site (this silently dropped
                  Houston and then Seattle during design).
 
-    Parsing uses strict=False: `rules_secondary` contains raw newlines inside JSON strings,
-    which is invalid JSON that Python's parser rejects by default.
+    Parsing uses strict=False as a DEFENSIVE widening against an unobserved condition. The
+    claim that `rules_secondary` contains raw newlines and is invalid JSON was RETRACTED
+    2026-08-04: every real body parses with plain json.loads.
     """
     sess = session or requests
     last = None
@@ -639,10 +640,10 @@ In `kalshi_get`, temporarily change `if nonempty_key is None or payload.get(none
 Run: `pytest -o addopts="" tests/ -k kalshi_get_retries -v`
 Expected: FAIL (`s.calls == 1`). Restore, confirm PASS.
 
-- [ ] **Step 6: Mutation-test the strict=False guard**
+- [ ] **Step 6: Mutation-test the strict=False guard** (guards an unobserved condition)
 
 Temporarily change `json.loads(resp.text, strict=False)` to `json.loads(resp.text)`.
-Run: `pytest -o addopts="" tests/ -k raw_newline -v`
+Run: `pytest -o addopts="" tests/ -k unescaped_control_character -v`
 Expected: FAIL. Restore, confirm PASS.
 
 - [ ] **Step 7: Commit**
@@ -656,8 +657,8 @@ but serve zero markets, and Houston has four tickers of which only KXHIGHTHOU is
 series derive from resolution_anchors so the two venues' sets cannot drift.
 
 kalshi_get retries on EMPTY responses, not only on errors, and distinguishes 'we do not know'
-(ok=False) from 'genuinely empty'. Parses with strict=False for the raw newlines Kalshi emits
-inside rules_secondary."
+(ok=False) from 'genuinely empty'. Parses with strict=False as a defensive widening (the 'Kalshi sends
+invalid JSON' claim was later retracted; every real body parses with plain json.loads)."
 ```
 
 ---
