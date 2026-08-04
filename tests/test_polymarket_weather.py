@@ -4791,9 +4791,17 @@ _LIVE_FINALIZED_MARKET = {
     "yes_sub_title": "86° or above",
 }
 
-# The full union of keys across a live 200-market page (KXHIGHLAX, 2026-08-04). The two keys the
-# fixture above lacks: `cap_strike` (absent on `greater`-type markets — 166/200 carry it) and
-# nothing else. `settlement_ts`/`settlement_value_dollars` appear on the 188 finalized ones only.
+# The full union of keys across a live 200-market page (KXHIGHLAX, 2026-08-04): 45 keys. The
+# fixture above is a `greater`-type market and so lacks exactly ONE of them — `cap_strike`, which
+# only `between`/`less` markets carry (166/200). Its own `settlement_ts`/`settlement_value_dollars`
+# are present because it is finalized; the 12 active markets on that page omit them.
+#
+# ⚠️ This is a FROZEN SNAPSHOT, not a live read. The test below compares it against
+# fetch_kalshi.CAPTURED_VENDOR_KEYS — two static sets — so it detects a field being dropped from
+# the CODE, and cannot detect a field Kalshi ADDS after this literal was written. Nothing in a
+# test suite can: that requires a live payload. The live half of the guard is
+# fetch_kalshi._warn_unknown_vendor_keys, which runs in the hourly collector; see
+# test_summarize_market_warns_about_a_vendor_field_it_does_not_know.
 _LIVE_MARKET_KEY_UNION = set(_LIVE_FINALIZED_MARKET) | {"cap_strike"}
 
 
@@ -4833,9 +4841,18 @@ def test_summarize_market_captures_every_key_a_real_market_object_carries():
     later, reversible decision, and capture is a now-or-never one (Kalshi serves market objects
     ~2 months).
 
-    This diffs a VERBATIM live payload against the module's own field table, so the next vendor
-    field Kalshi adds fails the build loudly instead of vanishing behind a green run — which is
-    exactly how the first 19 were lost.
+    SCOPE — read this before trusting it. This diffs the module's field table against a FROZEN
+    LITERAL snapshot of the live key union. Both sides are static, so what it actually catches is
+    a CODE regression: a field deleted from `_MARKET_FIELDS`, or a table entry naming a key
+    Kalshi does not send. It is BLIND to a field Kalshi adds after that snapshot was written —
+    no test here may touch the network, and a static test cannot observe a remote change.
+
+    An earlier version of this docstring claimed the opposite ("the next vendor field Kalshi adds
+    fails the build"), and a comment cited a test name that did not exist. On a branch whose
+    thesis is that confident false claims about guards are this project's dominant bug class,
+    that was the bug class itself. The vendor-addition half is enforced at the only layer that
+    sees live payloads — `_warn_unknown_vendor_keys`, in the hourly collector; see
+    `test_summarize_market_warns_about_a_vendor_field_it_does_not_know`.
     """
     from fetch_kalshi import summarize_market, CAPTURED_VENDOR_KEYS, _MARKET_FIELDS
 
@@ -5246,3 +5263,60 @@ def test_orderbook_logs_loudly_when_the_ladder_KEYS_are_renamed(caplog):
     with caplog.at_level(logging.ERROR):
         fetch_orderbooks(["T3"], session=OneSidedSession())
     assert not [r for r in caplog.records if "KEY RENAME" in r.message]
+
+
+def test_summarize_market_warns_about_a_vendor_field_it_does_not_know(caplog):
+    """THE LIVE HALF of the completeness guard — the half a test suite cannot otherwise provide.
+
+    The static key-union test above compares two frozen sets, so it can never see a field Kalshi
+    ADDS. `summarize_market` therefore checks each REAL payload against `CAPTURED_VENDOR_KEYS` at
+    runtime and warns. The collector runs hourly against live objects, so that is the one place a
+    vendor addition is observable — and with a ~2-month serving window, every cycle it goes
+    unnoticed is data lost permanently.
+
+    Warn ONCE PER KEY PER PROCESS, not per market: 438 markets x 7 cities would bury the signal
+    in 3,066 identical lines, which is indistinguishable from noise and gets filtered out.
+    """
+    import logging
+    import fetch_kalshi
+    from fetch_kalshi import summarize_market
+
+    fetch_kalshi._WARNED_UNKNOWN_KEYS.clear()
+
+    with caplog.at_level(logging.WARNING):
+        row = summarize_market({**_LIVE_FINALIZED_MARKET,
+                                "brand_new_vendor_field": "123",
+                                "another_new_one": "x"})
+
+    msgs = [r.getMessage() for r in caplog.records]
+    hits = [m for m in msgs if "NEW VENDOR FIELD" in m]
+    assert hits, f"an unarchived vendor field must WARN, not vanish silently. Got: {msgs}"
+    assert "brand_new_vendor_field" in hits[0] and "another_new_one" in hits[0], \
+        "the warning must name the keys, or nobody can act on it"
+    assert "KXHIGHLAX-26AUG02-T85" in hits[0], "and the ticker, so the payload can be re-fetched"
+
+    # The row itself is still produced — a new field must never break the capture of the 45
+    # known ones. Degrade, don't fail.
+    assert row["ticker"] == "KXHIGHLAX-26AUG02-T85"
+    assert row["expiration_value"] == "79.00"
+
+    # Once per key per process: the SAME unknown key on a later market must not re-warn.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        summarize_market({"ticker": "T2", "brand_new_vendor_field": "456"})
+    assert not [r for r in caplog.records if "NEW VENDOR FIELD" in r.getMessage()], \
+        "3,066 identical warnings per cycle is noise, not a signal"
+
+    # But a genuinely DIFFERENT new key still warns.
+    with caplog.at_level(logging.WARNING):
+        summarize_market({"ticker": "T3", "a_third_new_field": "789"})
+    assert any("a_third_new_field" in r.getMessage() for r in caplog.records)
+
+    # A fully-known payload is silent — no false alarms on the normal path.
+    fetch_kalshi._WARNED_UNKNOWN_KEYS.clear()
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        summarize_market(_LIVE_FINALIZED_MARKET)
+    assert not [r for r in caplog.records if "NEW VENDOR FIELD" in r.getMessage()], \
+        "every key in a real live market object is known — this must not cry wolf"
+    fetch_kalshi._WARNED_UNKNOWN_KEYS.clear()

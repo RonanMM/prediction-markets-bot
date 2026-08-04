@@ -122,9 +122,45 @@ _MARKET_FIELDS = (
     ("exchange_index",           "exchange_index",           "num"),
 )
 
-# Every vendor key this module knows about. The completeness test diffs a REAL captured market
-# object against this set, so a field Kalshi adds later fails loudly instead of vanishing.
+# Every vendor key this module knows about.
+#
+# ⚠️ WHAT THE TEST AROUND THIS SET CAN AND CANNOT DO.
+# `test_summarize_market_captures_every_key_a_real_market_object_carries` diffs this set against
+# a FROZEN LITERAL SNAPSHOT of the live key union (captured 2026-08-04). Both sides are static,
+# so it catches a CODE regression — a field deleted from `_MARKET_FIELDS`, or a table entry
+# naming a key Kalshi does not send — and it fails the build for those. It CANNOT see a field
+# Kalshi ADDS after that snapshot was taken, because no test here may touch the network. A
+# static test cannot detect a change in a remote system; only something that reads a live
+# payload can.
+#
+# That gap is closed at the only layer that sees live payloads: `summarize_market` compares each
+# real market object against this set at runtime and logs any unknown key at WARNING (see
+# `_warn_unknown_vendor_keys`). So a vendor addition surfaces in the COLLECTOR LOG, not in CI.
 CAPTURED_VENDOR_KEYS = frozenset(key for _, key, _ in _MARKET_FIELDS)
+
+# Unknown vendor keys already reported, so the warning fires once per key per process rather
+# than once per market (438 markets x 7 cities would bury it). Same pattern as pmf._WARNED_NU.
+_WARNED_UNKNOWN_KEYS: set = set()
+
+
+def _warn_unknown_vendor_keys(market: dict) -> None:
+    """Log any vendor key `_MARKET_FIELDS` does not name. Once per key per process.
+
+    THE LIVE HALF of the completeness guard. The static test cannot see a field Kalshi adds, so
+    without this a new vendor field would be silently dropped on every cycle for as long as it
+    took someone to re-probe the API by hand — and the ~2-month serving window means "silently
+    dropped" is "permanently lost". The collector runs hourly against real payloads, so it is the
+    one place the addition is actually observable.
+    """
+    unknown = set(market) - CAPTURED_VENDOR_KEYS - _WARNED_UNKNOWN_KEYS
+    if not unknown:
+        return
+    _WARNED_UNKNOWN_KEYS.update(unknown)
+    logger.warning(
+        "kalshi %s: NEW VENDOR FIELD(S) NOT BEING ARCHIVED: %s. Kalshi serves market objects "
+        "for only ~2 months, so every cycle this goes unfixed is data lost permanently — add "
+        "them to fetch_kalshi._MARKET_FIELDS and refresh the test's frozen key union.",
+        market.get("ticker") or "<no ticker>", sorted(unknown))
 
 # What the writer actually produces: summarize_market's keys, then the three context columns
 # main.py attaches. Order matches the committed archive header (I9) — the constant describes the
@@ -242,14 +278,23 @@ def derive_bin(market: dict):
 def summarize_market(market: dict) -> dict:
     """One archive row from a Kalshi market object — EVERY vendor field, none dropped.
 
-    Driven by `_MARKET_FIELDS` (see its comment for why capture is total). Adding a column is a
-    one-line table edit, and `test_summarize_market_captures_every_vendor_field` fails the build
-    if Kalshi introduces a key the table does not name.
+    Driven by `_MARKET_FIELDS` (see `CAPTURED_VENDOR_KEYS` for why capture is total). Adding a
+    column is a one-line table edit.
+
+    Completeness is enforced in TWO places, because neither alone is sufficient:
+      • `test_summarize_market_captures_every_key_a_real_market_object_carries` compares the
+        table against a frozen snapshot of the live key union — it fails the build when a field
+        is dropped from the CODE, but is blind to a field Kalshi ADDS (a static test cannot
+        observe a remote change).
+      • `_warn_unknown_vendor_keys`, called below on every real payload, logs at WARNING any key
+        the table does not name — that is the half which can see a vendor addition, and it runs
+        hourly in the collector.
 
     BOTH rules fields are stored: the station is named in `rules_primary` for the older KXHIGH*
     series and only in `rules_secondary` for the newer KXHIGHT* ones, so neither alone identifies
     it — and "Houston" is ambiguous between Bush and Hobby.
     """
+    _warn_unknown_vendor_keys(market)
     readers = {"num": _num, "json": _json_field,
                "raw": lambda m, k: m.get(k),
                "blank_is_absent": lambda m, k: m.get(k) or None}
