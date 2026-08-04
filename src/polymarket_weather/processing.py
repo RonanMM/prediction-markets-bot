@@ -246,6 +246,24 @@ def save_kalshi_manifest(rows: list[dict]) -> int:
                        dedup_cols=["series_ticker", "fetched_at_utc"])
 
 
+def kalshi_candle_log_path() -> Path:
+    """Path to the Kalshi candle-completeness log (all cities, one file)."""
+    return _KALSHI_DIR / "candle_fetch_log.csv"
+
+
+def save_kalshi_candle_log(rows: list[dict]) -> int:
+    """Append candle-fetch completeness rows to data/kalshi/candle_fetch_log.csv.
+
+    One row per ATTEMPT, so a market archived with zero candles is distinguishable from a market
+    never attempted and from one whose fetch failed. See fetch_kalshi.candle_log_row.
+    """
+    if not rows:
+        return 0
+    _KALSHI_DIR.mkdir(parents=True, exist_ok=True)
+    return _append_csv(kalshi_candle_log_path(), rows,
+                       dedup_cols=["ticker", "fetched_at_utc"])
+
+
 # ── Implied temperature ───────────────────────────────────────────────────────
 
 _RANGE_PATTERN = re.compile(
