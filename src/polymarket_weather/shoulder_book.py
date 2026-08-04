@@ -501,6 +501,26 @@ def graded_book(book: pd.DataFrame = None):
     return parsed, graded
 
 
+def breakeven_win_rate(net, won):
+    """The win rate at which this payoff nets exactly zero, or None if undefined.
+
+    Selling shoulder bins is a SHORT-VOLATILITY trade: frequent small wins, rare large losses
+    (measured 2026-08-04 on the breadth book — win +14.7¢, loss −82.9¢, a 5.6× ratio). A win rate
+    on its own is therefore not readable. 84.9% sounds dominant; break-even for that payoff is
+    84.2%, so the whole edge is seven-tenths of a percentage point. Publishing the two numbers
+    apart invites the reader to see a safe strategy where there is a thin one, which is why every
+    surface that shows a win rate should show this beside it.
+    """
+    n = pd.Series(list(net)).astype(float)
+    w = pd.Series(list(won)).astype(bool)
+    if len(n) == 0 or len(n) != len(w) or w.all() or not w.any():
+        return None
+    win, loss = n[w.values].mean(), n[~w.values].mean()
+    if not (win > loss):
+        return None
+    return float(-loss / (win - loss))
+
+
 def per_city_stats(graded: pd.DataFrame, lo: float = 0.05, hi: float = 0.35,
                    min_n: int = 1) -> list:
     """Per-CITY taker edge over the yes∈[lo,hi)¢ shoulder band. DESCRIPTIVE ONLY.

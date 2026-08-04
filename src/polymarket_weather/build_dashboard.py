@@ -414,21 +414,32 @@ def compute_series() -> dict:
     # second copy that could drift from the report it sits beside.
     try:
         import pandas as pd
+        import config
+        import shoulder_book as sb
         _, graded = _book_graded()
         if not graded.empty:
-            df = pd.DataFrame({"t": graded["target_date"].astype(str),
-                               "leg": graded["leg"].astype(str),
-                               "net": graded["net_edge"].astype(float)})
-            df["sh"] = df["net"].where(df["leg"] == "shoulder", 0.0)
-            df["fav"] = df["net"].where(df["leg"] == "favorite", 0.0)
-            g = df.groupby("t").agg(net=("net", "sum"), sh=("sh", "sum"),
-                                    fav=("fav", "sum"), n=("net", "size")).sort_index()
-            cum = g.cumsum()
-            out["equity"] = [{"t": pd.Timestamp(t).strftime("%b %-d"),
-                              "v": round(float(cum["net"].loc[t]), 3),
-                              "sh": round(float(cum["sh"].loc[t]), 3),
-                              "fav": round(float(cum["fav"].loc[t]), 3),
-                              "n": int(g["n"].loc[t])} for t in g.index]
+            df = pd.DataFrame({
+                "t": pd.to_datetime(graded["target_date"], errors="coerce"),
+                "net": graded["net_edge"].astype(float),
+                "cost": graded["entry_side_price"].astype(float) + config.HALF_SPREAD,
+                "won": graded["side_won"].astype(bool),
+            }).dropna(subset=["t"])
+            g = df.groupby("t").agg(net=("net", "sum"), cost=("cost", "sum"),
+                                    n=("net", "size"), wr=("won", "mean")).sort_index()
+            cum = g[["net", "cost"]].cumsum()
+            be = sb.breakeven_win_rate(df["net"], df["won"])
+            out["equity"] = [{
+                "t": t.strftime("%b %-d"),
+                # ROI on capital deployed, not summed units — see _breadth_equity for why the
+                # units version read as performance while behaving like a volume chart.
+                "roi": round(float(cum["net"].loc[t] / cum["cost"].loc[t] * 100), 3)
+                       if cum["cost"].loc[t] else 0.0,
+                "wr": round(float(g["wr"].loc[t]) * 100, 2),
+                "be": round(be * 100, 2) if be is not None else None,
+                "n": int(g["n"].loc[t]),
+                "u": round(float(cum["net"].loc[t]), 2),          # tooltip only
+                "cap": round(float(cum["cost"].loc[t]), 2),
+            } for t in g.index]
     except Exception as e:
         out["eq_error"] = f"{type(e).__name__}: {e}"
 
@@ -654,12 +665,23 @@ BK_CITY_MIN_N = 20
 
 
 def _breadth_equity() -> list:
-    """Cumulative breadth-book net per contract by TARGET DATE, split shoulder vs moderate band.
+    """Cumulative RETURN ON CAPITAL by target date, all-shoulder vs the gated moderate band.
 
-    The breadth book had two summary rows and no chart, so there was no way to see whether its
-    +0.007 accrued steadily or arrived on a few days — which matters, because the temporal
-    amendment (GATE_MIN_DATES) exists precisely because this book's calendar is narrow."""
+    This plotted summed "net units" until 2026-08-04, and that was misleading in a way worth
+    recording. A cumulative sum of per-contract edge is exactly `n × mean`: +38.0u was 1344
+    contracts × 2.83¢, not a portfolio compounding. Its SLOPE was set by how many markets the
+    collector happened to pick up — doubling the city list would have doubled the steepness with
+    the edge completely unchanged, so it read as a performance chart while behaving like a volume
+    chart. Return on capital deployed is invariant to that: adding contracts at the same edge
+    leaves the line flat, and only a change in edge moves it.
+
+    Each point also carries that DAY's win rate, so the page can show it against the break-even
+    (see shoulder_book.breakeven_win_rate) — the margin is ~0.7pp on the full band, which a raw
+    85% win rate hides completely.
+    """
     import pandas as pd
+    import config
+    import shoulder_book as sb
     _, graded = _breadth_graded()
     if graded.empty or "leg" not in graded.columns:
         return []
@@ -667,19 +689,47 @@ def _breadth_equity() -> list:
     if sh.empty:
         return []
     yes = sh["entry_yes_price"].astype(float)
+    inmod = (yes >= 0.10) & (yes < 0.25)
     day = pd.to_datetime(sh["target_date"], errors="coerce")
-    df = pd.DataFrame({"t": day, "net": sh["net_edge"].astype(float)}).dropna(subset=["t"])
+    df = pd.DataFrame({
+        "t": day,
+        "net": sh["net_edge"].astype(float),
+        # capital actually laid out per contract, on the same taker-conservative basis the P&L
+        # uses: the entry price plus the half-spread crossed on entry.
+        "cost": sh["entry_side_price"].astype(float) + config.HALF_SPREAD,
+        "won": sh["side_won"].astype(bool),
+        "inmod": inmod,
+    }).dropna(subset=["t"])
     if df.empty:
         return []
-    # Leg 1b's band, tracked separately: it is the one under a live forward gate.
-    df["mod"] = df["net"].where((yes >= 0.10) & (yes < 0.25), 0.0)
-    g = df.groupby("t").agg(net=("net", "sum"), mod=("mod", "sum"),
-                            n=("net", "size")).sort_index()
-    cum = g.cumsum()
-    return [{"t": t.strftime("%b %-d"),
-             "v": round(float(cum["net"].loc[t]), 3),
-             "mod": round(float(cum["mod"].loc[t]), 3),
-             "n": int(g["n"].loc[t])} for t in g.index]
+    for c in ("net", "cost"):
+        df[f"m{c}"] = df[c].where(df["inmod"], 0.0)
+    g = df.groupby("t").agg(net=("net", "sum"), cost=("cost", "sum"),
+                            mnet=("mnet", "sum"), mcost=("mcost", "sum"),
+                            n=("net", "size"), wr=("won", "mean")).sort_index()
+    mwr = df[df["inmod"]].groupby("t")["won"].mean()
+    cum = g[["net", "cost", "mnet", "mcost"]].cumsum()
+
+    def _roi(num, den):
+        return round(float(num / den * 100.0), 3) if den else 0.0
+
+    out = []
+    for t in g.index:
+        c = cum.loc[t]
+        out.append({"t": t.strftime("%b %-d"),
+                    "roi": _roi(c["net"], c["cost"]),
+                    "mroi": _roi(c["mnet"], c["mcost"]),
+                    "wr": round(float(g["wr"].loc[t]) * 100, 2),
+                    "mwr": (round(float(mwr.loc[t]) * 100, 2) if t in mwr.index else None),
+                    "n": int(g["n"].loc[t]),
+                    # kept for the tooltip only — never the y-axis again
+                    "u": round(float(c["net"]), 2), "mu": round(float(c["mnet"]), 2)})
+    be = sb.breakeven_win_rate(df["net"], df["won"])
+    mbe = sb.breakeven_win_rate(df.loc[df["inmod"], "net"], df.loc[df["inmod"], "won"])
+    for r in out:                       # constant on every point so the JS can draw the line
+        r["be"] = round(be * 100, 2) if be is not None else None
+        r["mbe"] = round(mbe * 100, 2) if mbe is not None else None
+    return out
 
 
 def _breadth_cities() -> list:
@@ -727,9 +777,13 @@ def build_payload(d: dict, series: dict) -> dict:
                 "is the current standing; the candidate edges below are walked forward on paper.")
     edge_chip = ""
 
-    # paper-book running total from the equity series
+    # Paper-book headline: RETURN ON CAPITAL, not summed units. "+7.45u" was 305 contracts ×
+    # 2.4¢ — a number that grows with inventory alone, so it flattered the book every time the
+    # collector widened. ROI is invariant to how many tickets were bought.
     eq = series.get("equity") or []
-    book_net = f"{eq[-1]['v']:+.2f}u".replace("-", "−") if eq else "—"
+    book_net = f"{eq[-1]['roi']:+.2f}%".replace("-", "−") if eq else "—"
+    book_be = (f"{eq[-1]['be']:.1f}" if eq and eq[-1].get("be") is not None else "—")
+    book_cap = f"${eq[-1]['cap']:,.0f}" if eq else "—"
     hb = series.get("heartbeat") or []
     runs_today = str(hb[-1]["n"]) if hb else "—"
 
@@ -750,6 +804,7 @@ def build_payload(d: dict, series: dict) -> dict:
             "BR_MARKET": _f4(br["market"]), "BR_ENS": _f4(br["ens"]), "BR_MODEL": _f4(br["model"]),
             "N_MKTS": G("n_mkts"), "CRPS_MODEL": G("crps_model"), "CRPS_ENS": G("crps_ens"),
             "SKILL": skill_txt, "BOOK_NET": book_net, "RUNS_TODAY": runs_today,
+            "BOOK_BE": book_be, "BOOK_CAP": book_cap,
             # SB_* (5-city book) and BK_* (breadth) both come from their graded frames — never
             # from a printed report. SB_FULL_N is Leg 1 only; SB_GRADED counts every leg.
             **_book_binds(),
@@ -1140,14 +1195,14 @@ TEMPLATE = r"""<meta charset="utf-8">
     <p class="lede" style="margin:0 2px 14px">A <b>separate book</b> from the model above — it bets on market <b>structure</b>, not the weather. <b>Leg 1</b> sells over-priced 5–35¢ shoulder bins; <b>Leg 2</b> buys 65–85¢ YES-favourites &gt;12h before close. Independent mispricings, each gated on its own before a single real order. <b>Leg 1b</b> refines Leg 1 to the over-priced 10–25¢ sub-band (pre-registered 2026-07-23, forward-only).</p>
     <div class="cwrap">
       <div class="panel">
-        <div class="find" id="sb_title">Shoulder book · running net units</div>
-        <div class="findsub">Running net units · taker fees paid</div>
+        <div class="find" id="sb_title">Shoulder book · return on capital</div>
+        <div class="findsub">Cumulative return on the capital actually laid out · taker fees paid. <b>Not</b> a running total of units — that number grows with how many tickets we buy, so it climbs even when the edge doesn't. The early points sit on a handful of contracts and swing wildly; the line settling downward is the sample growing, <b>not</b> the edge improving.</div>
         <div class="chartwrap"><div id="c_equity"></div></div>
         <div class="statrow">
-          <div class="st"><div class="k">Net units</div><div class="v" id="sb_net" data-bind="BOOK_NET">—</div></div>
+          <div class="st"><div class="k">Return on capital</div><div class="v" id="sb_net" data-bind="BOOK_NET">—</div></div>
+          <div class="st"><div class="k">Capital laid out</div><div class="v" data-bind="BOOK_CAP">—</div></div>
+          <div class="st"><div class="k">Win rate <span class="dim">/ breakeven</span></div><div class="v"><span data-bind="SB_WR">—</span>% <span class="dim" style="font-size:11px">/ <span data-bind="BOOK_BE">—</span>%</span></div></div>
           <div class="st"><div class="k">Settled</div><div class="v" data-bind="SB_GRADED">—</div></div>
-          <div class="st"><div class="k">Win rate</div><div class="v"><span data-bind="SB_WR">—</span>%</div></div>
-          <div class="st"><div class="k">Awaiting</div><div class="v" data-bind="SB_AWAIT">—</div></div>
         </div>
       </div>
       <div class="panel">
@@ -1177,9 +1232,14 @@ TEMPLATE = r"""<meta charset="utf-8">
         <tr><td class="city">1 · sell shoulder [5–35¢] · all cities</td><td class="num" id="bkfulln">—</td><td class="num" id="bkfulledge" data-bind="BK_FULL_NET">—</td><td class="num" id="bkfullmaker" data-bind="BK_FULL_MAKER">—</td><td><span class="pill2 warn">paper</span></td></tr>
       </table>
 
-      <div class="findsub" style="margin-top:20px">Running net units · all cities · taker fees paid. The moderate band runs <b>above</b> the full band because the rest of the shoulder — mainly the 25–35¢ core — loses; the whole apparent edge sits in 10–25¢. Ten target days is not a track record.</div>
+      <div class="findsub" style="margin-top:20px">Return on capital laid out · all cities · taker fees paid. The moderate band runs <b>above</b> the full band because the rest of the shoulder — mainly the 25–35¢ core — loses; the whole apparent edge sits in 10–25¢. Ten target days is not a track record.</div>
       <div class="chartwrap"><div id="c_bkequity"></div></div>
       <div class="leg" style="margin-top:8px"><span><i style="background:var(--good)"></i>All shoulder [5–35¢]</span><span><i style="background:var(--market)"></i>Moderate band [10–25¢] only</span></div>
+
+      <div class="findsub" style="margin-top:22px">Daily win rate vs the rate this payoff needs to break even</div>
+      <div class="chartwrap"><div id="c_bkwr"></div></div>
+      <div class="leg" style="margin-top:8px"><span><i style="background:var(--market)"></i>Win rate · moderate band</span><span><i style="background:var(--warn)"></i>Break-even</span></div>
+      <p class="cap" style="margin-top:8px">This is a <b>short-volatility</b> trade: it wins small and often, and loses big and rarely — measured over the breadth book, a win pays <b>+14.7¢</b> and a loss costs <b>−82.9¢</b>, a 5.6× ratio. So the win rate alone says nothing; only its distance above the break-even line does, and on the full band that gap is <b>0.7 percentage points</b>. A payoff shaped like this draws a smooth rising line right up until the tail lands — the smoothness above is not evidence, it is the signature.</p>
 
       <div class="findsub" style="margin-top:22px">By city · shoulder band [5–35¢]</div>
       <div id="bkcitynote" class="cap" style="margin:6px 0 10px"></div>
@@ -1575,7 +1635,7 @@ TEMPLATE = r"""<meta charset="utf-8">
   }
 
   function draw() {
-    ["c_acc", "c_city", "c_calib", "c_disp", "c_equity", "c_bkequity"].forEach(function (id) { var h = document.getElementById(id); if (h) h.innerHTML = ""; });
+    ["c_acc", "c_city", "c_calib", "c_disp", "c_equity", "c_bkequity", "c_bkwr"].forEach(function (id) { var h = document.getElementById(id); if (h) h.innerHTML = ""; });
     document.querySelectorAll(".chartwrap .tip").forEach(function (t) { t.remove(); });
 
     var acc = D.acc || [];
@@ -1597,27 +1657,52 @@ TEMPLATE = r"""<meta charset="utf-8">
     divergingBars("c_calib", D.calib || []);
     dispChart("c_disp", D.disp || []);
 
+    // y-axes below are RETURN ON CAPITAL (%), never summed units: a cumulative unit total is
+    // n x mean, so its slope tracks how many markets we collected, not how good the bets were.
+    function pct(v) { return (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(1) + "%"; }
+    function pct2(v) { return (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(2) + "%"; }
+    function lastOf(s) { var l = s.points.slice(-1)[0]; return l != null ? pct2(l) : ""; }
+
     var eq = D.equity || [];
-    var eqCol = (eq.length && eq[eq.length - 1].v < 0) ? css("--model") : css("--good");
+    var eqCol = (eq.length && eq[eq.length - 1].roi < 0) ? css("--model") : css("--good");
     if (eq.length) lineChart("c_equity", {
       h: 210, area: true, xLabels: eq.map(function (r) { return r.t; }),
-      yFmt: function (v) { return (v >= 0 ? "+" : "") + v.toFixed(1) + "u"; }, tipFmt: function (v) { return (v >= 0 ? "+" : "") + v.toFixed(2) + "u"; },
-      endFmt: function (s) { var last = s.points.slice(-1)[0]; return last != null ? (last >= 0 ? "+" : "") + last.toFixed(2) + "u" : ""; },
-      series: [{ name: "Net units", color: eqCol, points: eq.map(function (r) { return r.v; }), fill: true, thick: 2.2 }]
+      yFmt: pct, tipFmt: pct2, endFmt: lastOf,
+      series: [{ name: "Return on capital", color: eqCol, points: eq.map(function (r) { return r.roi; }), fill: true, thick: 2.2 }]
     });
     else { var he = document.getElementById("c_equity"); if (he) he.innerHTML = '<div style="color:var(--faint);font-size:12px;padding:20px 0">No settled paper entries yet.</div>'; }
 
     var bkeq = D.bk_equity || [];
     if (bkeq.length) lineChart("c_bkequity", {
       h: 210, xLabels: bkeq.map(function (r) { return r.t; }),
-      yFmt: function (v) { return (v >= 0 ? "+" : "") + v.toFixed(0) + "u"; }, tipFmt: function (v) { return (v >= 0 ? "+" : "") + v.toFixed(2) + "u"; },
-      endFmt: function (s) { var last = s.points.slice(-1)[0]; return last != null ? (last >= 0 ? "+" : "") + last.toFixed(1) + "u" : ""; },
+      yFmt: pct, tipFmt: pct2, endFmt: lastOf,
       series: [
-        { name: "All shoulder", color: css("--good"), points: bkeq.map(function (r) { return r.v; }), thick: 2.2 },
-        { name: "Moderate [10-25c]", color: css("--market"), points: bkeq.map(function (r) { return r.mod; }), thick: 1.8 }
+        { name: "All shoulder", color: css("--good"), points: bkeq.map(function (r) { return r.roi; }), thick: 2.2 },
+        { name: "Moderate [10-25c]", color: css("--market"), points: bkeq.map(function (r) { return r.mroi; }), thick: 1.8 }
       ]
     });
     else { var hb2 = document.getElementById("c_bkequity"); if (hb2) hb2.innerHTML = '<div style="color:var(--faint);font-size:12px;padding:20px 0">No settled breadth entries yet.</div>'; }
+
+    // Daily win rate against break-even. The gap between the two lines IS the edge; the win rate
+    // on its own is unreadable for a payoff that loses 5.6x what it wins.
+    var mbe = bkeq.length ? bkeq[0].mbe : null;
+    // Scale TIGHTLY around the data. The default axis starts at 0, which pushes an 83-90% line
+    // and an 84.9% break-even into the top tenth of the frame — drawn on top of each other, so
+    // the gap between them (the entire edge, and the entire point of this chart) is invisible.
+    var wrv = bkeq.map(function (r) { return r.mwr; }).filter(function (v) { return v != null; });
+    if (mbe != null) wrv = wrv.concat([mbe]);
+    var wrLo = wrv.length ? Math.floor(Math.min.apply(null, wrv) - 1.5) : 0;
+    var wrHi = wrv.length ? Math.ceil(Math.max.apply(null, wrv) + 1.5) : 100;
+    if (bkeq.length && mbe != null) lineChart("c_bkwr", {
+      h: 180, xLabels: bkeq.map(function (r) { return r.t; }), yMin: wrLo, yMax: wrHi,
+      yFmt: function (v) { return v.toFixed(0) + "%"; }, tipFmt: function (v) { return v.toFixed(1) + "%"; },
+      endFmt: function (s) { var l = s.points.slice(-1)[0]; return l != null ? l.toFixed(1) + "%" : ""; },
+      series: [
+        { name: "Win rate", color: css("--market"), points: bkeq.map(function (r) { return r.mwr; }), thick: 2.2 },
+        { name: "Break-even", color: css("--warn"), dash: "4 3", thick: 1.4, points: bkeq.map(function () { return mbe; }) }
+      ]
+    });
+    else { var hw = document.getElementById("c_bkwr"); if (hw) hw.innerHTML = '<div style="color:var(--faint);font-size:12px;padding:20px 0">Not enough settled entries to compute a break-even.</div>'; }
 
     renderBkCities();
     renderScore();

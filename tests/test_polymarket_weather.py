@@ -1874,6 +1874,38 @@ def test_leg1_row_shows_leg1_graded_count_not_the_whole_book(monkeypatch):
         in inspect.getsource(bd)
 
 
+def test_breakeven_win_rate_is_the_number_that_makes_a_win_rate_readable():
+    """Selling shoulder bins wins small and often, loses big and rarely (breadth book: +14.7¢ vs
+    −82.9¢, 5.6×). An 85% win rate therefore reads as safe when break-even is 84.2% and the whole
+    edge is 0.7pp. Undefined cases must return None rather than a misleading number."""
+    import shoulder_book as sb
+    # +0.15 on a win, −0.80 on a loss -> break-even p = 0.80/0.95
+    assert sb.breakeven_win_rate([0.15, 0.15, -0.80], [True, True, False]) == pytest.approx(0.8421, abs=1e-4)
+    assert sb.breakeven_win_rate([], []) is None                       # no data
+    assert sb.breakeven_win_rate([0.1, 0.1], [True, True]) is None     # never lost -> undefined
+    assert sb.breakeven_win_rate([-0.1, -0.2], [False, False]) is None  # never won -> undefined
+    assert sb.breakeven_win_rate([0.1, 0.2], [True, False]) is None    # "loss" pays more than win
+
+
+def test_equity_curves_plot_return_on_capital_not_summed_units():
+    """The curves plotted cumulative net UNITS until 2026-08-04. That quantity is exactly
+    `n × mean`, so its slope tracked how many markets the collector happened to pick up, not how
+    good the bets were — doubling the city list would have doubled the steepness at identical
+    edge. It read as a performance chart while behaving like a volume chart (+38.0u was 1344
+    contracts × 2.83¢). Return on deployed capital is invariant to inventory."""
+    import inspect
+    import build_dashboard as bd
+    src = inspect.getsource(bd)
+    # the y-axis is bound to roi, never to the raw unit total
+    assert 'points: eq.map(function (r) { return r.roi; })' in src
+    assert 'return r.roi; }' in src and 'return r.mroi; }' in src
+    assert "return r.v; }" not in src and "return r.mod; }" not in src
+    # break-even is drawn as its own reference series, and the axis is scaled to the data —
+    # the default 0-based axis crushed an 83-90% line onto an 84.9% line and hid the gap
+    assert 'yMin: wrLo, yMax: wrHi' in src
+    assert 'id="c_bkwr"' in src
+
+
 def test_breadth_panel_publishes_its_curve_and_per_city_table():
     """The breadth book carries ~10x the 5-city book's inventory and had no chart at all — two
     summary rows, so a reader could not tell whether its edge accrued steadily or arrived on a
