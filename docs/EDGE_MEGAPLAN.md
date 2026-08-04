@@ -601,6 +601,56 @@ ROI (−12.4%, CI below zero), four instruments now agree: **this model has no e
 any filter setting.** The live candidates remain the model-free structure books (§10b/§10d), which
 are answered by waiting for sample rather than by more searching.
 
+### 12c. City selection in the structure book — pre-registered as a falsification test (2026-08-04)
+
+Same question as §12, asked of the model-free book instead of the model: the breadth per-city
+table shows a wide spread, so **cut the losing cities and keep the winners.** In-sample it works
+spectacularly — return on capital laid out goes from **+0.80% (49 cities)** to **+2.21% (31 cities
+with mean ≥ 0)** to **+4.38% (12 cities with mean ≥ +0.02)**, a 5.5× improvement.
+
+It is almost entirely a selection artifact, by three independent measurements over 3027 shoulder
+entries / 49 cities / 10 target dates:
+
+1. **Null check (the decisive one).** Reshuffle which city each city-day belongs to — destroying
+   city identity while preserving every price, outcome, date and cluster size — then apply the
+   identical "keep mean ≥ 0" rule. Across 2000 permutations the apparent ROI is **+2.15%** (90%
+   range [+1.81%, +2.58%]). The real data gives **+2.21%**, the **60th percentile of pure noise**.
+   The rule manufactures nearly the whole gain when there is provably nothing to find.
+2. **Heterogeneity.** Observed sd of per-city means **0.0252** against the **0.0243** that sampling
+   noise alone predicts. Q = 60.9 on 48 df, p = 0.10, I² = 21%. The 49 cities are barely
+   distinguishable from 49 draws of one common number.
+3. **Persistence.** Split the 10 dates in half, select on one, trade the other: **+0.72pp** one
+   direction, **−0.05pp** the other. Spearman of per-city edge between halves **+0.14**; sign
+   agreement **49%** — a coin flip. Last week's winners are not next week's.
+
+Also worth pricing: the 12-city cut trades **$627** of capital against **$2,531** for the whole
+book, so even a real edge would be bought at a quarter of the size.
+
+**Registered anyway, as the honest way to close it.** Two nested cuts, frozen as literals in
+`shoulder_book_breadth.CITYSEL_A` (31 cities) and `CITYSEL_B` (12), `CITYSEL_PREREG_DATE =
+2026-08-04`, gate `GATE_CITYSEL = (80, 0.03)` mirroring `GATE_MOD_BREADTH` and NOT tuned to the
+observed cut. Forward-only, so the ten discovery days can never be graded into them. Published as
+legs **1d/1e** on the dashboard, directly above the per-city table that invites the idea.
+
+Two design points that are the whole reason this is trustworthy:
+
+- **The lists are literals, never recomputed.** A selection rebuilt at report time would re-fit
+  itself on every 2-hourly dashboard build, so the gate could never fail — it would always be
+  scoring its own training set while printing a green number. This is precisely the silent-failure
+  shape catalogued in §10a and the obs-truncation incident: right name, plausible number, no error.
+- **Frozen labels rot.** A venue rename (as with Seoul) stops the frozen name matching, silently
+  **shrinking** the registered set while the gate keeps reporting. `citysel_missing` surfaces any
+  frozen city with no recent entry, in the CLI report and on the page.
+
+**Multiplicity.** This book now carries **four** gated hypotheses (1b moderate, 1c deep, 1d/1e
+city). `BREADTH_GATE_FAMILY = 4` and `family_z()` derive the Bonferroni critical value — **z =
+2.50**, not 1.96 — so a first pass is read against the family. The value is computed rather than
+written down because the deep-band footnote previously hard-coded z=2.24 for a family of two, and
+a stale multiplicity warning is worse than none: it reads as though someone checked.
+
+**Expectation on the record: both gates fail.** Stating it in advance is the point — if 1e comes
+back at +4% forward, that is informative precisely because this paragraph said it would not.
+
 ---
 
 ## 11. Provenance of the numbers in this doc

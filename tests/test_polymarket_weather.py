@@ -1482,6 +1482,165 @@ def test_report_breadth_gate_forward_only(tmp_path, capsys):
     assert stats["forward"]["n"] == 1
 
 
+def _citysel_graded(b, rows):
+    """Graded shoulder frame: rows of (city, entered_utc, won). Prices sit in [5,35)¢."""
+    import pandas as pd
+    out = []
+    for i, (city, entered, won) in enumerate(rows):
+        out.append({**{c: "" for c in b._BCOLS}, "condition_id": f"0x{i}", "market_id": str(i),
+                    "city": city, "leg": "shoulder", "side": "No", "entry_yes_price": 0.15,
+                    "entry_side_price": 0.85, "entered_at_utc": entered,
+                    "target_date": entered[:10], "settled_outcome": 0 if won else 1})
+    df = pd.DataFrame(out)
+    return b.grade_book(book=df, lookup=False)
+
+
+def test_frozen_city_selection_is_a_literal_and_never_refits_on_new_data():
+    """The city sets are pre-registered LITERALS. A selection recomputed at report time would
+    re-fit itself every day and could never fail — it would always be scoring its own training
+    set while printing a green number. This is the guard that keeps it history."""
+    import shoulder_book_breadth as b
+    from pathlib import Path
+
+    assert isinstance(b.CITYSEL_A, tuple) and isinstance(b.CITYSEL_B, tuple)
+    src = Path(b.__file__).read_text()
+    # Assigned exactly once each, at module level, from a literal — never derived from the book.
+    for name in ("CITYSEL_A", "CITYSEL_B"):
+        assert src.count(f"{name} = ") == 1, f"{name} is assigned more than once"
+    assert "groupby" not in src.split("CITYSEL_A = ")[1].split(")\n")[0]
+
+    # A non-listed city with a PERFECT record must not be pulled in, however good it looks.
+    assert "Dallas" not in b.CITYSEL_A and "Dallas" not in b.CITYSEL_B
+    g = _citysel_graded(b, [("Dallas", "2026-08-05T00:00:00+00:00", True)] * 40
+                           + [("London", "2026-08-05T00:00:00+00:00", False)] * 5)
+    st = b.moderate_gate_stats(g, prereg_date=b.CITYSEL_PREREG_DATE, lo=b.BAND_LO, hi=b.BAND_HI,
+                               gate=b.GATE_CITYSEL, cities=b.CITYSEL_A)
+    assert st["context"]["n"] == 5, "the frozen set re-fitted to the new data"
+    assert st["forward"]["taker"] < 0, "London lost every entry; the gate must show that"
+
+
+def test_city_gate_counts_only_entries_recorded_after_pre_registration():
+    """Forward-only is what makes the gate a test rather than a description of the past."""
+    import shoulder_book_breadth as b
+    g = _citysel_graded(b, [("London", "2026-08-01T00:00:00+00:00", True),      # before prereg
+                            ("London", "2026-08-04T00:00:00+00:00", True),      # on prereg day
+                            ("London", "2026-08-09T00:00:00+00:00", True)])     # after
+    st = b.moderate_gate_stats(g, prereg_date=b.CITYSEL_PREREG_DATE, lo=b.BAND_LO, hi=b.BAND_HI,
+                               gate=b.GATE_CITYSEL, cities=b.CITYSEL_A)
+    assert st["context"]["n"] == 3
+    assert st["forward"]["n"] == 2, "the pre-registration entry leaked into the forward gate"
+
+
+def test_a_frozen_city_that_stops_trading_is_reported_not_silently_dropped():
+    """A frozen label that no longer matches contributes nothing and raises no error — the gate
+    keeps reporting a healthy number for a set that has quietly shrunk. This is the same shape as
+    the obs-truncation incident: right name, plausible number, no failure."""
+    import shoulder_book_breadth as b
+    import pandas as pd
+    book = pd.DataFrame([{**{c: "" for c in b._BCOLS}, "city": "London",
+                          "entered_at_utc": "2026-08-05T00:00:00+00:00"}])
+    missing = b.citysel_missing(book, ("London", "Tokyo"))
+    assert missing == ["Tokyo"]
+    assert b.citysel_missing(book, ("London",)) == []
+    # An entry that predates the forward clock does not keep a city "live".
+    stale = pd.DataFrame([{**{c: "" for c in b._BCOLS}, "city": "Tokyo",
+                           "entered_at_utc": "2026-07-01T00:00:00+00:00"}])
+    assert b.citysel_missing(stale, ("Tokyo",)) == ["Tokyo"]
+
+
+def test_report_breadth_warns_when_a_frozen_city_has_gone_missing(tmp_path, capsys):
+    import shoulder_book_breadth as b
+    import pandas as pd
+    rows = [{**{c: "" for c in b._BCOLS}, "condition_id": "0xA", "market_id": "1",
+             "city": "London", "leg": "shoulder", "side": "No", "entry_yes_price": 0.15,
+             "entry_side_price": 0.85, "entered_at_utc": "2026-08-05T00:00:00+00:00",
+             "target_date": "2026-08-05", "settled_outcome": 0}]
+    out = tmp_path / "breadth.csv"
+    pd.DataFrame(rows).reindex(columns=b._BCOLS).to_csv(out, index=False)
+    b.report_breadth(out_path=out, fetch=lambda *a, **k: None)
+    text = capsys.readouterr().out
+    assert "::warning::" in text and "Tokyo" in text, "a vanished frozen city was not reported"
+
+
+def test_multiplicity_z_is_computed_from_the_gate_count_not_written_down():
+    """The deep-band footnote hard-coded 'z=2.24, Bonferroni for 2'. Two more gates later that
+    sentence would have been quietly wrong — a stale multiplicity warning reads as though someone
+    checked. It is now derived from BREADTH_GATE_FAMILY."""
+    import shoulder_book_breadth as b
+    from pathlib import Path
+    assert abs(b.family_z(1) - 1.9600) < 1e-3
+    assert abs(b.family_z(2) - 2.2414) < 1e-3
+    assert abs(b.family_z(4) - 2.4977) < 1e-3
+    assert b.family_z(4) > b.family_z(2) > b.family_z(1)
+    assert b.BREADTH_GATE_FAMILY == 4, "gates were added or removed without updating the family"
+    assert "2.24" not in Path(b.__file__).read_text(), "a hard-coded critical value came back"
+
+
+def test_the_two_frozen_city_sets_are_nested_and_use_canonical_labels():
+    """B is the stricter cut, so B ⊂ A by construction. Labels must be the POST-fold canonical
+    forms — freezing a venue-qualified label ('Seoul (Incheon)') would unmatch on the next fold."""
+    import shoulder_book_breadth as b
+    assert set(b.CITYSEL_B) < set(b.CITYSEL_A)
+    for name in b.CITYSEL_A:
+        assert "(" not in name, f"{name!r} is a venue-qualified label and will rot"
+    assert len(set(b.CITYSEL_A)) == len(b.CITYSEL_A) == 31
+    assert len(set(b.CITYSEL_B)) == len(b.CITYSEL_B) == 12
+    assert b.canonical_map(b.CITYSEL_A) == {}
+
+
+def test_city_gate_needs_calendar_not_just_breadth():
+    """49 cities on one day is 49 clusters and one date. GATE_MIN_DATES exists so that cannot
+    pass; the city gates must route through the same verdict, not a looser one."""
+    import shoulder_book_breadth as b
+    g = _citysel_graded(b, [(c, "2026-08-05T00:00:00+00:00", True) for c in b.CITYSEL_A] * 4)
+    st = b.moderate_gate_stats(g, prereg_date=b.CITYSEL_PREREG_DATE, lo=b.BAND_LO, hi=b.BAND_HI,
+                               gate=b.GATE_CITYSEL, cities=b.CITYSEL_A)
+    f = st["forward"]
+    assert f["n"] >= 80 and f["taker"] > 0.03 and f["n_clusters"] >= b.GATE_MIN_CLUSTERS
+    assert f["n_dates"] == 1 and f["gate_pass"] is False, "one calendar day passed a forward gate"
+
+
+def test_city_filter_refuses_a_frame_with_no_city_column():
+    """Silently returning UNFILTERED stats would report the whole book under a city-cut label —
+    the flattering-wrong-number failure. Missing column must yield nothing at all."""
+    import shoulder_book as sb
+    import shoulder_book_breadth as b
+    g = _citysel_graded(b, [("London", "2026-08-05T00:00:00+00:00", True)] * 3)
+    assert sb.moderate_gate_stats(g.drop(columns=["city"]), cities=b.CITYSEL_A) == {}
+    # and a set that matches nothing returns {} rather than the unfiltered frame
+    assert sb.moderate_gate_stats(g, prereg_date=b.CITYSEL_PREREG_DATE, lo=b.BAND_LO,
+                                  hi=b.BAND_HI, gate=b.GATE_CITYSEL, cities=("Nowhere",)) == {}
+    # the no-cities path is unchanged
+    assert sb.moderate_gate_stats(g, prereg_date=b.CITYSEL_PREREG_DATE, lo=b.BAND_LO,
+                                  hi=b.BAND_HI, gate=b.GATE_CITYSEL)["context"]["n"] == 3
+
+
+def test_dashboard_publishes_both_city_gates_and_reads_the_frozen_sets():
+    """The gates have to reach the page. A pre-registered test that only prints in a CLI nobody
+    runs is not a commitment — and the panel must read the FROZEN sets, never recompute them on
+    each 2-hourly build (a gate that re-fits itself every build can never fail)."""
+    import build_dashboard as bd
+    import shoulder_book_breadth as bb
+    from pathlib import Path
+
+    b = bd._breadth_binds()
+    for p in ("BK_CS_A", "BK_CS_B"):
+        for suffix in ("_N", "_NEED", "_NET", "_PASS", "_MAKER", "_MAKER_N"):
+            assert p + suffix in b, f"{p}{suffix} missing — the row would render blank"
+    assert b["BK_CS_A_CITIES"] == str(len(bb.CITYSEL_A)) == "31"
+    assert b["BK_CS_B_CITIES"] == str(len(bb.CITYSEL_B)) == "12"
+    assert b["BK_CS_DATE"] == bb.CITYSEL_PREREG_DATE
+    assert b["BK_CS_A_PASS"] == "0" and b["BK_CS_B_PASS"] == "0"
+
+    src = Path(bd.__file__).read_text()
+    # The panel names the frozen constants; it must not rebuild a selection of its own.
+    assert "bb.CITYSEL_A" in src and "bb.CITYSEL_B" in src
+    assert "1d · shoulder" in src and "1e · shoulder" in src
+    assert 'id="bkcsastatus"' in src and 'id="bkcsbstatus"' in src
+    # Every gate row is filled from the one shared bind builder.
+    assert src.count("_gate_bind_set(") >= 4
+
+
 def test_breadth_maker_path_and_fill(tmp_path):
     import shoulder_book_breadth as b
     import pandas as pd

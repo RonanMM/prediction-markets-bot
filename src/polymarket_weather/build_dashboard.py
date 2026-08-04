@@ -221,7 +221,7 @@ def _city_rows(c) -> list[dict]:
 def compute_series() -> dict:
     out: dict = {"acc": [], "roll": [], "city": [], "calib": [], "growth": [],
                  "heartbeat": [], "buckets": [], "recent": [], "equity": [], "capture": [],
-                 "bk_equity": [], "bk_cities": []}
+                 "bk_equity": [], "bk_cities": [], "bk_cs_date": ""}
     # Capture-tier coverage FIRST, and outside the eval machinery: it reads only collected files,
     # so it must still render if anything downstream fails. capture_coverage never raises.
     out["capture"] = capture_coverage()
@@ -426,6 +426,8 @@ def compute_series() -> dict:
     try:
         out["bk_equity"] = _breadth_equity()
         out["bk_cities"] = _breadth_cities()
+        import shoulder_book_breadth as _bb
+        out["bk_cs_date"] = _bb.CITYSEL_PREREG_DATE   # the per-city note cites the frozen date
     except Exception as e:
         out["bk_series_error"] = f"{type(e).__name__}: {e}"
 
@@ -583,15 +585,37 @@ def _book_binds() -> dict:
     return b
 
 
+def _gate_bind_set(prefix: str, st: dict, need_n: int = 80) -> dict:
+    """The six bind strings one pre-registered forward gate needs, in the shape the panel's
+    leg-table row reads. `st` is a `moderate_gate_stats` result ({} or None before any forward
+    entry grades). One builder for every gate: the breadth panel now shows four, and four
+    hand-rolled copies is how the maker cell ends up reading the forward slice in one row and the
+    context slice in another."""
+    d = {f"{prefix}_N": "0", f"{prefix}_NEED": str(need_n), f"{prefix}_NET": "—",
+         f"{prefix}_PASS": "0", f"{prefix}_MAKER": "—", f"{prefix}_MAKER_N": "0"}
+    if not st:
+        return d
+    f = st["forward"]
+    d.update({f"{prefix}_N": str(f["n"]),
+              f"{prefix}_NET": (f"{f['taker']:+.4f}".replace("-", "−") if f["n"] else "—"),
+              f"{prefix}_PASS": "1" if f.get("gate_pass") else "0",
+              # maker from the FORWARD slice, matching the taker cell beside it.
+              f"{prefix}_MAKER_N": str(f.get("maker_n", 0)),
+              f"{prefix}_MAKER": (f"{f['maker']:+.4f}".replace("-", "−")
+                                  if f.get("maker_n") else "—")})
+    return d
+
+
 def _breadth_binds() -> dict:
     """Breadth structure-book stats, read OFFLINE from the committed CSV (no network — the
     daily truth-eval job does the settlement lookups and freezes them). Returns bind strings
     with sensible defaults so the panel renders even before the first entry."""
     b = {"BK_ENTRIES": "0", "BK_CITIES": "0", "BK_GRADED": "0", "BK_AWAIT": "0",
-         "BK_MOD_N": "0", "BK_MOD_NEED": "80", "BK_MOD_NET": "—", "BK_MOD_PASS": "0",
-         "BK_MOD_MAKER": "—", "BK_MOD_MAKER_N": "0",
          "BK_FULL_N": "0", "BK_FULL_NET": "—", "BK_WR": "—",
-         "BK_FULL_MAKER": "—", "BK_FULL_MAKER_N": "0"}
+         "BK_FULL_MAKER": "—", "BK_FULL_MAKER_N": "0",
+         "BK_CS_A_CITIES": "0", "BK_CS_B_CITIES": "0", "BK_CS_DATE": "", "BK_CS_MISSING": ""}
+    for p in ("BK_MOD", "BK_CS_A", "BK_CS_B"):
+        b.update(_gate_bind_set(p, None))
     try:
         import shoulder_book_breadth as bb
         book, graded = _breadth_graded()                  # offline: frozen settlements only
@@ -617,19 +641,24 @@ def _breadth_binds() -> dict:
                                 - fl["entry_side_price"].astype(float)).mean()
                         b.update(BK_FULL_MAKER_N=str(len(fl)),
                                  BK_FULL_MAKER=f"{mnet:+.4f}".replace("-", "−"))
-            st = bb.moderate_gate_stats(graded, prereg_date=bb.BREADTH_PREREG_DATE)
-            if st:
-                f = st["forward"]
-                need_n, _ = bb.GATE_MOD_BREADTH
-                b.update(BK_MOD_N=str(f["n"]), BK_MOD_NEED=str(need_n),
-                         BK_MOD_NET=(f"{f['taker']:+.4f}".replace("-", "−") if f["n"] else "—"),
-                         BK_MOD_PASS="1" if f.get("gate_pass") else "0",
-                         # maker from the FORWARD slice, matching the taker cell beside it.
-                         # (Identical today — the breadth book began on the pre-reg date — but
-                         # mixing forward taker with context maker in one row would drift apart.)
-                         BK_MOD_MAKER_N=str(f.get("maker_n", 0)),
-                         BK_MOD_MAKER=(f"{f['maker']:+.4f}".replace("-", "−")
-                                       if f.get("maker_n") else "—"))
+            need_mod, _ = bb.GATE_MOD_BREADTH
+            b.update(_gate_bind_set(
+                "BK_MOD", bb.moderate_gate_stats(graded, prereg_date=bb.BREADTH_PREREG_DATE),
+                need_mod))
+            # City-selection gates (pre-registered 2026-08-04). The sets are FROZEN literals in
+            # shoulder_book_breadth — read, never recomputed here, or the published gate would
+            # re-fit itself on every 2-hourly build and could never fail.
+            need_cs, _ = bb.GATE_CITYSEL
+            missing = []
+            for key, sel in (("BK_CS_A", bb.CITYSEL_A), ("BK_CS_B", bb.CITYSEL_B)):
+                b.update(_gate_bind_set(key, bb.moderate_gate_stats(
+                    graded, prereg_date=bb.CITYSEL_PREREG_DATE, lo=bb.BAND_LO, hi=bb.BAND_HI,
+                    gate=bb.GATE_CITYSEL, cities=sel), need_cs))
+                b[f"{key}_CITIES"] = str(len(sel))
+                missing += [c for c in bb.citysel_missing(book, sel) if c not in missing]
+            b["BK_CS_DATE"] = bb.CITYSEL_PREREG_DATE
+            # A frozen label that stops matching shrinks the registered set in silence. Publish it.
+            b["BK_CS_MISSING"] = ", ".join(missing)
     except Exception as e:
         b["BK_ERR"] = str(e)[:80]
     return b
@@ -1216,7 +1245,10 @@ TEMPLATE = r"""<meta charset="utf-8">
         <tr><th>Leg</th><th class="num">Forward</th><th class="num">Taker <span class="dim">$/contract</span></th><th class="num">Maker <span class="dim">$/contract</span></th><th>Status</th></tr>
         <tr><td class="city">1b · moderate [10–25¢] · all cities</td><td class="num" id="bkmodn">—</td><td class="num" id="bkmodedge">—</td><td class="num" id="bkmodmaker">—</td><td><span class="pill2" id="bkmodstatus">forward</span></td></tr>
         <tr><td class="city">1 · sell shoulder [5–35¢] · all cities</td><td class="num" id="bkfulln">—</td><td class="num" id="bkfulledge" data-bind="BK_FULL_NET">—</td><td class="num" id="bkfullmaker" data-bind="BK_FULL_MAKER">—</td><td><span class="pill2 warn">paper</span></td></tr>
+        <tr><td class="city">1d · shoulder, <span id="bkcsan">31</span> cities that were winning</td><td class="num" id="bkcsan_n">—</td><td class="num" id="bkcsaedge">—</td><td class="num" id="bkcsamaker">—</td><td><span class="pill2" id="bkcsastatus">forward</span></td></tr>
+        <tr><td class="city">1e · shoulder, best <span id="bkcsbn">12</span> cities</td><td class="num" id="bkcsbn_n">—</td><td class="num" id="bkcsbedge">—</td><td class="num" id="bkcsbmaker">—</td><td><span class="pill2" id="bkcsbstatus">forward</span></td></tr>
       </table>
+      <p class="cap" style="margin-top:8px"><b>1d and 1e are falsification tests, not tips.</b> Both drop the cities that had been losing — in-sample that lifts return on capital from <b>+0.80%</b> to <b>+2.21%</b> and <b>+4.38%</b>. But reshuffling which city each city-day belongs to, destroying city identity while keeping every price and outcome, and applying the identical rule yields <b>+2.15%</b> — so almost the whole gain is the arithmetic of selecting on the numbers you then report. Two more checks agree: per-city spread (sd 0.0252) barely exceeds what pure noise predicts (0.0243), and city edge in the first half of the sample predicts the second half at <b>ρ = +0.14</b>, sign agreement 49% — a coin flip. The two sets were frozen on <span data-bind="BK_CS_DATE">2026-08-04</span> and only entries recorded after that date are graded here. <span id="bkcsmiss"></span></p>
 
       <div class="findsub" style="margin-top:20px">Return on capital laid out · all cities · taker fees paid. The moderate band runs <b>above</b> the full band because the rest of the shoulder — mainly the 25–35¢ core — loses; the whole apparent edge sits in 10–25¢. Ten target days is not a track record.</div>
       <div class="chartwrap"><div id="c_bkequity"></div></div>
@@ -1585,7 +1617,9 @@ TEMPLATE = r"""<meta charset="utf-8">
       'this column is what noise looks like, not a ranking. The median city spans just <b>' + med +
       ' target days</b>, far short of the 30 a gate requires, which is the other reason no row here ' +
       'is evidence. Any city that looks good would need its own forward gate, declared before the ' +
-      'fact, exactly like Leg 1b.';
+      'fact, exactly like Leg 1b — which is what <b>legs 1d and 1e above now are</b>: the two ' +
+      'obvious cuts of this table, frozen on ' + (D.bk_cs_date || "2026-08-04") + ' and graded ' +
+      'only on entries recorded after that date.';
     host.innerHTML = '<table class="data"><tr><th>City</th><th class="num">Settled</th><th class="num">Days</th><th class="num">Win</th>' +
       '<th class="num">Taker <span class="dim">$/contract</span></th><th class="num">95% CI</th></tr>' +
       rows.map(function (r) {
@@ -1758,6 +1792,26 @@ TEMPLATE = r"""<meta charset="utf-8">
       var bmk = document.getElementById("bkmodmaker"), mkn = parseInt(b.BK_MOD_MAKER_N, 10) || 0;
       if (bmk) { bmk.textContent = mkn > 0 ? b.BK_MOD_MAKER : "—"; bmk.style.color = _neg(b.BK_MOD_MAKER) ? "var(--model)" : (mkn > 0 ? "var(--good)" : ""); }
       if (bs) { bs.textContent = bpass ? "gate ✓" : "forward"; bs.className = bpass ? "pill2 on" : "pill2"; }
+      // City-selection gates 1d/1e — same row shape, filled from the same bind set.
+      [["BK_CS_A", "bkcsa", "BK_CS_A_CITIES", "bkcsan"],
+       ["BK_CS_B", "bkcsb", "BK_CS_B_CITIES", "bkcsbn"]].forEach(function (g) {
+        var p = g[0], id = g[1];
+        var cn = document.getElementById(g[3]); if (cn) cn.textContent = b[g[2]] || "—";
+        var n = document.getElementById(id + "n_n"), e = document.getElementById(id + "edge"),
+            mk = document.getElementById(id + "maker"), s = document.getElementById(id + "status");
+        var fn = parseInt(b[p + "_N"], 10) || 0, ps = b[p + "_PASS"] === "1";
+        var mn = parseInt(b[p + "_MAKER_N"], 10) || 0;
+        if (n) n.textContent = (b[p + "_N"] || "0") + "/" + (b[p + "_NEED"] || "80");
+        if (e) { e.textContent = fn > 0 ? b[p + "_NET"] : "—";
+          e.style.color = fn > 0 ? (_neg(b[p + "_NET"]) ? "var(--model)" : "var(--good)") : ""; }
+        if (mk) { mk.textContent = mn > 0 ? b[p + "_MAKER"] : "—";
+          mk.style.color = mn > 0 ? (_neg(b[p + "_MAKER"]) ? "var(--model)" : "var(--good)") : ""; }
+        if (s) { s.textContent = ps ? "gate ✓" : "forward"; s.className = ps ? "pill2 on" : "pill2"; }
+      });
+      var miss = document.getElementById("bkcsmiss");
+      if (miss) miss.innerHTML = b.BK_CS_MISSING
+        ? '<b style="color:var(--model)">Registered set has shrunk — no recent entries for: '
+          + b.BK_CS_MISSING + '. This gate no longer measures the set that was frozen.</b>' : "";
       var bfl = document.getElementById("bkfulln"); if (bfl) bfl.textContent = b.BK_FULL_N;
       var bfe = document.getElementById("bkfulledge"); if (bfe) bfe.style.color = _neg(b.BK_FULL_NET) ? "var(--model)" : (b.BK_FULL_NET && b.BK_FULL_NET !== "—" ? "var(--good)" : "");
       var bfm = document.getElementById("bkfullmaker");

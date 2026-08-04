@@ -19,6 +19,7 @@ import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
+from statistics import NormalDist
 
 import pandas as pd
 
@@ -60,12 +61,61 @@ GATE_MOD_BREADTH    = (80, 0.03)            # (min forward graded, min mean net 
 # Gate shape mirrors GATE_MOD_BREADTH by analogy — NOT tuned to the observed +0.0297. Forward
 # entries only, so the six discovery days can never be graded into it.
 #
-# ⚠️ MULTIPLE TESTING: this is the breadth book's SECOND gated band. Two gates at 95% carry a
-# ~10% family-wise false-positive rate. Whichever passes first must be read against z=2.24
-# (Bonferroni for 2), not z=1.96, before it justifies real size.
+# ⚠️ MULTIPLE TESTING: this was the breadth book's SECOND gated band, and is no longer the last.
+# k gates at 95% carry a ~5k% family-wise false-positive rate, so whichever passes first must be
+# read against `family_z()` — derived from BREADTH_GATE_FAMILY below — and not against 1.96.
 DEEP_LO, DEEP_HI    = 0.05, 0.10
 DEEP_PREREG_DATE    = "2026-08-02"          # forward clock (UTC) — set the day the gate was written
 GATE_DEEP_BREADTH   = (80, 0.03)            # (min forward graded, min mean net taker $/share)
+
+# ── CITY SELECTION [5,35)¢ — pre-registered 2026-08-04 ──────────────────────────────────────
+# "Drop the cities that are losing and the book's ROI goes from +0.80% to +4.38%." It does. The
+# question this gate exists to answer is whether ANY of that survives contact with new data,
+# because three checks run on 2026-08-04 (3027 entries, 49 cities, 10 target dates) say it will
+# not:
+#
+#   1. NULL CHECK. Reshuffle which city each city-day belongs to — destroying city identity while
+#      keeping every price, outcome and date — and apply the identical "keep mean >= 0" rule:
+#      apparent ROI +2.15% (90% range [+1.81%, +2.58%]) across 2000 permutations. The real data
+#      gives +2.21%, the 60th percentile of PURE NOISE. Selecting on the same numbers you then
+#      report produces essentially the whole gain.
+#   2. HETEROGENEITY. Observed sd of per-city means 0.0252 against the 0.0243 that sampling noise
+#      alone predicts; Q=60.9 on 48 df, p=0.10, I^2=21%. The cities are barely distinguishable
+#      from 49 draws of one common number.
+#   3. PERSISTENCE. Split the 10 dates in half, select on one, trade the other: +0.72pp one way,
+#      -0.05pp the other. Spearman of per-city edge between halves +0.14; sign agreement 49% — a
+#      coin flip.
+#
+# So this is registered as a FALSIFICATION test, not a promising lead. Two nested cuts, both
+# frozen below as literals:
+#   CITYSEL_A  mean >= 0      (31 cities) — the larger set, where the power is
+#   CITYSEL_B  mean >= +0.02  (12 cities) — the "max ROI" cut, +4.38% in-sample
+#
+# ⚠️ THE LISTS ARE LITERALS ON PURPOSE. A selection recomputed at report time would silently
+# re-fit itself every day, so the gate could never fail — it would always be measuring its own
+# training set, reporting a green number, exactly the silent-failure shape this project keeps
+# paying for. Nothing may derive these from the book at runtime. They were computed once, from
+# shoulder entries with target_date <= 2026-08-03, and are now history.
+#
+# ⚠️ Frozen labels rot. If the venue renames a city (as it did with Seoul), its frozen name stops
+# matching and the set silently SHRINKS — a smaller, differently-selected book still reporting a
+# healthy number. `citysel_missing` warns on any frozen city absent from recent entries; labels
+# here are the CANONICAL (post-`canonicalize_cities`) forms.
+CITYSEL_PREREG_DATE = "2026-08-04"          # forward clock (UTC)
+GATE_CITYSEL        = (80, 0.03)            # mirrors GATE_MOD_BREADTH — NOT tuned to the cut
+CITYSEL_A = ("Ankara", "Austin", "Beijing", "Buenos Aires", "Cape Town", "Chicago", "Chongqing",
+             "Denver", "Guangzhou", "Helsinki", "Houston", "Istanbul", "Jeddah", "Kuala Lumpur",
+             "London", "Los Angeles", "Lucknow", "Madrid", "Manila", "Mexico City", "Milan",
+             "NYC", "Paris", "Qingdao", "Sao Paulo", "Seoul", "Shenzhen", "Singapore",
+             "Tel Aviv", "Tokyo", "Wuhan")
+CITYSEL_B = ("Austin", "Buenos Aires", "Denver", "Helsinki", "Istanbul", "London", "Madrid",
+             "Milan", "Paris", "Singapore", "Tel Aviv", "Tokyo")
+
+# Every gated hypothesis in THIS book, counted for multiplicity: Leg1b moderate, Leg1c deep,
+# Leg1d city-A, Leg1e city-B. Reported alongside each gate so a first pass is read against the
+# family, not against a lone 95% interval. A/B are nested and the bands overlap, so Bonferroni is
+# conservative here — which is the direction to err.
+BREADTH_GATE_FAMILY = 4
 PREDAY_HOURS        = 24                     # tz-free "pre-day": > this many hours to market end
 _PIN                = 0.03                   # terminal price within this of 0/1 counts as settled
 
@@ -364,6 +414,32 @@ def grade_book(book=None, out_path=_OUT, fetch=get_json, lookup=True, as_of=None
     return canonicalize_cities(graded)
 
 
+def family_z(k: int = None) -> float:
+    """Two-sided Bonferroni critical value for `k` gated hypotheses at 5% family-wise.
+
+    Computed, never written down: the deep-band footnote used to carry a literal critical value
+    for a family of two, and adding two more gates would have left that sentence quietly wrong —
+    a stale multiplicity warning is worse than none, because it reads as though someone checked.
+    A test asserts no literal critical value survives anywhere in this module."""
+    k = BREADTH_GATE_FAMILY if k is None else k
+    return NormalDist().inv_cdf(1 - 0.05 / (2 * max(1, int(k))))
+
+
+def citysel_missing(book: pd.DataFrame, cities, prereg_date: str = CITYSEL_PREREG_DATE) -> list:
+    """Frozen city labels with NO entry recorded on/after `prereg_date` — i.e. names that have
+    rotted out of the live universe (venue rename, market withdrawn, discovery regression).
+
+    A frozen list cannot fail loudly on its own: an unmatched name just contributes nothing, so
+    the gate keeps reporting a healthy-looking number for a set that is no longer the set that was
+    registered. Callers must surface this."""
+    if book is None or book.empty or not {"city", "entered_at_utc"}.issubset(book.columns):
+        return list(cities)
+    b = canonicalize_cities(book)
+    entered = pd.to_datetime(b["entered_at_utc"], utc=True, errors="coerce")
+    live = set(b.loc[entered >= pd.Timestamp(prereg_date, tz="UTC"), "city"].astype(str))
+    return [c for c in cities if c not in live]
+
+
 def _leg_line(graded, mask, label):
     sub = graded[mask]
     if sub.empty:
@@ -383,6 +459,31 @@ def _leg_line(graded, mask, label):
         else:
             line += "  maker=0 filled"
     print(line)
+
+
+def _gate_block(label: str, prereg: str, st: dict, gate: tuple, note: str) -> None:
+    """Print one pre-registered forward gate: context, FORWARD line, and its footnote.
+
+    Every gated hypothesis in this book renders through here. There were two near-identical
+    copies of this block before the city gates were added, which would have made four — and a
+    fifth gate would have been copied from whichever of the four the author happened to scroll
+    to. One renderer means a change to how a gate is displayed cannot apply to some gates only."""
+    if not st:
+        print(f"  {label} — pre-registered {prereg}: no graded entries in scope")
+        return
+    c, f = st["context"], st["forward"]
+    need_n, need_e = gate
+    mark = "PASS" if f.get("gate_pass") else "pending"
+    ci = (f"CI[{f['ci_lo']:+.4f},{f['ci_hi']:+.4f}]"
+          if f["n"] and f["se"] != float("inf") else "CI —")
+    print(f"  {label} — pre-registered {prereg}")
+    print(f"    context (all graded):  n={c['n']}  wr {c['wr']:.1%}  taker {c['taker']:+.4f}  "
+          f"maker {c['maker_n']}/{c['n']} {c['maker']:+.4f}")
+    print(f"    FORWARD gate:          n={f['n']}/{need_n} ({f['n_clusters']} city-days, "
+          f"{f.get('n_dates', 0)}/{GATE_MIN_DATES} dates)  "
+          f"taker {f['taker']:+.4f} {ci} v +{need_e:.3f}  [{mark}]  "
+          f"maker {f['maker_n']}/{f['n']} {f['maker']:+.4f}")
+    print(f"    ({note})")
 
 
 def report_breadth(out_path=_OUT, fetch=get_json) -> None:
@@ -407,41 +508,37 @@ def report_breadth(out_path=_OUT, fetch=get_json) -> None:
     _leg_line(graded, sh & (yes >= CORE_LO), "Leg1 core   [20,35)")
     _leg_line(graded, graded["leg"] == "favorite", "Leg2 favorite [65,85)")
     st = moderate_gate_stats(graded, prereg_date=BREADTH_PREREG_DATE)
-    if st:
-        c, f = st["context"], st["forward"]
-        need_n, need_e = GATE_MOD_BREADTH
-        mark = "PASS" if f.get("gate_pass") else "pending"
-        print(f"  Leg1b moderate [10,25) — pre-registered {BREADTH_PREREG_DATE}")
-        print(f"    context (all graded):  n={c['n']}  wr {c['wr']:.1%}  taker {c['taker']:+.4f}  "
-              f"maker {c['maker_n']}/{c['n']} {c['maker']:+.4f}")
-        print(f"    FORWARD gate:          n={f['n']}/{need_n} ({f['n_clusters']} city-days, "
-              f"{f.get('n_dates', 0)}/{GATE_MIN_DATES} dates)  "
-              f"taker {f['taker']:+.4f} CI[{f['ci_lo']:+.4f},{f['ci_hi']:+.4f}] "
-              f"v +{need_e:.3f}  [{mark}]  maker {f['maker_n']}/{f['n']} {f['maker']:+.4f}")
-        print(f"    (needs clustered 95% CI > 0 over ≥{GATE_MIN_CLUSTERS} city-days [2026-07-27] "
-              f"AND ≥{GATE_MIN_DATES} distinct target dates [2026-08-02] — {f['n_clusters']} "
-              f"city-days here are {ncities} cities x {f.get('n_dates', 0)} dates, which is "
-              f"breadth, not calendar)")
+    _gate_block("Leg1b moderate [10,25)", BREADTH_PREREG_DATE, st, GATE_MOD_BREADTH,
+                f"needs clustered 95% CI > 0 over ≥{GATE_MIN_CLUSTERS} city-days [2026-07-27] "
+                f"AND ≥{GATE_MIN_DATES} distinct target dates [2026-08-02] — "
+                f"{(st or {}).get('forward', {}).get('n_clusters', 0)} city-days here are "
+                f"{ncities} cities x {(st or {}).get('forward', {}).get('n_dates', 0)} dates, "
+                f"which is breadth, not calendar")
 
     # Deep band [5,10)¢ — pre-registered 2026-08-02 to settle the §10f contradiction (see above).
     dp = moderate_gate_stats(graded, prereg_date=DEEP_PREREG_DATE,
                              lo=DEEP_LO, hi=DEEP_HI, gate=GATE_DEEP_BREADTH)
-    if dp:
-        c, f = dp["context"], dp["forward"]
-        need_n, need_e = GATE_DEEP_BREADTH
-        mark = "PASS" if f.get("gate_pass") else "pending"
-        ci = (f"CI[{f['ci_lo']:+.4f},{f['ci_hi']:+.4f}]"
-              if f["n"] and f["se"] != float("inf") else "CI —")
-        print(f"  Leg1c deep [5,10) — pre-registered {DEEP_PREREG_DATE} "
-              f"(§10f predicted UNDER-priced i.e. selling LOSES; breadth measured the opposite)")
-        print(f"    context (all graded):  n={c['n']}  wr {c['wr']:.1%}  taker {c['taker']:+.4f}  "
-              f"maker {c['maker_n']}/{c['n']} {c['maker']:+.4f}")
-        print(f"    FORWARD gate:          n={f['n']}/{need_n} ({f['n_clusters']} city-days, "
-              f"{f.get('n_dates', 0)}/{GATE_MIN_DATES} dates)  "
-              f"taker {f['taker']:+.4f} {ci} v +{need_e:.3f}  [{mark}]  "
-              f"maker {f['maker_n']}/{f['n']} {f['maker']:+.4f}")
-        print(f"    (2nd gated band in this book — read a first pass against z=2.24, "
-              f"Bonferroni for 2 tests, before it justifies size)")
+    _gate_block("Leg1c deep [5,10)", DEEP_PREREG_DATE, dp, GATE_DEEP_BREADTH,
+                f"§10f predicted UNDER-priced i.e. selling LOSES; breadth measured the opposite. "
+                f"Read a first pass against z={family_z():.2f} (Bonferroni for "
+                f"{BREADTH_GATE_FAMILY} gated hypotheses in this book), not 1.96")
+
+    # City selection [5,35)¢ — pre-registered 2026-08-04. A falsification test: see the block
+    # above CITYSEL_A for the three checks that say the in-sample gain is a selection artifact.
+    for label, sel in (("Leg1d city-select A (mean≥0)", CITYSEL_A),
+                       ("Leg1e city-select B (mean≥+0.02)", CITYSEL_B)):
+        cs = moderate_gate_stats(graded, prereg_date=CITYSEL_PREREG_DATE,
+                                 lo=BAND_LO, hi=BAND_HI, gate=GATE_CITYSEL, cities=sel)
+        _gate_block(f"{label} — {len(sel)} cities frozen", CITYSEL_PREREG_DATE, cs, GATE_CITYSEL,
+                    f"in-sample this cut showed "
+                    f"{'+2.21%' if sel is CITYSEL_A else '+4.38%'} ROI against +0.80% for the "
+                    f"whole book; the same rule on RESHUFFLED city labels shows +2.15%, so the "
+                    f"forward number is the only one that means anything. z={family_z():.2f} "
+                    f"for {BREADTH_GATE_FAMILY} gates")
+        for miss in citysel_missing(book, sel):
+            print(f"    ::warning:: frozen city {miss!r} has no entry since "
+                  f"{CITYSEL_PREREG_DATE} — the registered set has SHRUNK; this gate is no "
+                  f"longer measuring the set that was pre-registered.")
 
 
 if __name__ == "__main__":

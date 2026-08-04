@@ -348,16 +348,26 @@ def _price_paths(cids: set) -> dict:
 
 
 def moderate_gate_stats(graded: pd.DataFrame, prereg_date: str = MOD_PREREG_DATE,
-                        lo: float = None, hi: float = None, gate: tuple = None) -> dict:
+                        lo: float = None, hi: float = None, gate: tuple = None,
+                        cities=None) -> dict:
     """Leg 1b — the moderate-shoulder [MOD_LO, MOD_HI) refinement of Leg 1, computed at REPORT
     TIME from existing shoulder entries (no new recording). Returns 'context' (all graded
     in-band, incl. the in-sample discovery sample) and 'forward' (entries entered on/after
     MOD_PREREG_DATE only — the pre-registered, forward-only gate). Taker-gated; maker reported,
     not gated. Returns {} if graded is empty or missing a required column.
 
-    graded needs: entry_yes_price, entered_at_utc, side_won, entry_side_price (optional: maker_filled).
+    `cities`, when given, additionally restricts to that FROZEN set of city labels — the
+    city-selection gates (shoulder_book_breadth.CITYSEL_*) are the same forward measurement
+    applied to a subset chosen once and never recomputed. It is a parameter here rather than a
+    second gate function so that every band/city gate shares this one tested implementation of
+    the forward filter, the clustered verdict, and the maker line.
+
+    graded needs: entry_yes_price, entered_at_utc, side_won, entry_side_price (optional:
+    maker_filled; `city` when `cities` is given).
     """
     need = {"entry_yes_price", "entered_at_utc", "side_won", "entry_side_price"}
+    if cities is not None:
+        need = need | {"city"}
     if graded.empty or not need.issubset(graded.columns):
         return {}
     lo = MOD_LO if lo is None else lo
@@ -365,6 +375,10 @@ def moderate_gate_stats(graded: pd.DataFrame, prereg_date: str = MOD_PREREG_DATE
     gate = GATE_MOD if gate is None else gate
     yes = graded["entry_yes_price"].astype(float)
     inband = graded[(yes >= lo) & (yes < hi)].copy()
+    if cities is not None:
+        inband = inband[inband["city"].astype(str).isin(set(cities))].copy()
+        if inband.empty:
+            return {}
     inband["_taker"] = _net_edge(inband["side_won"], inband["entry_side_price"].astype(float))
     entered = pd.to_datetime(inband["entered_at_utc"], utc=True, errors="coerce")
     prereg = pd.Timestamp(prereg_date, tz="UTC")
