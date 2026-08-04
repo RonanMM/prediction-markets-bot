@@ -330,7 +330,11 @@ def fetch_weather_markets(city: str) -> list[dict[str, Any]]:
         logger.warning("Tag discovery returned no markets for %s — falling back to the query "
                        "scan. If this persists, the Polymarket 'weather' tag may have changed.",
                        city)
-        city_cfg = CITIES.get(city, {})
+        # ALL_CITIES, not CITIES: capture-tier cities are absent from CITIES, so `CITIES.get`
+        # yielded {} for every one of them and the fallback then scanned for the bare city name
+        # instead of the configured search terms — silently dropping the tuned discovery on the
+        # exact path that only runs when tag discovery has ALREADY failed.
+        city_cfg = ALL_CITIES.get(city, {})
         search_terms = city_cfg.get("search_terms", [city])
         for kw in MARKET_KEYWORDS:
             for term in search_terms:

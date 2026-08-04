@@ -133,12 +133,23 @@ def _kalshi_rot_alarms(rows: list[dict], previous) -> list[str]:
 
     Kalshi renames series (HIGHNY -> KXHIGHNY) and leaves the old ticker enumerable but empty.
     A series that never served markets is not rot; nothing was lost.
+
+    ⚠️ A TRUNCATED row is excluded, and that exclusion is load-bearing. `fetch_series_markets`
+    returns `([], True)` when the transport fails, so a Kalshi OUTAGE produces exactly
+    `markets_returned=0, truncated=True` for every series at once. Without this check an outage
+    screams TICKER ROT for all seven — the alarm that exists to catch a real, rare, permanent
+    data loss would fire routinely for a transient one, and an alarm that cries wolf is an alarm
+    that gets ignored on the day it is right. The data already distinguishes the two cases;
+    discarding that distinction is the bug. `truncated=True` with zero markets means WE DO NOT
+    KNOW, which is never evidence of rot.
     """
     if previous is None or not len(previous):
         return []
     ever = set(previous.loc[previous["markets_returned"].astype(float) > 0, "series_ticker"])
     return [r["series_ticker"] for r in rows
-            if r["series_ticker"] in ever and int(r["markets_returned"]) == 0]
+            if r["series_ticker"] in ever
+            and int(r["markets_returned"]) == 0
+            and not r.get("truncated")]
 
 
 def _archived_tickers(path) -> set | None:
@@ -187,12 +198,8 @@ def step_fetch_kalshi() -> None:
     snapshot, so every failure here is logged and swallowed by the caller.
     """
     import pandas as pd
-    from kalshi_series import target_series, manifest_row
-    from fetch_kalshi import (fetch_series_markets, summarize_market, count_live,
-                              fetch_orderbooks, fetch_candles, summarize_candle)
-    from processing import (save_kalshi_rows, save_kalshi_manifest, kalshi_manifest_path,
-                            kalshi_candles_path)
-    from resolution_anchors import slug
+    from kalshi_series import target_series
+    from processing import save_kalshi_manifest, kalshi_manifest_path
 
     logger.info("═══ Step 1b: Kalshi archive ═══")
     now = datetime.now(timezone.utc).isoformat()
@@ -202,52 +209,96 @@ def step_fetch_kalshi() -> None:
         previous = None
 
     manifest = []
-    for city, series in target_series().items():
-        cslug = slug(city)
-        markets, truncated = fetch_series_markets(series)
-        manifest.append(manifest_row(series, city, len(markets), count_live(markets),
-                                     truncated, now))
-        if not markets:
-            continue
+    try:
+        for city, series in target_series().items():
+            # PER-CITY ISOLATION. Without it, an exception on city 4 escapes the loop, main()
+            # swallows it, and cities 1-3 end the cycle with their data written but NO health
+            # record at all — the manifest write and the rot alarm below both live after the
+            # loop. A partial cycle must still be a MEASURED partial cycle; the whole point of
+            # the manifest is that it says what happened.
+            try:
+                _kalshi_one_city(city, series, now, manifest)
+            except Exception as exc:                # noqa: BLE001 — one city must not kill six
+                logger.error("kalshi %s (%s): FAILED mid-city (%s: %s) — the other cities "
+                             "continue and the manifest still records this cycle.",
+                             city, series, type(exc).__name__, exc)
+    finally:
+        # In a `finally` so the health record survives anything the loop can raise, including a
+        # KeyboardInterrupt or a bug in the isolation above.
+        save_kalshi_manifest(manifest)
 
-        rows = [{**summarize_market(m), "fetched_at_utc": now, "city": city,
-                 "series_ticker": series} for m in markets]
-        save_kalshi_rows("markets", cslug, rows, ["ticker", "fetched_at_utc"])
-
-        live = [m["ticker"] for m in markets if m.get("status") in ("active", "initialized")]
-        books = fetch_orderbooks(live)
-        if books:
-            save_kalshi_rows("books", cslug,
-                             [{"fetched_at_utc": now, "city": city, "ticker": t, **b}
-                              for t, b in books.items()],
-                             ["ticker", "fetched_at_utc"])
-
-        # Candle backfill: settled markets only, and only those NOT already archived — a
-        # finalized market's candles are immutable (see _archived_tickers for the measured cost
-        # of not skipping). A corrupt/unreadable existing archive skips this city's candle phase
-        # entirely rather than risk a mass re-fetch or silent duplication.
-        archived = _archived_tickers(kalshi_candles_path(cslug))
-        if archived is None:
-            logger.error("kalshi candles %s: existing archive at %s is unreadable — skipping "
-                         "the candle phase for this city rather than re-fetching or "
-                         "duplicating; investigate before the next cycle.",
-                         cslug, kalshi_candles_path(cslug))
-        else:
-            for m in _markets_needing_candles(markets, archived):
-                candles, meta = fetch_candles(series, m)
-                if not meta["ok"]:
-                    logger.warning("kalshi candles %s: %s", meta["ticker"], meta["reason"])
-                    continue
-                if candles:
-                    save_kalshi_rows("candles", cslug,
-                                     [summarize_candle(c, city, series, m["ticker"]) for c in candles],
-                                     ["ticker", "end_period_ts"])
-
-    save_kalshi_manifest(manifest)
     for rotted in _kalshi_rot_alarms(manifest, previous):
-        logger.error("KALSHI TICKER ROT: %s served markets before and serves NONE now. Kalshi "
-                     "renames series and leaves the old ticker enumerable but empty; a "
-                     "hardcoded list would archive nothing behind a green run.", rotted)
+        logger.error("KALSHI TICKER ROT: %s served markets before and serves NONE now, and the "
+                     "fetch was NOT truncated (so this is not an outage). Kalshi renames series "
+                     "and leaves the old ticker enumerable but empty; find the replacement "
+                     "ticker and update resolution_anchors — this alarm cannot do it for you.",
+                     rotted)
+
+
+def _kalshi_one_city(city: str, series: str, now: str, manifest: list) -> None:
+    """Archive ONE city's markets, books and candles. Raises on failure; the caller isolates it.
+
+    Split out of step_fetch_kalshi so the per-city try/except has a single, obvious unit to wrap
+    (a bare `try` around a 40-line loop body invites a later edit to slip outside it). Appends
+    this city's health row to `manifest` BEFORE doing any of the heavy work, so a mid-city
+    failure still leaves a record of what the fetch returned.
+    """
+    from kalshi_series import manifest_row, LIVE_STATUSES
+    from fetch_kalshi import (fetch_series_markets, summarize_market, count_live,
+                              fetch_orderbooks, fetch_candles, summarize_candle, candle_log_row)
+    from processing import (save_kalshi_rows, save_kalshi_candle_log, kalshi_candles_path)
+    from resolution_anchors import slug
+
+    cslug = slug(city)
+    markets, truncated = fetch_series_markets(series)
+    manifest.append(manifest_row(series, city, len(markets), count_live(markets),
+                                 truncated, now))
+    if not markets:
+        return
+
+    rows = [{**summarize_market(m), "fetched_at_utc": now, "city": city,
+             "series_ticker": series} for m in markets]
+    save_kalshi_rows("markets", cslug, rows, ["ticker", "fetched_at_utc"])
+
+    # ONE definition of "live" (kalshi_series.LIVE_STATUSES), shared with fetch_kalshi.count_live.
+    # This line used to hardcode ("active", "initialized") one call after count_live consulted the
+    # constant, so the manifest's live_markets count and the set of books actually fetched could
+    # silently disagree the moment either changed.
+    live = [m["ticker"] for m in markets if m.get("status") in LIVE_STATUSES]
+    books = fetch_orderbooks(live)
+    if books:
+        save_kalshi_rows("books", cslug,
+                         [{"fetched_at_utc": now, "city": city, "ticker": t, **b}
+                          for t, b in books.items()],
+                         ["ticker", "fetched_at_utc"])
+
+    # Candle backfill: settled markets only, and only those NOT already archived — a
+    # finalized market's candles are immutable (see _archived_tickers for the measured cost
+    # of not skipping). A corrupt/unreadable existing archive skips this city's candle phase
+    # entirely rather than risk a mass re-fetch or silent duplication.
+    archived = _archived_tickers(kalshi_candles_path(cslug))
+    if archived is None:
+        logger.error("kalshi candles %s: existing archive at %s is unreadable — skipping "
+                     "the candle phase for this city rather than re-fetching or "
+                     "duplicating; investigate before the next cycle.",
+                     cslug, kalshi_candles_path(cslug))
+        return
+
+    log = []
+    for m in _markets_needing_candles(markets, archived):
+        candles, meta = fetch_candles(series, m)
+        # Completeness is COMPUTED by fetch_candles and, until now, thrown away — the caller read
+        # meta["ok"] and dropped the window, the count and the reason. Persisting every attempt
+        # is what makes a zero-candle market distinguishable from one never attempted.
+        log.append(candle_log_row(meta, city, series, now))
+        if not meta["ok"]:
+            logger.warning("kalshi candles %s: %s", meta["ticker"], meta["reason"])
+            continue
+        if candles:
+            save_kalshi_rows("candles", cslug,
+                             [summarize_candle(c, city, series, m["ticker"]) for c in candles],
+                             ["ticker", "end_period_ts"])
+    save_kalshi_candle_log(log)
 
 
 def step_fetch_polymarket(cities: list[str]) -> None:

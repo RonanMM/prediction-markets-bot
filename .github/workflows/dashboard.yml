@@ -36,7 +36,13 @@ env:
 jobs:
   build-and-publish:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 30, not 20: the capture tier took fetch_historical_truth from 5 to 12 cities and
+    # fetch_station_obs from 4 to 11 stations (~+5.5 min per run), and this job refreshes BOTH
+    # before building. The dashboard needs none of the seven new cities, but the fetchers take
+    # no --cities flag, so it pays the cost anyway. A timeout kill here is not a harmless retry:
+    # the publish is skipped and the last-good page silently stays up, which looks exactly like
+    # a healthy run in the run list.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
