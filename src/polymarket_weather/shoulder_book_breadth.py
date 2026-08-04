@@ -218,6 +218,65 @@ def scan_and_record_breadth(bins=None, now_utc=None, out_path=_OUT, fetch=get_js
     return len(added)
 
 
+# ── Venue renames — canonicalising a city label at READ time ────────────────────────────
+# Polymarket renamed its Seoul series to "Seoul (Incheon)" between 2026-07-28 and 2026-07-29
+# (proof: market_id 3147568, one market, recorded under BOTH labels a day apart). The book then
+# carried the same city twice: 50 "cities" instead of 49, two rows in the per-city table, and
+# 2026-07-30 split into two clusters when it is ONE weather outcome.
+#
+# The stripper is deliberately NOT "remove any parenthesis". It rewrites `X (qualifier)` -> `X`
+# only when the bare `X` is ALSO present in the same book — that bare label is the evidence the
+# qualifier is a clarification of an existing series rather than a distinct one. So a venue that
+# only ever ships "Kansas City (MCI)" keeps its name, and a venue shipping BOTH "(MCI)" and
+# "(KCK)" keeps them apart — the failure mode a blanket strip would cause.
+#
+# Applied on READ, never written back: the CSV keeps what the venue actually called the market,
+# because that string is the record of the rename, and rewriting it would destroy the evidence
+# `rename_collisions` relies on. Same policy as every other file here — normalise on read.
+_QUALIFIED = re.compile(r"^(?P<base>.+?)\s*\([^()]*\)\s*$")
+
+
+def canonical_map(labels) -> dict:
+    """`{alias: canonical}` for labels whose bare form is also present. Empty when none apply."""
+    known = {str(x) for x in labels if isinstance(x, str) or x == x}   # x == x drops NaN
+    out = {}
+    for lab in known:
+        m = _QUALIFIED.match(lab)
+        if m and m.group("base") in known:
+            out[lab] = m.group("base")
+    return out
+
+
+def canonicalize_cities(df: pd.DataFrame) -> pd.DataFrame:
+    """A copy of `df` with venue-renamed city labels folded onto their canonical name."""
+    if df is None or df.empty or "city" not in df.columns:
+        return df
+    mapping = canonical_map(df["city"].dropna().unique())
+    if not mapping:
+        return df
+    out = df.copy()
+    out["city"] = out["city"].astype(str).map(lambda c: mapping.get(c, c))
+    return out
+
+
+def rename_collisions(df: pd.DataFrame) -> list:
+    """Label pairs PROVEN to be one series — they share a market_id — yet still distinct after
+    canonicalisation. That is a venue rename the stripper did not catch, and it must be visible:
+    the whole reason this exists is that the Seoul split sat in the published per-city table
+    looking like two ordinary cities. Exact, not heuristic — a market_id identifies one market.
+
+    It cannot catch a rename with no overlapping snapshot (the venue renames between target-date
+    windows and no single market is ever recorded under both labels). That gap is real; the
+    stripper above is what covers it, and this is the backstop for what the stripper misses.
+    """
+    if df is None or df.empty or not {"city", "market_id"} <= set(df.columns):
+        return []
+    d = canonicalize_cities(df)
+    n = d.groupby("market_id")["city"].nunique()
+    return sorted({tuple(sorted(d[d["market_id"] == mid]["city"].astype(str).unique()))
+                   for mid in n[n > 1].index})
+
+
 def _market_dict(resp):
     if isinstance(resp, list):
         return resp[0] if resp else None
@@ -300,7 +359,9 @@ def grade_book(book=None, out_path=_OUT, fetch=get_json, lookup=True, as_of=None
     is_sh = graded["side"] == "No"
     graded["maker_filled"] = ((is_sh & mx.notna() & (mx >= ey - 1e-9)) |
                               (~is_sh & mn.notna() & (mn <= ey + 1e-9)))
-    return graded
+    # Fold venue renames AFTER the CSV has been persisted above — the file keeps the venue's own
+    # label, every consumer downstream (clusters, per-city, city count) sees one city.
+    return canonicalize_cities(graded)
 
 
 def _leg_line(graded, mask, label):
@@ -332,9 +393,12 @@ def report_breadth(out_path=_OUT, fetch=get_json) -> None:
         print("BREADTH structure book: no paper entries yet.")
         return
     graded = grade_book(book=book, out_path=out_path, fetch=fetch)
-    ncities = book["city"].nunique()
+    ncities = canonicalize_cities(book)["city"].nunique()
     print(f"BREADTH STRUCTURE PAPER BOOK: {len(book)} entries across {ncities} cities "
           f"({len(graded)} graded, {len(book) - len(graded)} awaiting settlement)")
+    for pair in rename_collisions(book):
+        print(f"  ::warning:: same market recorded under {pair} — a venue rename this module "
+              f"did not fold; that city is split across two rows in every per-city view.")
     if graded.empty:
         return
     yes = graded["entry_yes_price"].astype(float)
@@ -355,8 +419,9 @@ def report_breadth(out_path=_OUT, fetch=get_json) -> None:
               f"taker {f['taker']:+.4f} CI[{f['ci_lo']:+.4f},{f['ci_hi']:+.4f}] "
               f"v +{need_e:.3f}  [{mark}]  maker {f['maker_n']}/{f['n']} {f['maker']:+.4f}")
         print(f"    (needs clustered 95% CI > 0 over ≥{GATE_MIN_CLUSTERS} city-days [2026-07-27] "
-              f"AND ≥{GATE_MIN_DATES} distinct target dates [2026-08-02] — 362 city-days here "
-              f"are 50 cities x 8 dates, which is breadth, not calendar)")
+              f"AND ≥{GATE_MIN_DATES} distinct target dates [2026-08-02] — {f['n_clusters']} "
+              f"city-days here are {ncities} cities x {f.get('n_dates', 0)} dates, which is "
+              f"breadth, not calendar)")
 
     # Deep band [5,10)¢ — pre-registered 2026-08-02 to settle the §10f contradiction (see above).
     dp = moderate_gate_stats(graded, prereg_date=DEEP_PREREG_DATE,

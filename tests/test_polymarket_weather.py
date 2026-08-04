@@ -1526,6 +1526,70 @@ def test_breadth_maker_path_and_fill(tmp_path):
     assert bool(g2.iloc[0]["maker_filled"]) is False
 
 
+def test_venue_rename_folds_only_when_the_bare_label_also_exists():
+    """Polymarket renamed its Seoul series to "Seoul (Incheon)" between 2026-07-28 and 07-29
+    (market_id 3147568 was recorded under BOTH labels a day apart). The book then carried the same
+    city twice: 50 "cities" for 49, two rows in the published per-city table, and 2026-07-30 split
+    into two clusters when it is ONE weather outcome. Merging mattered — the split halves read
+    +0.0295 and −0.0090; together they are +0.0035.
+
+    The fold must NOT be a blanket "strip parentheses": that would merge two genuinely different
+    stations behind one city name, which is a ruler error, the most expensive class in this repo.
+    It fires only when the bare label is present as evidence the qualifier clarifies an existing
+    series."""
+    import shoulder_book_breadth as b
+    # folds: the bare name is present, so "(Incheon)" is a clarification of it
+    assert b.canonical_map(["Seoul", "Seoul (Incheon)", "Paris"]) == {"Seoul (Incheon)": "Seoul"}
+    # refuses: no bare label -> nothing proves this is a rename of anything
+    assert b.canonical_map(["Kansas City (MCI)", "Denver"]) == {}
+    # refuses: two qualified variants are two STATIONS, and must never be pooled
+    assert b.canonical_map(["Kansas City (MCI)", "Kansas City (KCK)"]) == {}
+    assert b.canonical_map([]) == {}
+
+
+def test_venue_rename_is_folded_on_read_and_never_written_back(tmp_path):
+    """Canonicalisation happens at READ time. The CSV keeps the venue's own string, because that
+    string is the evidence a rename happened — rewriting it would destroy what
+    `rename_collisions` detects with."""
+    import pandas as pd
+    import shoulder_book_breadth as b
+    from datetime import date, datetime, timezone, timedelta
+
+    end = pd.Timestamp("2026-07-25T22:00:00Z")
+    out = tmp_path / "b.csv"
+
+    def mk(cid, city):
+        return dict(condition_id=cid, market_id=cid[2:], city=city, kind="max",
+                    date_str="July 25", question=f"Highest temperature in {city} on July 25 (30-31°C)?",
+                    yes=0.15, liquidity=5000, end=end)
+
+    t1 = datetime(2026, 7, 23, tzinfo=timezone.utc)
+    b.scan_and_record_breadth(bins=[mk("0xA", "Seoul"), mk("0xB", "Seoul (Incheon)")],
+                              now_utc=t1, out_path=out)
+    g = b.grade_book(out_path=out, as_of=date(2026, 7, 26),
+                     fetch=lambda u, p=None, l="API": {"closed": True, "outcomePrices": '["0","1"]'})
+    assert sorted(g["city"].unique()) == ["Seoul"]              # one city downstream
+    assert sorted(pd.read_csv(out)["city"].unique()) == ["Seoul", "Seoul (Incheon)"]   # raw on disk
+
+
+def test_rename_collisions_flags_one_market_under_two_labels(tmp_path, capsys):
+    """The exact detector: a market_id identifies ONE market, so two labels claiming it are one
+    series by definition. This is the backstop for a rename the stripper cannot fold, and it must
+    be loud — the Seoul split sat in the published table looking like two ordinary cities."""
+    import pandas as pd
+    import shoulder_book_breadth as b
+    same = pd.DataFrame([{"city": "Springfield IL", "market_id": 99},
+                         {"city": "Springfield", "market_id": 99}])
+    assert b.rename_collisions(same) == [("Springfield", "Springfield IL")]
+    # once foldable, the collision is resolved rather than merely reported
+    folded = pd.DataFrame([{"city": "Seoul (Incheon)", "market_id": 99},
+                           {"city": "Seoul", "market_id": 99}])
+    assert b.rename_collisions(folded) == []
+    assert b.rename_collisions(pd.DataFrame()) == []
+    # a frame with no market_id column cannot assert anything, and must not raise
+    assert b.rename_collisions(pd.DataFrame([{"city": "Paris"}])) == []
+
+
 def test_grade_book_skips_future_targets(tmp_path):
     import shoulder_book_breadth as b
     import pandas as pd

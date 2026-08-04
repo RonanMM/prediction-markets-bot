@@ -609,7 +609,9 @@ def _breadth_binds() -> dict:
         book, graded = _breadth_graded()                  # offline: frozen settlements only
         if book.empty:
             return b
-        b.update(BK_ENTRIES=str(len(book)), BK_CITIES=str(book["city"].nunique()),
+        # Count CANONICAL cities: the venue's Seoul rename otherwise reads as a 50th city.
+        b.update(BK_ENTRIES=str(len(book)),
+                 BK_CITIES=str(bb.canonicalize_cities(book)["city"].nunique()),
                  BK_GRADED=str(len(graded)), BK_AWAIT=str(len(book) - len(graded)))
         if not graded.empty:
             sh = graded[graded["leg"] == "shoulder"]
