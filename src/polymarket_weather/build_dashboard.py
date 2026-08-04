@@ -35,6 +35,7 @@ import re
 import subprocess
 import sys
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 
 PKG = Path(__file__).resolve().parent          # src/polymarket_weather
@@ -78,7 +79,9 @@ def _run(args: list[str]) -> str:
 def gather() -> dict:
     status = _run(["data_status.py"])
     oos = _run(["evaluate_oos.py"])
-    book = _run(["shoulder_book.py", "--report"])
+    # NOTE: the structure book is NOT run as a subprocess and scraped any more — `_book_binds`
+    # computes those scalars from the graded frame. See its docstring for the two silent
+    # blank-outs that coupling caused.
     d: dict = {}
 
     span = re.search(r"Date span.*?:\s*([\d-]+)\s*\.\.\s*([\d-]+)", status)
@@ -102,7 +105,6 @@ def gather() -> dict:
     if e3:
         d["e3_n"], d["e3_roi"] = e3.group(1), e3.group(2)
 
-    d.update(_parse_book_scalars(book))
     # dispersion monitor — per-month spread calibration std(z) (1.0 = honest, >1.15 overconfident)
     d["disp"] = [{"m": m, "z": float(z)} for m, _n, z in
                  re.findall(r"Tmax (\d{4}-\d{2})\s+(\d+)\s+([\d.]+)", oos)]
@@ -218,7 +220,8 @@ def _city_rows(c) -> list[dict]:
 
 def compute_series() -> dict:
     out: dict = {"acc": [], "roll": [], "city": [], "calib": [], "growth": [],
-                 "heartbeat": [], "buckets": [], "recent": [], "equity": [], "capture": []}
+                 "heartbeat": [], "buckets": [], "recent": [], "equity": [], "capture": [],
+                 "bk_equity": [], "bk_cities": []}
     # Capture-tier coverage FIRST, and outside the eval machinery: it reads only collected files,
     # so it must still render if anything downstream fails. capture_coverage never raises.
     out["capture"] = capture_coverage()
@@ -405,26 +408,17 @@ def compute_series() -> dict:
     except Exception as e:
         out["error"] = f"{type(e).__name__}: {e}"
 
-    # paper-book equity curve — grade each entry with shoulder_book's OWN settlement + fee math
-    # (taker-conservative: half-spread crossed on entry, 0.05·p·(1−p) fee), cumulative by day.
+    # paper-book equity curve — settled by shoulder_book's OWN grading + fee math (taker-
+    # conservative: half-spread crossed on entry, 0.05·p·(1−p) fee), cumulative by target date.
+    # Reads the SHARED graded frame (`_book_graded`); it used to re-derive grading inline, a
+    # second copy that could drift from the report it sits beside.
     try:
         import pandas as pd
-        import shoulder_book as sb
-        book = sb._load_book()
-        rows = []
-        for _, r in book.iterrows():
-            pq = sb.parse_question(r["question"])
-            if not pq:
-                continue
-            yres = sb.resolves_yes(r["city"], r["target_date"], r["question"], pq["temp_c"])
-            if yres is None:
-                continue
-            rows.append({"t": str(r["target_date"]), "leg": str(r["leg"]),
-                         "won": (int(yres) == 1) == (r["side"] == "Yes"),
-                         "sp": float(r["entry_side_price"])})
-        if rows:
-            df = pd.DataFrame(rows)
-            df["net"] = sb._net_edge(df["won"], df["sp"])
+        _, graded = _book_graded()
+        if not graded.empty:
+            df = pd.DataFrame({"t": graded["target_date"].astype(str),
+                               "leg": graded["leg"].astype(str),
+                               "net": graded["net_edge"].astype(float)})
             df["sh"] = df["net"].where(df["leg"] == "shoulder", 0.0)
             df["fav"] = df["net"].where(df["leg"] == "favorite", 0.0)
             g = df.groupby("t").agg(net=("net", "sum"), sh=("sh", "sum"),
@@ -437,6 +431,15 @@ def compute_series() -> dict:
                               "n": int(g["n"].loc[t])} for t in g.index]
     except Exception as e:
         out["eq_error"] = f"{type(e).__name__}: {e}"
+
+    # Breadth equity curve + per-city breakdown. The breadth book carries ~10× the inventory of
+    # the 5-city book and had no chart at all — only two summary rows — so a reader could not see
+    # whether its edge accrued steadily or came from a handful of days.
+    try:
+        out["bk_equity"] = _breadth_equity()
+        out["bk_cities"] = _breadth_cities()
+    except Exception as e:
+        out["bk_series_error"] = f"{type(e).__name__}: {e}"
 
     # collection heartbeat — distinct collection hours per day (last 30d) + last snapshot time
     try:
@@ -468,43 +471,6 @@ def _fmt_span(d: dict) -> tuple[str, str]:
         return str((e - s).days), f"{s.strftime('%b %-d')} → {e.strftime('%b %-d')} '{e.strftime('%y')}"
     except Exception:
         return "—", "—"
-
-
-# Between "n=150" and "wr 86%" the report may carry a cluster count — "(54 city-days)", added by
-# the 2026-07-27 gate amendment. Optional so BOTH formats parse: pinning the parser to whatever
-# the report prints today is how this broke (the amendment blanked Win rate and the Leg 1 edge on
-# the published page, and silently showed Leg 2 as 0 graded, because `n=(\d+)\s+wr` stopped
-# matching). Anything the report adds between the two must stay optional here.
-_N_WR = r"n=(\d+)(?:\s*\([^)]*\))?\s+wr\s+(\d+)%"
-
-
-def _parse_book_scalars(book: str) -> dict:
-    """Scalars for the structure-book panel, parsed from `shoulder_book.py --report` text.
-
-    Kept a pure string->dict function so the report format is covered by tests instead of only
-    being exercised through a live subprocess in CI."""
-    d: dict = {}
-    hd = re.search(r"STRUCTURE PAPER BOOK:\s*(\d+)\s+entries\s+\((\d+)\s+graded,\s*(\d+)\s+awaiting", book)
-    if hd:
-        d["sb_entries"], d["sb_graded"], d["sb_await"] = hd.group(1), hd.group(2), hd.group(3)
-    full = re.search(rf"shoulder full \[5,35\)¢:\s*{_N_WR}.*?taker\s+([+\-][\d.]+)", book)
-    if full:
-        d["sb_full_n"], d["sb_wr"], d["sb_full"] = full.group(1), full.group(2), full.group(3)
-    core = re.search(r"shoulder core \[20,35\)¢:.*?taker\s+([+\-][\d.]+)", book)
-    if core:
-        d["sb_core"] = core.group(1)
-    # Leg2 favourites — often "0 graded" this early; capture so the UI can say "pending" honestly.
-    fav = re.search(rf"Leg2 favorite core.*?{_N_WR}.*?taker\s+([+\-][\d.]+)", book)
-    d["sb_fav_graded"] = fav.group(1) if fav else "0"
-    # Leg 1b moderate-shoulder FORWARD gate (pre-reg 2026-07-23) — forward-only progress.
-    mod = re.search(r"Leg1b moderate.*?FORWARD gate[^:]*:\s*n=(\d+)(?:\s*\([^)]*\))?\s+taker\s+"
-                    r"([+\-][\d.]+)(?:\s+CI\[[^\]]*\])?\s+\[([^\]]+)\]", book, re.DOTALL)
-    if mod:
-        d["sb_mod_fwd_n"], d["sb_mod_fwd"] = mod.group(1), mod.group(2)
-        gm = re.match(r"(\d+)/(\d+)", mod.group(3))
-        d["sb_mod_need"] = gm.group(2) if gm else "80"
-        d["sb_mod_pass"] = "1" if "GATE" in mod.group(3) else "0"
-    return d
 
 
 def _collect_lag_hours(last_collect_iso, generated_at_iso):
@@ -541,6 +507,94 @@ def _last_commit_dt() -> datetime:
 
 # ────────────────────────────── payload (data.json) ──────────────────────────────
 
+@lru_cache(maxsize=1)
+def _book_graded():
+    """`(parsed, graded)` for the 5-city paper book — settled ONCE per build.
+
+    Cached because three consumers need the same frame (panel scalars, equity curve, per-city
+    table) and grading walks every stored price path. Returns empty frames on any failure so
+    every consumer degrades to "—" rather than the build dying."""
+    try:
+        import shoulder_book as sb
+        return sb.graded_book()
+    except Exception:
+        import pandas as pd
+        return pd.DataFrame(), pd.DataFrame()
+
+
+@lru_cache(maxsize=1)
+def _breadth_graded():
+    """`(book, graded)` for the breadth book, OFFLINE — frozen settlements only, no network.
+
+    The daily truth-eval job does the settlement lookups and commits them; the dashboard must
+    never depend on a live Gamma call to render."""
+    import pandas as pd
+    try:
+        import shoulder_book_breadth as bb
+        book = bb._load_book()
+        if book.empty:
+            return book, pd.DataFrame()
+        return book, bb.grade_book(book=book, lookup=False)
+    except Exception:
+        return pd.DataFrame(), pd.DataFrame()
+
+
+def _sig(v, nd: int = 3) -> str:
+    """Signed fixed-point with a typographic minus, the form every panel cell expects."""
+    return f"{v:+.{nd}f}".replace("-", "−")
+
+
+def _book_binds() -> dict:
+    """5-city structure-book scalars, computed STRUCTURALLY from the graded frame.
+
+    Until 2026-08-04 these were regex-scraped out of `shoulder_book.py --report`'s printed text.
+    That coupling broke twice, silently, and both times the panel fell back to its zero/"—"
+    defaults while the workflow stayed green:
+
+      * 2026-07-27 — the new "(54 city-days)" and "CI[...]" columns blanked Win rate and the
+        Leg 1 edge;
+      * 2026-08-02 — the GATE_MIN_DATES amendment appended "(12/30 dates)" to the Leg 1b line,
+        which the gate regex anchored past. The public page then showed Leg 1b as **0/80
+        forward** for two days while the book actually stood at **78/80, +0.025**.
+
+    A hand-written fixture in the test suite passed through BOTH, because the fixture was a
+    second copy of the report format rather than the producer's real output — a test that must
+    be manually re-synced with its producer is not a regression test. Reading the numbers
+    directly removes the coupling; `test_book_binds_match_the_printed_report` now pins the two
+    representations together for whatever still prints.
+    """
+    b = {"SB_ENTRIES": "—", "SB_GRADED": "—", "SB_AWAIT": "—", "SB_WR": "—",
+         "SB_FULL_N": "—", "SB_FULL": "—", "SB_CORE": "—", "SB_FAV_GRADED": "0",
+         "SB_MOD_FWD_N": "0", "SB_MOD_FWD": "—", "SB_MOD_NEED": "80", "SB_MOD_PASS": "0"}
+    try:
+        import shoulder_book as sb
+        parsed, graded = _book_graded()
+        if parsed.empty:
+            return b
+        b.update(SB_ENTRIES=str(len(parsed)), SB_GRADED=str(len(graded)),
+                 SB_AWAIT=str(len(parsed) - len(graded)))
+        if graded.empty:
+            return b
+        sh = graded[graded["leg"] == "shoulder"]
+        fav = graded[graded["leg"] == "favorite"]
+        b["SB_FAV_GRADED"] = str(len(fav))
+        if len(sh):
+            b.update(SB_FULL_N=str(len(sh)), SB_WR=f"{sh['side_won'].mean() * 100:.0f}",
+                     SB_FULL=_sig(sh["net_edge"].mean()))
+            core = sh[sh["band"] == "core"]
+            if len(core):
+                b["SB_CORE"] = _sig(core["net_edge"].mean())
+            st = sb.moderate_gate_stats(sh)
+            if st:
+                f = st["forward"]
+                b.update(SB_MOD_FWD_N=str(f["n"]), SB_MOD_NEED=str(sb.GATE_MOD[0]),
+                         SB_MOD_FWD=_sig(f["taker"]) if f["n"] else "—",
+                         SB_MOD_PASS="1" if f.get("gate_pass") else "0")
+    except Exception as e:
+        b["SB_ERR"] = str(e)[:80]
+    return b
+
+
 def _breadth_binds() -> dict:
     """Breadth structure-book stats, read OFFLINE from the committed CSV (no network — the
     daily truth-eval job does the settlement lookups and freezes them). Returns bind strings
@@ -552,10 +606,9 @@ def _breadth_binds() -> dict:
          "BK_FULL_MAKER": "—", "BK_FULL_MAKER_N": "0"}
     try:
         import shoulder_book_breadth as bb
-        book = bb._load_book()
+        book, graded = _breadth_graded()                  # offline: frozen settlements only
         if book.empty:
             return b
-        graded = bb.grade_book(book=book, lookup=False)   # offline: frozen settlements only
         b.update(BK_ENTRIES=str(len(book)), BK_CITIES=str(book["city"].nunique()),
                  BK_GRADED=str(len(graded)), BK_AWAIT=str(len(book) - len(graded)))
         if not graded.empty:
@@ -590,6 +643,58 @@ def _breadth_binds() -> dict:
     except Exception as e:
         b["BK_ERR"] = str(e)[:80]
     return b
+
+
+# A city needs this many graded shoulder entries before it gets a row. Below it the per-city
+# interval is so wide the row carries no information at all, and a 50-row table of noise invites
+# exactly the cherry-picking the panel's own caption warns against.
+BK_CITY_MIN_N = 20
+
+
+def _breadth_equity() -> list:
+    """Cumulative breadth-book net per contract by TARGET DATE, split shoulder vs moderate band.
+
+    The breadth book had two summary rows and no chart, so there was no way to see whether its
+    +0.007 accrued steadily or arrived on a few days — which matters, because the temporal
+    amendment (GATE_MIN_DATES) exists precisely because this book's calendar is narrow."""
+    import pandas as pd
+    _, graded = _breadth_graded()
+    if graded.empty or "leg" not in graded.columns:
+        return []
+    sh = graded[graded["leg"] == "shoulder"].copy()
+    if sh.empty:
+        return []
+    yes = sh["entry_yes_price"].astype(float)
+    day = pd.to_datetime(sh["target_date"], errors="coerce")
+    df = pd.DataFrame({"t": day, "net": sh["net_edge"].astype(float)}).dropna(subset=["t"])
+    if df.empty:
+        return []
+    # Leg 1b's band, tracked separately: it is the one under a live forward gate.
+    df["mod"] = df["net"].where((yes >= 0.10) & (yes < 0.25), 0.0)
+    g = df.groupby("t").agg(net=("net", "sum"), mod=("mod", "sum"),
+                            n=("net", "size")).sort_index()
+    cum = g.cumsum()
+    return [{"t": t.strftime("%b %-d"),
+             "v": round(float(cum["net"].loc[t]), 3),
+             "mod": round(float(cum["mod"].loc[t]), 3),
+             "n": int(g["n"].loc[t])} for t in g.index]
+
+
+def _breadth_cities() -> list:
+    """Per-city shoulder-band edge across the breadth book. DESCRIPTIVE ONLY.
+
+    Answers "does any city sell shoulders better than the others?" — but the honest answer is
+    almost certainly "no, and this table cannot tell you". With ~50 cities, ~2-3 clear a 95% CI
+    by chance under a true null. The payload therefore ships `sig_n` (cities whose interval
+    excludes zero) beside `expected_sig` (0.05 × cities) so the page can print the comparison
+    rather than leaving the reader to eyeball a sorted list and pick a winner. See
+    shoulder_book.per_city_stats."""
+    import shoulder_book as sb
+    _, graded = _breadth_graded()
+    if graded.empty or "leg" not in graded.columns:
+        return []
+    sh = graded[graded["leg"] == "shoulder"]
+    return sb.per_city_stats(sh, min_n=BK_CITY_MIN_N)
 
 
 def _f4(v) -> str:
@@ -640,15 +745,12 @@ def build_payload(d: dict, series: dict) -> dict:
             "GATE_STATUS": G("gate_status"), "GATE_MKTS": G("gate_mkts"), "GATE_BETS": G("gate_bets"),
             "GATE_MKTS_THR": G("gate_mkts_thr", "150"),
             "DATA_DAYS": days, "SPAN": span,
-            "SB_WR": G("sb_wr"), "SB_GRADED": G("sb_graded"), "SB_ENTRIES": G("sb_entries"),
             "BR_MARKET": _f4(br["market"]), "BR_ENS": _f4(br["ens"]), "BR_MODEL": _f4(br["model"]),
             "N_MKTS": G("n_mkts"), "CRPS_MODEL": G("crps_model"), "CRPS_ENS": G("crps_ens"),
-            "SB_FULL": G("sb_full"), "SB_CORE": G("sb_core"), "SB_AWAIT": G("sb_await"),
-            "SB_FULL_N": G("sb_full_n"),   # Leg 1 only — SB_GRADED counts every leg
-            "SB_FAV_GRADED": G("sb_fav_graded", "0"),
-            "SB_MOD_FWD_N": G("sb_mod_fwd_n", "0"), "SB_MOD_FWD": G("sb_mod_fwd", "—"),
-            "SB_MOD_NEED": G("sb_mod_need", "80"), "SB_MOD_PASS": G("sb_mod_pass", "0"),
             "SKILL": skill_txt, "BOOK_NET": book_net, "RUNS_TODAY": runs_today,
+            # SB_* (5-city book) and BK_* (breadth) both come from their graded frames — never
+            # from a printed report. SB_FULL_N is Leg 1 only; SB_GRADED counts every leg.
+            **_book_binds(),
             **_breadth_binds(),
         },
         "html": {
@@ -1072,6 +1174,14 @@ TEMPLATE = r"""<meta charset="utf-8">
         <tr><td class="city">1b · moderate [10–25¢] · all cities</td><td class="num" id="bkmodn">—</td><td class="num" id="bkmodedge">—</td><td class="num" id="bkmodmaker">—</td><td><span class="pill2" id="bkmodstatus">forward</span></td></tr>
         <tr><td class="city">1 · sell shoulder [5–35¢] · all cities</td><td class="num" id="bkfulln">—</td><td class="num" id="bkfulledge" data-bind="BK_FULL_NET">—</td><td class="num" id="bkfullmaker" data-bind="BK_FULL_MAKER">—</td><td><span class="pill2 warn">paper</span></td></tr>
       </table>
+
+      <div class="findsub" style="margin-top:20px">Running net units · all cities · taker fees paid. The moderate band runs <b>above</b> the full band because the rest of the shoulder — mainly the 25–35¢ core — loses; the whole apparent edge sits in 10–25¢. Ten target days is not a track record.</div>
+      <div class="chartwrap"><div id="c_bkequity"></div></div>
+      <div class="leg" style="margin-top:8px"><span><i style="background:var(--good)"></i>All shoulder [5–35¢]</span><span><i style="background:var(--market)"></i>Moderate band [10–25¢] only</span></div>
+
+      <div class="findsub" style="margin-top:22px">By city · shoulder band [5–35¢]</div>
+      <div id="bkcitynote" class="cap" style="margin:6px 0 10px"></div>
+      <div id="bkcities"></div>
       <p class="cap" style="margin-top:12px"><b>Paper — no real money.</b> <b>Maker net</b> = filled-only, no spread/fee, rebate excluded (after the 2026-07-27 fill-detector fix the maker edge is <b>not</b> established: 5-city +0.056 CI [−0.018,+0.129], breadth at comparable liquidity −0.007 [−0.028,+0.015] — both consistent with zero; thin books &lt;1k liquidity are significantly negative). Forward-only: only entries recorded on/after 2026-07-23 count toward the gate, so the hypothesis is never graded on the data that suggested it.</p>
     </div>
   </section>
@@ -1410,6 +1520,41 @@ TEMPLATE = r"""<meta charset="utf-8">
       return '<tr><td class="city">' + esc(r.b) + '</td><td class="num">' + r.n + '</td><td class="num ' + (d > 0.0005 ? 'pos' : '') + '">' + r.model.toFixed(3) + '</td><td class="num">' + r.market.toFixed(3) + '</td><td class="num">' + dCell + '</td><td>' + gateCell + '</td></tr>';
     }).join("");
   }
+  // Per-city breadth breakdown. Deliberately printed WITH the chance-expectation line: sorting
+  // ~50 cities by edge and reading the top is a multiple-comparisons trap, and this table sits
+  // beside gates that exist to stop exactly that. See shoulder_book.per_city_stats.
+  function renderBkCities() {
+    var host = document.getElementById("bkcities"), note = document.getElementById("bkcitynote");
+    if (!host) return;
+    var rows = D.bk_cities || [];
+    if (!rows.length) { host.innerHTML = '<div style="color:var(--faint);font-size:12px;padding:14px 0">No city has enough settled shoulder entries yet.</div>'; if (note) note.innerHTML = ""; return; }
+    var sig = rows.filter(function (r) { return r.sig; }).length;
+    var exp = (0.05 * rows.length);
+    var med = rows.map(function (r) { return r.dates; }).sort(function (a, b) { return a - b; })[Math.floor(rows.length / 2)];
+    if (note) note.innerHTML = '<b>Descriptive only — not a city-selection rule.</b> ' + rows.length +
+      ' cities with ≥20 settled entries. <b>' + sig + '</b> show a 95% interval clear of zero; <b>~' +
+      exp.toFixed(1) + '</b> would do so by chance alone if no city had any edge — so the spread down ' +
+      'this column is what noise looks like, not a ranking. The median city spans just <b>' + med +
+      ' target days</b>, far short of the 30 a gate requires, which is the other reason no row here ' +
+      'is evidence. Any city that looks good would need its own forward gate, declared before the ' +
+      'fact, exactly like Leg 1b.';
+    host.innerHTML = '<table class="data"><tr><th>City</th><th class="num">Settled</th><th class="num">Days</th><th class="num">Win</th>' +
+      '<th class="num">Taker <span class="dim">$/contract</span></th><th class="num">95% CI</th></tr>' +
+      rows.map(function (r) {
+        var col = r.taker < 0 ? "var(--model)" : "var(--good)";
+        var ci = '<span style="color:var(--muted)">[' + fmtS(r.lo, 3) + ', ' + fmtS(r.hi, 3) + ']</span>';
+        if (r.sig) ci += ' <span class="pill2" style="margin-left:6px">≠0</span>';
+        return '<tr><td class="city">' + esc(r.city) + '</td><td class="num">' + r.n + '</td>' +
+          '<td class="num" style="color:var(--muted)">' + r.dates + '</td>' +
+          '<td class="num">' + (r.wr * 100).toFixed(0) + '%</td>' +
+          '<td class="num" style="color:' + col + '">' + fmtS(r.taker, 4) + '</td>' +
+          '<td class="num">' + ci + '</td></tr>';
+      }).join("") + '</table>';
+  }
+  function fmtS(v, nd) {
+    if (v == null || !isFinite(v)) return "—";
+    return (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(nd);
+  }
   function renderRecent() {
     var tb = document.querySelector("#t_recent tbody");
     if (!tb) return;
@@ -1428,7 +1573,7 @@ TEMPLATE = r"""<meta charset="utf-8">
   }
 
   function draw() {
-    ["c_acc", "c_city", "c_calib", "c_disp", "c_equity"].forEach(function (id) { var h = document.getElementById(id); if (h) h.innerHTML = ""; });
+    ["c_acc", "c_city", "c_calib", "c_disp", "c_equity", "c_bkequity"].forEach(function (id) { var h = document.getElementById(id); if (h) h.innerHTML = ""; });
     document.querySelectorAll(".chartwrap .tip").forEach(function (t) { t.remove(); });
 
     var acc = D.acc || [];
@@ -1460,6 +1605,19 @@ TEMPLATE = r"""<meta charset="utf-8">
     });
     else { var he = document.getElementById("c_equity"); if (he) he.innerHTML = '<div style="color:var(--faint);font-size:12px;padding:20px 0">No settled paper entries yet.</div>'; }
 
+    var bkeq = D.bk_equity || [];
+    if (bkeq.length) lineChart("c_bkequity", {
+      h: 210, xLabels: bkeq.map(function (r) { return r.t; }),
+      yFmt: function (v) { return (v >= 0 ? "+" : "") + v.toFixed(0) + "u"; }, tipFmt: function (v) { return (v >= 0 ? "+" : "") + v.toFixed(2) + "u"; },
+      endFmt: function (s) { var last = s.points.slice(-1)[0]; return last != null ? (last >= 0 ? "+" : "") + last.toFixed(1) + "u" : ""; },
+      series: [
+        { name: "All shoulder", color: css("--good"), points: bkeq.map(function (r) { return r.v; }), thick: 2.2 },
+        { name: "Moderate [10-25c]", color: css("--market"), points: bkeq.map(function (r) { return r.mod; }), thick: 1.8 }
+      ]
+    });
+    else { var hb2 = document.getElementById("c_bkequity"); if (hb2) hb2.innerHTML = '<div style="color:var(--faint);font-size:12px;padding:20px 0">No settled breadth entries yet.</div>'; }
+
+    renderBkCities();
     renderScore();
     renderRoi();
     renderBuckets();

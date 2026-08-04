@@ -52,6 +52,7 @@ goes through grading.resolves_yes — the settlement-faithful truth channel — 
 import argparse
 import ast
 import json
+import math
 from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -455,11 +456,22 @@ def _gate_line(name, sub, taker_gate, maker_gate) -> None:
     print(f"  {name}: n={n} ({g} city-day{'' if g == 1 else 's'}) wr {wr:.0%} | {tstr} | {mstr}")
 
 
-def report() -> None:
-    book = _load_book()
+def graded_book(book: pd.DataFrame = None):
+    """`(parsed, graded)` for the paper book — the ONE place entries get settled.
+
+    `parsed` is every entry whose question parses, carrying an `outcome` column (None while truth
+    is unavailable). `graded` is the settled subset, enriched with `side_won`, `net_edge` (taker:
+    half-spread crossed + the real 0.05·p·(1−p) fee) and `maker_filled` (conservative fill from
+    the forward price path).
+
+    Extracted from `report()` on 2026-08-04 so every consumer reads the SAME frame. The dashboard
+    previously scraped these numbers out of the report's printed TEXT and separately re-derived
+    grading for its equity curve — two copies of this logic that silently diverged the moment the
+    report's format changed. See `build_dashboard._book_binds`.
+    """
+    book = _load_book() if book is None else book
     if book.empty:
-        print("structure book: no paper entries yet — run after a collector snapshot lands.")
-        return
+        return pd.DataFrame(), pd.DataFrame()
     rows = []
     for _, r in book.iterrows():
         pq = parse_question(r["question"])
@@ -467,12 +479,12 @@ def report() -> None:
             continue
         y = resolves_yes(r["city"], r["target_date"], r["question"], pq["temp_c"])
         rows.append({**r, "outcome": None if y is None else int(y)})
-    df = pd.DataFrame(rows)
-    graded = df.dropna(subset=["outcome"]).copy()
-    print(f"STRUCTURE PAPER BOOK: {len(df)} entries "
-          f"({len(graded)} graded, {len(df) - len(graded)} awaiting truth)")
+    parsed = pd.DataFrame(rows)
+    if parsed.empty:
+        return parsed, pd.DataFrame()
+    graded = parsed.dropna(subset=["outcome"]).copy()
     if graded.empty:
-        return
+        return parsed, graded
     graded["side_won"] = (graded["outcome"] == 1) == (graded["side"] == "Yes")
     graded["net_edge"] = _net_edge(graded["side_won"], graded["entry_side_price"].astype(float))
     # Conservative maker fill per entry (needs the forward price path after the entry snapshot).
@@ -486,6 +498,61 @@ def report() -> None:
         return maker_filled(r["side"], float(r["entry_yes_price"]), after)
 
     graded["maker_filled"] = graded.apply(_fill, axis=1)
+    return parsed, graded
+
+
+def per_city_stats(graded: pd.DataFrame, lo: float = 0.05, hi: float = 0.35,
+                   min_n: int = 1) -> list:
+    """Per-CITY taker edge over the yes∈[lo,hi)¢ shoulder band. DESCRIPTIVE ONLY.
+
+    ⚠️ This is a multiple-comparisons machine, and it is published next to gates that exist
+    precisely to stop point estimates being read as evidence. Across ~50 cities, ~2-3 will show a
+    95% CI excluding zero under a TRUE NULL (0.05 × 50 = 2.5). So the top of this table is what
+    noise looks like; it is not a city-selection rule, and nothing here is pre-registered. Any
+    city that looks good here would need its OWN forward gate, declared before the fact, exactly
+    like Leg 1b — see MOD_PREREG_DATE. Callers should publish `sig` counts beside the
+    chance expectation so the reader can make that comparison without doing arithmetic.
+
+    Returns one dict per city (n ≥ min_n), sorted by taker edge descending.
+    """
+    need = {"city", "entry_yes_price", "side_won", "entry_side_price"}
+    if graded is None or graded.empty or not need.issubset(graded.columns):
+        return []
+    yes = graded["entry_yes_price"].astype(float)
+    band = graded[(yes >= lo) & (yes < hi)].copy()
+    if band.empty:
+        return []
+    band["_taker"] = _net_edge(band["side_won"], band["entry_side_price"].astype(float))
+    rows = []
+    for city, g in band.groupby("city"):
+        if len(g) < min_n:
+            continue
+        v = gate_verdict(g["_taker"], cluster_key(g), 0, 0.0)
+        # A single-cluster city has an undefined SE, so its bounds come back ±inf. Emit None:
+        # json.dump would otherwise write bare `Infinity`, which is not valid JSON and makes the
+        # browser's JSON.parse throw — taking the whole dashboard down, not just this table.
+        lo_ci, hi_ci = v["ci_lo"], v["ci_hi"]
+        rows.append({"city": str(city), "n": int(len(g)),
+                     "clusters": v["n_clusters"], "dates": v["n_dates"],
+                     "wr": float(g["side_won"].mean()),
+                     "taker": float(g["_taker"].mean()),
+                     "lo": lo_ci if math.isfinite(lo_ci) else None,
+                     "hi": hi_ci if math.isfinite(hi_ci) else None,
+                     # 95% CI clear of zero — counted, never acted on (see the warning above)
+                     "sig": bool(math.isfinite(lo_ci) and (lo_ci > 0 or hi_ci < 0))})
+    rows.sort(key=lambda r: r["taker"], reverse=True)
+    return rows
+
+
+def report() -> None:
+    parsed, graded = graded_book()
+    if parsed.empty:
+        print("structure book: no paper entries yet — run after a collector snapshot lands.")
+        return
+    print(f"STRUCTURE PAPER BOOK: {len(parsed)} entries "
+          f"({len(graded)} graded, {len(parsed) - len(graded)} awaiting truth)")
+    if graded.empty:
+        return
 
     sh = graded[graded["leg"] == "shoulder"]
     fav = graded[graded["leg"] == "favorite"]

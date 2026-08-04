@@ -1575,48 +1575,109 @@ def test_dashboard_completeness_guard():
     assert set(bd._missing_cities({})) == set(bd.CITY_ORDER)
 
 
-_BOOK_REPORT_NOW = """STRUCTURE PAPER BOOK: 210 entries (151 graded, 59 awaiting truth)
-  Leg1 shoulder full [5,35)¢: n=150 (54 city-days) wr 86% | taker +0.023 CI[-0.023,+0.070] (150/150@+0.023v+0.020, CI spans 0) | maker 51/150 filled +0.072
-  Leg1 shoulder core [20,35)¢: n=62 (42 city-days) wr 79% | taker +0.049 CI[-0.038,+0.136] (62/80@+0.049v+0.030, CI spans 0) | maker 24/62 filled +0.108
-  Leg1b moderate shoulder [10,25)¢ — pre-reg 2026-07-23
-    context (incl. in-sample): n=68 wr 87% taker +0.017 | maker 26/68 +0.132
-    FORWARD gate (entered≥pre-reg): n=16 taker -0.042 [16/80@-0.042v+0.030] | maker 5/16 +0.174
-  Leg2 favorite core [65,75)¢: n=1 (1 city-day) wr 0% | taker -0.671 (1/80@-0.671v+0.030, 1/30 city-days) | maker 0 filled
-"""
+def _synthetic_book(n_fwd=12, n_pre=6):
+    """A paper book with entries either side of the Leg 1b pre-registration date.
 
-_BOOK_REPORT_OLD = """STRUCTURE PAPER BOOK: 210 entries (151 graded, 59 awaiting truth)
-  Leg1 shoulder full [5,35)¢: n=150 wr 86% | taker +0.023 | maker 51/150 filled +0.072
-  Leg1 shoulder core [20,35)¢: n=62 wr 79% | taker +0.049 | maker 24/62 filled +0.108
-  Leg2 favorite core [65,75)¢: n=1 wr 0% | taker -0.671 | maker 0 filled
-"""
+    Every entry is a shoulder SELL (side 'No') in the moderate band, on its own city-day so the
+    clustered SE is defined.
+    """
+    import pandas as pd
+    import shoulder_book as sb
+    rows = []
+    for i in range(n_pre + n_fwd):
+        fwd = i >= n_pre
+        day = f"2026-07-{(24 if fwd else 10) + (i % 6):02d}"
+        rows.append({
+            "entered_at_utc": f"{day}T12:00:00+00:00",
+            "city": ["NYC", "London", "Seoul"][i % 3], "condition_id": f"c{i}",
+            "question": "q", "target_date": day, "leg": "shoulder", "side": "No",
+            "entry_yes_price": 0.15, "entry_side_price": 0.85, "band": "moderate",
+            "liquidity": 5000.0, "outcome": 0.0,
+        })
+    graded = pd.DataFrame(rows)
+    graded["side_won"] = True                       # a NO-sell on a bin that resolved NO
+    graded["net_edge"] = sb._net_edge(graded["side_won"], graded["entry_side_price"])
+    graded["maker_filled"] = False
+    parsed = pd.concat([graded, graded.head(3).assign(outcome=None)], ignore_index=True)
+    return parsed, graded
 
 
-def test_shoulder_report_parse_survives_the_city_days_and_CI_columns():
-    """2026-07-27 regression: adding '(54 city-days)' and 'CI[...]' to the report line broke the
-    dashboard's n=(\\d+)\\s+wr regex, blanking Win rate and the Leg 1 edge on the published page
-    (SB_WR 87 -> '—', SB_FULL +0.030 -> '—') and silently reporting Leg 2 as 0 graded."""
+def test_book_binds_never_silently_fall_back_to_defaults(monkeypatch):
+    """The dashboard's book panel must be computed from the graded FRAME, not scraped from the
+    report's printed text. The scrape broke twice, silently, both times leaving the panel on its
+    zero/'—' defaults while the workflow stayed green:
+
+      * 2026-07-27 — new '(54 city-days)' and 'CI[...]' columns blanked Win rate and Leg 1 edge;
+      * 2026-08-02 — the GATE_MIN_DATES amendment appended '(12/30 dates)' to the Leg 1b line and
+        the gate regex anchored past it, so the public page published Leg 1b as **0/80 forward**
+        for two days while the book actually stood at 78/80, +0.025.
+
+    The old fixture-based tests passed through BOTH, because the fixture was a hand-written copy
+    of the report format rather than the producer's real output. This asserts the property that
+    actually failed: with a non-empty book, no SB_* bind may hold its default.
+    """
     import build_dashboard as bd
-    d = bd._parse_book_scalars(_BOOK_REPORT_NOW)
-    assert (d["sb_entries"], d["sb_graded"], d["sb_await"]) == ("210", "151", "59")
-    assert d["sb_wr"] == "86"                 # was blanked
-    assert d["sb_full"] == "+0.023"           # was blanked
-    assert d["sb_core"] == "+0.049"
-    assert d["sb_fav_graded"] == "1"          # was silently reported as 0
-    assert (d["sb_mod_fwd_n"], d["sb_mod_fwd"]) == ("16", "-0.042")
-    assert d["sb_mod_need"] == "80" and d["sb_mod_pass"] == "0"
+    parsed, graded = _synthetic_book()
+    bd._book_graded.cache_clear()
+    monkeypatch.setattr(bd, "_book_graded", lambda: (parsed, graded))
+    b = bd._book_binds()
+    assert "SB_ERR" not in b, b.get("SB_ERR")
+    assert (b["SB_ENTRIES"], b["SB_GRADED"], b["SB_AWAIT"]) == ("21", "18", "3")
+    assert b["SB_WR"] == "100" and b["SB_FULL_N"] == "18"
+    assert b["SB_FULL"].startswith("+")
+    # the 2026-08-02 failure, stated directly: forward entries exist, so this cannot read "0"
+    assert b["SB_MOD_FWD_N"] == "12" and b["SB_MOD_FWD"] != "—"
+    assert b["SB_MOD_NEED"] == "80" and b["SB_MOD_PASS"] == "0"
 
 
-def test_shoulder_report_parse_still_reads_the_pre_amendment_format():
-    """The parser must not simply be re-pinned to today's format — older reports still parse."""
+def test_book_binds_agree_with_the_printed_report(monkeypatch, capsys):
+    """Pins the two representations together. The report still prints (it is the CLI surface and
+    truth-eval reads it), so a format change must not be able to make page and terminal disagree
+    — which is what the deleted regex parser allowed. Uses the producer's REAL output, never a
+    hand-copied fixture."""
+    import re
     import build_dashboard as bd
-    d = bd._parse_book_scalars(_BOOK_REPORT_OLD)
-    assert d["sb_wr"] == "86" and d["sb_full"] == "+0.023" and d["sb_fav_graded"] == "1"
+    import shoulder_book as sb
+    parsed, graded = _synthetic_book()
+    bd._book_graded.cache_clear()
+    monkeypatch.setattr(bd, "_book_graded", lambda: (parsed, graded))
+    monkeypatch.setattr(sb, "graded_book", lambda book=None: (parsed, graded))
+    sb.report()
+    text = capsys.readouterr().out
+    b = bd._book_binds()
+    printed = re.search(r"FORWARD gate[^:]*:\s*n=(\d+)", text)
+    assert printed, text
+    assert printed.group(1) == b["SB_MOD_FWD_N"]
+    head = re.search(r"PAPER BOOK:\s*(\d+) entries \((\d+) graded", text)
+    assert (head.group(1), head.group(2)) == (b["SB_ENTRIES"], b["SB_GRADED"])
 
 
-def test_shoulder_report_parse_marks_a_passed_gate():
-    import build_dashboard as bd
-    passed = _BOOK_REPORT_NOW.replace("[16/80@-0.042v+0.030]", "[✅MOD-GATE]")
-    assert bd._parse_book_scalars(passed)["sb_mod_pass"] == "1"
+def test_per_city_stats_flags_chance_significance_without_acting_on_it():
+    """The per-city breakdown is a multiple-comparisons machine, so it must ship the ingredients
+    for the chance comparison (n, dates, interval, sig) and must never itself select a city."""
+    import shoulder_book as sb
+    _, graded = _synthetic_book()
+    rows = sb.per_city_stats(graded, min_n=1)
+    assert {r["city"] for r in rows} == {"NYC", "London", "Seoul"}
+    assert all({"n", "dates", "clusters", "wr", "taker", "lo", "hi", "sig"} <= set(r) for r in rows)
+    assert rows == sorted(rows, key=lambda r: r["taker"], reverse=True)
+    # min_n suppresses rows too thin to mean anything
+    assert sb.per_city_stats(graded, min_n=99) == []
+    # out-of-band entries are excluded by the band filter
+    assert sb.per_city_stats(graded, lo=0.30, hi=0.35) == []
+
+
+def test_per_city_stats_emits_null_not_infinity_for_a_single_cluster():
+    """json.dump writes bare `Infinity` for an inf bound — invalid JSON, so the browser's
+    JSON.parse throws and the WHOLE dashboard goes blank, not just this table."""
+    import json
+    import shoulder_book as sb
+    _, graded = _synthetic_book()
+    one = graded[(graded["city"] == "NYC")].head(1)          # 1 row -> 1 cluster -> SE undefined
+    rows = sb.per_city_stats(one, min_n=1)
+    assert rows and rows[0]["lo"] is None and rows[0]["hi"] is None
+    assert rows[0]["sig"] is False
+    assert "Infinity" not in json.dumps(rows)
 
 
 
@@ -1729,14 +1790,41 @@ def test_every_edge_cell_is_sign_coloured():
     assert 'bkfullmaker' in src.split("<script")[-1] or 'getElementById("bkfullmaker")' in src
 
 
-def test_leg1_row_shows_leg1_graded_count_not_the_whole_book():
+def test_leg1_row_shows_leg1_graded_count_not_the_whole_book(monkeypatch):
     """The '1 · sell shoulder' row bound SB_GRADED (every leg, 151) while Leg 1 itself had 150 —
     the extra row is the single graded Leg 2 favourite."""
-    import build_dashboard as bd
     import inspect
+
+    import pandas as pd
+    import build_dashboard as bd
+    parsed, graded = _synthetic_book()
+    fav = graded.head(1).assign(leg="favorite", side="Yes", entry_yes_price=0.70,
+                                entry_side_price=0.70, band="fav_core", condition_id="f0")
+    graded = pd.concat([graded, fav], ignore_index=True)
+    bd._book_graded.cache_clear()
+    monkeypatch.setattr(bd, "_book_graded", lambda: (parsed, graded))
+    b = bd._book_binds()
+    assert b["SB_FULL_N"] == "18" and b["SB_GRADED"] == "19"   # Leg 1 only vs every leg
+    assert b["SB_FAV_GRADED"] == "1"
+    assert '<td class="city">1 · sell shoulder</td><td class="num" data-bind="SB_FULL_N"' \
+        in inspect.getsource(bd)
+
+
+def test_breadth_panel_publishes_its_curve_and_per_city_table():
+    """The breadth book carries ~10x the 5-city book's inventory and had no chart at all — two
+    summary rows, so a reader could not tell whether its edge accrued steadily or arrived on a
+    couple of days. That distinction is the whole point of GATE_MIN_DATES, so it must be visible.
+    The per-city table must ship its chance-expectation line in the same breath as the ranking."""
+    import inspect
+    import build_dashboard as bd
     src = inspect.getsource(bd)
-    assert '"SB_FULL_N": G("sb_full_n"' in src              # exposed in the payload
-    assert '<td class="city">1 · sell shoulder</td><td class="num" data-bind="SB_FULL_N"' in src
+    assert 'id="c_bkequity"' in src and 'id="bkcities"' in src
+    assert "lineChart(\"c_bkequity\"" in src
+    assert "c_bkequity" in src.split("forEach(function (id)")[0].rsplit("[\"c_acc\"", 1)[-1] \
+        or '"c_equity", "c_bkequity"' in src        # cleared on redraw like every other chart
+    # the multiple-comparisons framing is not optional decoration
+    assert "by chance alone" in src and "not a city-selection rule" in src
+    assert "bk_equity" in src and "bk_cities" in src
 
 
 def test_breadth_full_band_maker_is_published_not_hidden():
