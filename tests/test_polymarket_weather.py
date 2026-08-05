@@ -2065,6 +2065,43 @@ def test_equity_curves_plot_return_on_capital_not_summed_units():
     assert 'id="c_bkwr"' in src
 
 
+def test_retrain_buys_time_by_splitting_jobs_not_by_raising_a_cap_that_cannot_move():
+    """GitHub terminates any single job on a hosted runner at 6 hours. `timeout-minutes` can only
+    LOWER that ceiling — setting 720 changes nothing and the job still dies at 360, which is what
+    killed the 2026-08-02 retrain at exactly 06:00:24. The budget is per JOB, so the way to get
+    more time is to split, and each half then gets its own 6h."""
+    import yaml
+    from pathlib import Path
+    wf = yaml.safe_load(
+        (Path(__file__).resolve().parents[1] / ".github/workflows/retrain.yml").read_text())
+    jobs = wf["jobs"]
+    assert set(jobs) == {"archives", "train"}, "the retrain is no longer split into two jobs"
+    assert jobs["train"].get("needs") == "archives", "training must wait for the archives"
+    for name, j in jobs.items():
+        assert j["timeout-minutes"] <= 360, (
+            f"{name}: a hosted job cannot exceed 360 min — a larger value is silently ignored "
+            f"and the job is killed at 6h anyway")
+
+    def step_names(j):
+        return [s.get("name", "") for s in j["steps"]]
+
+    # The expensive, timeout-prone half must not spend its budget on training-only work.
+    arch = " ".join(step_names(jobs["archives"]))
+    assert "Per-lead MIN archives" in arch and "Bank cache (after Tmin)" in arch
+    assert "Station truth" not in arch, "the fetch job is doing training-only work"
+    assert "Train per-lead EMOS" not in arch
+    # The training half needs the truth/targets rebuild it no longer inherits.
+    tr = " ".join(step_names(jobs["train"]))
+    for need in ("Station truth", "Hourly station observations",
+                 "Rebuild settlement-faithful training targets",
+                 "Restore per-lead forecast archives", "Train per-lead EMOS", "Commit refreshed"):
+        assert need in tr, f"train job is missing: {need}"
+
+    # Twice weekly: a 7-day cron sits exactly on GitHub's 7-day cache eviction boundary.
+    crons = [c["cron"] for c in (wf.get(True) or wf.get("on"))["schedule"]]
+    assert len(crons) >= 2, "a single weekly cron re-creates the cache-expiry deadlock"
+
+
 def test_roi_is_printed_with_its_interval_and_flags_a_one_bet_result():
     """A bare ROI invites exactly one mistake, and it was nearly made: the raw ensemble's '+2.2%'
     was treated as a bar the model had to beat. All of that came from 128 markets the model did not

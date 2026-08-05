@@ -60,8 +60,18 @@ concurrency:
 permissions:
   contents: write
 
+# ── SPLIT INTO TWO JOBS ON PURPOSE ──────────────────────────────────────────────────────────
+# `timeout-minutes: 720` does NOT work. GitHub terminates any single job on a hosted runner at
+# 6 hours; `timeout-minutes` can only LOWER that ceiling, never raise it. The 2026-08-02 run
+# proved it — it was killed at exactly 06:00:24 with a 360 cap set.
+#
+# The budget is per JOB, so two chained jobs get 6h each. The expensive, timeout-prone half is
+# the archive fetching, and it needs nothing from the truth/target rebuild — so it runs alone
+# with a full 6h, banks its caches, and the training half restores them into a fresh 6h.
+# Combined with the twice-weekly cadence above (which keeps the cache from expiring at all),
+# a cold run can now actually finish instead of dying at the cap forever.
 jobs:
-  retrain:
+  archives:
     runs-on: ubuntu-latest
     # 360 (the hosted-runner hard cap) for the COLD-cache runs: refetching every leads archive
     # (best_match + mm + cand incl. jma) 2022→now is ~3-4h, worse on a slow-API day — the 240
@@ -81,25 +91,9 @@ jobs:
       - name: Install dependencies
         run: pip install -r src/polymarket_weather/requirements.txt
 
-      - name: Station truth (NWS CLI / IEM METAR / HKO)
-        working-directory: src/polymarket_weather
-        run: python fetch_historical_truth.py
-
-      # wu_truth.py input — see truth-eval.yml. Prerequisite for the rebuild below, which
-      # blends the WU reconstruction into the training targets.
-      - name: Hourly station observations (wu_truth input)
-        working-directory: src/polymarket_weather
-        run: python fetch_station_obs.py
-
-      # W0.2 training targets. train_calibrator.py reads {slug}_settlement_actuals.csv via
-      # settlement_truth.load_training_truth, and that file is COMMITTED but rebuilt by no
-      # workflow — so it freezes at whenever someone last ran this by hand, and the merge
-      # against it silently drops every newer date from training. Rebuild in-runner (from the
-      # truth + obs fetched above) so training always covers through yesterday. Not committed:
-      # this workflow only adds models/ and output/, and the in-runner copy is what trains.
-      - name: Rebuild settlement-faithful training targets
-        working-directory: src/polymarket_weather
-        run: python settlement_truth.py
+      # NOTE: truth / obs / settlement-target rebuild are deliberately NOT here — they feed
+      # TRAINING, not the Open-Meteo archive pulls below, so this job spends its whole 6h on the
+      # part that actually times out. The `train` job rebuilds them itself.
 
       # Cache the previous-runs leads archives across runs. Gitignored and refetched 2022→now
       # every cold run (~3-4h on a slow-API day). Paired with the incremental fetch in
@@ -187,6 +181,54 @@ jobs:
           path: |
             src/polymarket_weather/data/weather/*_historical_leads*.csv
           key: leads-archive-${{ github.run_id }}-4-min
+
+  train:
+    needs: archives
+    runs-on: ubuntu-latest
+    # Its OWN 6h. Restores whatever `archives` banked (restore-keys picks the most recent match,
+    # which is this run's). If `archives` hit the cap this job does not run at all — the caches
+    # are still banked, so the next run resumes warmer, exactly as the single-job version did.
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: src/polymarket_weather/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r src/polymarket_weather/requirements.txt
+
+      - name: Station truth (NWS CLI / IEM METAR / HKO)
+        working-directory: src/polymarket_weather
+        run: python fetch_historical_truth.py
+
+      # wu_truth.py input — see truth-eval.yml. Prerequisite for the rebuild below, which
+      # blends the WU reconstruction into the training targets.
+      - name: Hourly station observations (wu_truth input)
+        working-directory: src/polymarket_weather
+        run: python fetch_station_obs.py
+
+      # W0.2 training targets. train_calibrator.py reads {slug}_settlement_actuals.csv via
+      # settlement_truth.load_training_truth, and that file is COMMITTED but rebuilt by no
+      # workflow — so it freezes at whenever someone last ran this by hand, and the merge
+      # against it silently drops every newer date from training. Rebuild in-runner (from the
+      # truth + obs fetched above) so training always covers through yesterday. Not committed:
+      # this workflow only adds models/ and output/, and the in-runner copy is what trains.
+      - name: Rebuild settlement-faithful training targets
+        working-directory: src/polymarket_weather
+        run: python settlement_truth.py
+
+      - name: Restore per-lead forecast archives
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            src/polymarket_weather/data/weather/*_historical_leads*.csv
+          key: leads-archive-${{ github.run_id }}
+          restore-keys: |
+            leads-archive-
 
       - name: Train per-lead EMOS v2 calibrators
         working-directory: src/polymarket_weather
