@@ -60,6 +60,17 @@ jobs:
         working-directory: src/polymarket_weather
         run: python main.py --collect-only
 
+      # Minute-resolution prices for bins quoted on BOTH venues (megaplan 13f). The routine
+      # collector samples each venue once an hour, so "which venue moved first" has no
+      # observations at all — the question is unmeasurable rather than merely underpowered.
+      # Scoped to near-dated matched bins and pruned to RETAIN_DAYS, so it accumulates at a
+      # bounded ~6 MB/day rather than the ~2 GB/year an unscoped minute feed would cost.
+      # Best-effort: this is an experiment and must never block the routine snapshot commit.
+      - name: Cross-venue minute prices (experiment)
+        working-directory: src/polymarket_weather
+        continue-on-error: true
+        run: python fetch_crossvenue_minute.py
+
       - name: Commit appended data
         run: |
           git config user.name "raincheck-collector"
@@ -69,7 +80,7 @@ jobs:
           # market objects for only ~2 months, so every uncommitted cycle is perishable data
           # lost permanently — and the run stays green while it happens. (Merged 2026-08-04
           # with this path missing; caught the same day, ~2 cycles of Kalshi prices lost.)
-          git add src/polymarket_weather/data/polymarket src/polymarket_weather/data/weather src/polymarket_weather/data/kalshi src/polymarket_weather/output/shoulder_paper.csv src/polymarket_weather/output/shoulder_paper_breadth.csv
+          git add src/polymarket_weather/data/polymarket src/polymarket_weather/data/weather src/polymarket_weather/data/kalshi src/polymarket_weather/data/crossvenue src/polymarket_weather/output/shoulder_paper.csv src/polymarket_weather/output/shoulder_paper_breadth.csv
           if git diff --cached --quiet; then
             echo "No new data rows — nothing to commit."
             exit 0

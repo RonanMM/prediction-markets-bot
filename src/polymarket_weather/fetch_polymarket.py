@@ -211,14 +211,20 @@ def _epoch_to_utc_iso(ts) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
 
-def fetch_price_history(token_id: str, interval: str = "1d") -> list[dict]:
+def fetch_price_history(token_id: str, interval: str = "1d",
+                        fidelity: int = 60) -> list[dict]:
     """
     Fetch CLOB price history for a token.
     interval choices: 1h, 6h, 1d, 1w, 1m
+    `fidelity` is the bucket size in MINUTES. Default 60 — the routine collector's resolution,
+    unchanged. The cross-venue lead-lag work (fetch_crossvenue_minute.py) asks for 1: at 60 the
+    two venues are sampled once an hour each, so which of them moved first WITHIN an hour is not
+    merely underpowered, it is unmeasurable. Left as a parameter rather than lowered globally
+    because minute data is ~60x the rows and price history is committed, not refetchable.
     Returns list of {t: unix_ts_ms, p: price} dicts.
     """
     url  = f"{CLOB_API_BASE}/prices-history"
-    params = {"market": token_id, "interval": interval, "fidelity": 60}
+    params = {"market": token_id, "interval": interval, "fidelity": int(fidelity)}
     data = _get(url, params)
     if not data:
         return []

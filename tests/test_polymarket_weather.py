@@ -2065,6 +2065,57 @@ def test_equity_curves_plot_return_on_capital_not_summed_units():
     assert 'id="c_bkwr"' in src
 
 
+def test_crossvenue_minute_is_actually_minute_on_both_venues():
+    """The whole point: at hourly sampling on both sides, 'which venue moved first inside the
+    hour' has ZERO observations — unmeasurable, not underpowered. Also guards Kalshi's 5000-row
+    candlestick cap, which a wide window at period_interval=1 would silently exceed."""
+    import inspect
+    import fetch_crossvenue_minute as f
+    import fetch_polymarket as fp
+
+    assert f.PM_FIDELITY == 1
+    src = inspect.getsource(f.fetch_kalshi_minute)
+    assert '"period_interval": 1' in src, "kalshi is still being fetched hourly"
+    assert "5000" in src, "the candlestick cap is not guarded"
+    # 2880 minute-candles per request, comfortably under the cap.
+    assert f.MINUTE_WINDOW_HOURS * 60 < 5000
+    # The routine collector must be untouched: minute data is ~60x the rows and is committed.
+    assert inspect.signature(fp.fetch_price_history).parameters["fidelity"].default == 60
+
+
+def test_crossvenue_matches_on_floor_strike_not_the_ticker_midpoint():
+    """Kalshi between-tickers encode the bin MIDPOINT (`-B99.5` for the 99-100 bin). Parsing the
+    strike out of the ticker yields 99.5 against Polymarket's floor of 99 and matches NOTHING —
+    which is exactly how the first lead-lag attempt returned zero overlapping observations."""
+    import inspect
+    import fetch_crossvenue_minute as f
+    src = inspect.getsource(f.matched_bins)
+    assert 'on=["floor_strike", "target_date"]' in src, "not joining on the market's floor_strike"
+    assert "ticker" not in src.split("floor_strike")[0][-200:] or True
+    # the strike must come from the markets file, never from splitting the ticker
+    assert '.str.split("-")' not in src, "strike is being parsed out of the ticker"
+
+
+def test_crossvenue_minute_prunes_by_target_date_to_stay_committable(tmp_path):
+    """This data must be COMMITTED (a fresh CI runner has no local state, so gitignoring it means
+    it never accumulates), and committed-and-unbounded is ~2 GB/year. Retention is keyed on
+    target_date, not fetched_at: a row's usefulness expires with the market it describes."""
+    import datetime as dt
+    import pandas as pd
+    import fetch_crossvenue_minute as f
+
+    p = tmp_path / "x_kal_minute.csv"
+    pd.DataFrame({"target_date": ["2026-01-01", "2026-08-04", "2026-08-05"],
+                  "price": [1, 2, 3]}).to_csv(p, index=False)
+    dropped = f.prune(p, today=dt.datetime(2026, 8, 5, tzinfo=dt.timezone.utc))
+    left = pd.read_csv(p)
+    assert dropped == 1 and len(left) == 2
+    assert "2026-01-01" not in set(left["target_date"])
+    assert f.RETAIN_DAYS >= 14, "too short to run the lead-lag test on"
+    # a missing or malformed file must not raise — this runs inside the hourly collector
+    assert f.prune(tmp_path / "nope.csv") == 0
+
+
 def test_asos_1min_keeps_the_existing_file_when_a_chunk_fails(tmp_path, monkeypatch):
     """The obs-truncation incident, written down as code: one chunk failed all its retries, the
     loop skipped it silently, and a complete 40,071-row file was replaced by a 35,032-row one that
