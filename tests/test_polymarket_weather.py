@@ -2065,6 +2065,69 @@ def test_equity_curves_plot_return_on_capital_not_summed_units():
     assert 'id="c_bkwr"' in src
 
 
+def test_guide_publishes_rendered_not_the_template_with_braces_in_it():
+    """The guide is static HTML with no JS, so an unsubstituted {{GAP}} would sit on the public
+    page as literal braces. The renderer must refuse rather than ship it, and the workflow must
+    copy the BUILT file — copying the checked-in template would publish placeholders."""
+    import pytest
+    import build_dashboard as bd
+    from pathlib import Path
+
+    assert bd.render_guide("gap is {{GAP}}", {"GAP": "+0.02"}) == "gap is +0.02"
+    with pytest.raises(KeyError) as e:
+        bd.render_guide("{{GAP}} and {{NOPE}}", {"GAP": "+0.02"})
+    assert "NOPE" in str(e.value)
+    # Nothing brace-like that isn't a placeholder gets touched (CSS/JS in the page).
+    assert bd.render_guide("a{b:c}d {{X}}", {"X": "1"}) == "a{b:c}d 1"
+
+    tpl = bd.GUIDE_SRC.read_text(encoding="utf-8")
+    keys = set(bd._PLACEHOLDER.findall(tpl))
+    assert keys, "the guide has stopped using live figures entirely"
+    supplied = set(bd.guide_values({"bind": {}, "series": {}, "generated_at": "2026-08-05T00:00:00Z"}))
+    assert keys <= supplied, f"guide uses placeholders nothing supplies: {sorted(keys - supplied)}"
+    # With an empty payload every value is still a string, so a data outage dashes rather than
+    # crashing the publish or interpolating "None"/"nan" into the prose.
+    vals = bd.guide_values({"bind": {}, "series": {}, "generated_at": "2026-08-05T00:00:00Z"})
+    for k, v in vals.items():
+        assert isinstance(v, str), f"{k} is not a string"
+        assert v not in ("None", "nan", ""), f"{k} would render as {v!r}"
+    assert "{{" not in bd.render_guide(tpl, vals)
+
+    wf = Path(__file__).resolve().parents[1] / ".github/workflows/dashboard.yml"
+    text = wf.read_text()
+    assert "cp site/guide.html pub/guide.html" in text
+    assert "cp src/polymarket_weather/guide.html" not in text, "publishes the raw template"
+
+
+def test_guide_freezes_history_and_lives_only_on_present_tense_figures():
+    """A post-mortem's chronology is a record of what was measured on a date. Re-deriving those
+    numbers from today's data would silently rewrite history — so the incident entries must stay
+    hard-coded even though the standing figures are live."""
+    import build_dashboard as bd
+    tpl = bd.GUIDE_SRC.read_text(encoding="utf-8")
+    chronology = tpl.split('id="rulers"')[1].split('id="standing"')[0]
+    assert "{{" not in chronology, "a chronology figure was made live; it is a historical fact"
+    # The incidents that must be on the record, with their as-of numbers intact.
+    for fact in ("40,071", "0 YES out of 179", "97.0% to 98.5%", "78"):
+        assert fact in chronology, f"missing incident detail: {fact}"
+    assert "Twelve times the measuring instrument was broken" in tpl
+    assert "Nine of these twelve" in tpl
+
+
+def test_model_vs_ensemble_is_a_paired_test_not_two_separate_averages():
+    """The guide calls this "the number that matters most in the entire report" and, until now,
+    published it as two independent means — the exact unpaired form the report warns about. It
+    needs the common set: the ensemble prices no Tmin bins."""
+    import inspect
+    import build_dashboard as bd
+    src = inspect.getsource(bd)
+    assert 'out["pooled"]["vs_ens"] = _pooled_gap(cs, "b_model", "b_ens")' in src
+    assert 'def _pooled_gap(w, a: str = "b_model", b: str = "b_mkt")' in src
+    tpl = bd.GUIDE_SRC.read_text(encoding="utf-8")
+    for k in ("{{VSENS}}", "{{VSENS_CI}}", "{{VSENS_N}}"):
+        assert k in tpl, f"the guide states the comparison without {k}"
+
+
 def test_five_city_panel_states_its_universe_and_both_legs_return_on_capital():
     """Two gaps a reader hit: the panel plotted Leg 1 AND Leg 1b but stated only Leg 1's return,
     and it never said which cities it covered — while the breadth panel right below it, running

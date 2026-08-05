@@ -72,6 +72,9 @@
   .mast-meta { display: flex; flex-wrap: wrap; gap: 10px 26px; margin-top: 26px;
                font-family: var(--mono); font-size: 11.5px; letter-spacing: .06em;
                text-transform: uppercase; color: var(--ink-3); }
+  .livenote { margin: 20px 0 0; max-width: 68ch; font-size: 13.5px; line-height: 1.6;
+              color: var(--ink-3); border-left: 2px solid var(--line); padding-left: 14px; }
+  p.note { font-size: 13.5px; line-height: 1.6; color: var(--ink-3); max-width: 68ch; }
 
   /* ---------- rail ---------- */
   nav.rail { position: sticky; top: 0; align-self: start; padding-top: 40px; max-height: 100vh;
@@ -213,10 +216,17 @@
   distinct modelling approaches over four months. None of them beat the market — and the
   reasons why turned out to be more interesting than a win would have been.</p>
   <div class="mast-meta">
-    <span>Report compiled 28 July 2026</span>
-    <span>5 cities · 261 graded markets</span>
+    <span>First compiled 28 July 2026 · figures current to {{COMPILED}}</span>
+    <span>5 cities · {{MKTS}} graded markets</span>
     <span>Status: forecasting book OFF</span>
   </div>
+  <p class="livenote">Figures describing <em>where things stand</em> — sample sizes, Brier scores,
+  intervals, the books' running returns — are regenerated from the live data each time this page
+  is published, from the same computation the dashboard uses, so the two cannot disagree.
+  Everything in the <a href="#rulers">chronology</a>, and every result attributed to a
+  <em>specific experiment on a specific date</em>, is deliberately frozen. Those are records of
+  what was measured at the time; re-deriving them from today's data would quietly rewrite the
+  history this report exists to keep.</p>
   <a class="backlink" href="./index.html">&larr; Back to the live dashboard</a>
 </header>
 
@@ -286,20 +296,24 @@ for each temperature bin, you should be able to spot bins the crowd has misprice
 
 <p>Every stage of that pipeline works. Data arrives hourly, models train, probabilities are
 served, bets are recorded and graded against how the markets really settled. The machinery is
-sound. <strong>The premise is what failed:</strong> across 261 graded markets, the crowd's price
-is a better forecast than anything we built — and we can now say that with a confidence interval
-rather than a shrug.</p>
+sound. <strong>The premise is what failed:</strong> across {{MKTS}} graded markets, the crowd's
+price is a better forecast than anything we built — and we can now say that with a confidence
+interval rather than a shrug.</p>
 
 <div class="stats">
-  <div class="stat"><div class="sv">0.1158</div><div class="sl">Market price</div>
+  <div class="stat"><div class="sv">{{BR_MARKET}}</div><div class="sl">Market price</div>
     <div class="sn">Brier score — lower is better</div></div>
-  <div class="stat"><div class="sv">0.1360</div><div class="sl">Raw ensemble</div>
+  <div class="stat"><div class="sv">{{BR_ENS}}</div><div class="sl">Raw ensemble</div>
     <div class="sn">Physics forecast, uncalibrated</div></div>
-  <div class="stat"><div class="sv">0.1417</div><div class="sl">Our best model</div>
-    <div class="sn">Worse than the thing it improves on</div></div>
-  <div class="stat"><div class="sv">+0.0259</div><div class="sl">Gap, with interval</div>
-    <div class="sn">95% CI [+0.008, +0.043] — real, not noise</div></div>
+  <div class="stat"><div class="sv">{{BR_MODEL}}</div><div class="sl">Our best model</div>
+    <div class="sn">Level with the physics; still behind the price</div></div>
+  <div class="stat"><div class="sv">{{GAP}}</div><div class="sl">Gap, with interval</div>
+    <div class="sn">95% CI {{GAP_CI}} — real, not noise</div></div>
 </div>
+<p class="note">The three Brier scores are measured on the {{COMMON}} markets every forecaster
+priced; the gap beside them is measured on all {{MKTS}}, because the market-versus-model question
+does not need the ensemble and loses a third of the sample to insisting on it. Different
+denominators, on purpose, each labelled.</p>
 
 <hr class="div">
 
@@ -357,7 +371,8 @@ is zero.</p>
   <p class="what">The live Polymarket price for each bin, taken as a probability. The thing we
   are trying to beat.</p>
   <div class="field"><span class="lbl">Score</span><div class="val">
-    <p>Brier <span class="num">0.1158</span> over 261 graded markets.</p></div></div>
+    <p>Brier <span class="num">{{BR_MARKET}}</span> over the {{COMMON}} markets every forecaster
+    priced.</p></div></div>
   <div class="field"><span class="lbl">Why it's hard</span><div class="val">
     <p>Its prices turn out to be almost perfectly calibrated on exactly the bins our model
     flagged as mispriced. Where we disagreed most strongly with the price, we were usually the
@@ -375,12 +390,24 @@ is zero.</p>
     Student-t distribution to the member spread and you have bin probabilities, with no
     learned parameters at all.</p></div></div>
   <div class="field"><span class="lbl">Score</span><div class="val">
-    <p>Brier <span class="num">0.1360</span> · CRPS <span class="num">1.0753</span> °C.</p></div></div>
+    <p>Brier <span class="num">{{BR_ENS}}</span> · CRPS <span class="num">{{CRPS_ENS}}</span> °C.</p></div></div>
   <div class="field"><span class="lbl">Significance</span><div class="val">
     <p><strong>This is the number that matters most in the entire report.</strong> It is what
-    every model in Family A was built to improve on — and, four months in, nothing has. A
-    calibration layer that cannot beat the raw physics it is calibrating is doing damage, not
-    work.</p></div></div>
+    every model in Family A was built to improve on. A calibration layer that cannot beat the raw
+    physics it is calibrating is doing damage, not work.</p></div></div>
+  <div class="field"><span class="lbl">Standing</span><div class="val">
+    <p>Measured properly — paired on each market, clustered by city-day — the calibrator is now
+    <strong>level with</strong> the ensemble rather than behind it:
+    <span class="num">{{VSENS}}</span>, interval <span class="num">{{VSENS_CI}}</span> over
+    {{VSENS_N}} markets and {{VSENS_DAYS}} city-days. The interval spans zero, so this is a draw,
+    not a win — but through July the same comparison ran clearly negative (0.171 against 0.159 on
+    settlement-faithful labels), and retraining the calibrator on those labels closed it.</p>
+    <p>That deserves flagging against <a href="#lessons">lesson 5</a>, which says every correction
+    so far had moved against us. This one didn't. It is also the weakest possible form of good
+    news: drawing with the free baseline you were built to beat.</p>
+    <p class="note">Until 4 August this comparison was published as two separate averages, which
+    is the unpaired form the report spends a whole section warning about. It now uses the same
+    paired, clustered test as the headline gap.</p></div></div>
 </div>
 
 <div class="entry">
@@ -832,9 +859,12 @@ likely ones. If temperature bins show it too, you can harvest it without any met
   <p class="what">Sell bins priced between 5¢ and 35¢ the day before — the plausible-looking
   longshots two or three degrees off the forecast centre.</p>
   <div class="field"><span class="lbl">Result</span><div class="val">
-    <p>159 settled contracts, <span class="num">+0.036</span> per contract, 87% win rate. And on
-    27 July it formally <strong>passed its pre-registered gate</strong> — the first thing in this
-    project ever to do so.</p>
+    <p>As it stands: <span class="num">{{SB_FULL_N}}</span> settled contracts,
+    <span class="num">{{SB_FULL}}</span> per contract, {{SB_WR}}% win rate — a return on the
+    capital actually laid out of <span class="num">{{BOOK_NET}}</span>, against a break-even win
+    rate of {{BOOK_BE}}%. On 27 July, at 159 contracts and +0.036, it formally
+    <strong>passed its pre-registered gate</strong> — the first thing in this project ever to
+    do so.</p>
     <p class="t-fail">It should not have counted, for two independent reasons.</p></div></div>
   <div class="field"><span class="lbl">Why it doesn't count</span><div class="val">
     <p><strong>Underpowered.</strong> Over 54 independent city-days the interval was
@@ -843,9 +873,16 @@ likely ones. If temperature bins show it too, you can harvest it without any met
     edge: detecting a true 2¢ advantage at conventional power needs roughly
     <strong>1,760 independent bets</strong>.</p>
     <p><strong>It doesn't replicate.</strong> The breadth book (below) runs the same strategy
-    across 49 cities and puts the identical band at <span class="num">+0.005</span> — and
-    <em>flips the sign</em> of the sub-band that looked strongest. Two samples disagreeing about
-    which part carries the effect is what noise looks like.</p>
+    across {{BK_CITIES}} cities and puts the identical band at
+    <span class="num">{{BK_FULL_NET}}</span> — and <em>flips the sign</em> of the sub-band that
+    looked strongest. Two samples disagreeing about which part carries the effect is what noise
+    looks like.</p>
+    <p>Both failures produced permanent amendments, and gates in this project only ever tighten.
+    From <strong>27 July</strong> a gate additionally requires its clustered interval to exclude
+    zero over at least 30 independent city-days. From <strong>2 August</strong> it also requires
+    at least 30 distinct target dates — because 362 city-days turned out to be 50 cities across
+    8 dates, and breadth inflates the cluster count without buying any calendar. Fifty cities on
+    one calm week is one weather event, counted fifty times.</p>
     <p>The 87% win rate is worth understanding, because it is seductive and meaningless on its
     own: wins average <span class="num">+0.157</span>, losses average
     <span class="num">−0.800</span>. One loss cancels five wins. A strategy like this shows ~86%
@@ -865,7 +902,7 @@ likely ones. If temperature bins show it too, you can harvest it without any met
 </div>
 
 <div class="entry">
-  <div class="entry-head"><p class="name">F3 · Breadth book — all 49 cities</p><span class="yr">since 2026-07-23</span>
+  <div class="entry-head"><p class="name">F3 · Breadth book — all {{BK_CITIES}} cities</p><span class="yr">since 2026-07-23</span>
     <span class="chip c-warn">The powered replication — reads zero</span></div>
   <p class="what">The same model-free legs extended from 5 cities to every active Polymarket
   weather market, graded off Polymarket's own settlements.</p>
@@ -875,11 +912,28 @@ likely ones. If temperature bins show it too, you can harvest it without any met
     per-city weather plumbing, no resolution anchors. It grades directly off how each market
     paid out.</p></div></div>
   <div class="field"><span class="lbl">Result</span><div class="val">
-    <p>947 settled contracts across 49 cities. Full band <span class="num">+0.005</span> per
-    contract, interval tight around zero. Decomposed by price band, the picture contradicts the
-    5-city story outright: the band that looked strongest there (25–35¢) is
-    <em>negative</em> here, and bins priced near 30¢ realise 30.2% — <strong>fairly priced</strong>,
-    so selling them merely donates the spread and fee.</p></div></div>
+    <p><span class="num">{{BK_FULL_N}}</span> settled shoulder contracts across {{BK_CITIES}}
+    cities. Full band <span class="num">{{BK_FULL_NET}}</span> per contract, interval tight around
+    zero. Decomposed by price band, the picture contradicts the 5-city story outright: the band
+    that looked strongest there (25–35¢) is <em>negative</em> here, and bins priced near 30¢
+    realise 30.2% — <strong>fairly priced</strong>, so selling them merely donates the spread and
+    fee. What survives is the moderate 10–25¢ sub-band, {{BK_MOD_N}} contracts at
+    <span class="num">{{BK_MOD_NET}}</span>, pre-registered and still short of the calendar its
+    gate now demands.</p></div></div>
+  <div class="field"><span class="lbl">Why the win rate can't be read on its own</span><div class="val">
+    <p>This is a short-volatility payoff: it wins small and often and loses big and rarely. Over
+    the breadth book a win pays +14.7¢ and a loss costs −82.9¢, a 5.6× ratio, so the strategy
+    needs roughly 84% wins simply to break even and currently runs at {{BK_WR}}%. The win rate
+    alone says nothing; only its distance above break-even does, and that distance is under a
+    percentage point. A payoff shaped like this draws a smooth rising line right up until the
+    tail lands — the smoothness is not evidence, it is the signature.</p></div></div>
+  <div class="field"><span class="lbl">Maker economics, re-measured</span><div class="val">
+    <p>Polymarket charges makers nothing on weather and rebates 25% of collected taker fees, so
+    resting orders looked like the obvious improvement. On the repaired fill detector the maker
+    edge is <strong>not established</strong>: full band <span class="num">{{BK_FULL_MAKER}}</span>
+    per filled contract, and at comparable liquidity the 5-city and breadth books read +0.056
+    [−0.018, +0.129] and −0.007 [−0.028, +0.015] — both consistent with zero. Free fees do not
+    manufacture an edge; they only stop subtracting one.</p></div></div>
   <div class="field"><span class="lbl">The one real finding</span><div class="val">
     <p>Splitting by liquidity produces the only statistically significant result in the entire
     structure programme, and it is a warning rather than an opportunity: in thin books (under
@@ -889,10 +943,44 @@ likely ones. If temperature bins show it too, you can harvest it without any met
     <strong>Don't make markets where nobody trades.</strong></p></div></div>
 </div>
 
+<div class="entry">
+  <div class="entry-head"><p class="name">F4 · Cut the losing cities</p><span class="yr">since 2026-08-04</span>
+    <span class="chip c-warn">Pre-registered to be falsified</span></div>
+  <p class="what">The most natural idea anyone has when shown a per-city table: keep the cities
+  that are winning, drop the ones that aren't.</p>
+  <div class="field"><span class="lbl">What it looks like</span><div class="val">
+    <p>Spectacular. Return on capital across all {{BK_CITIES}} cities is
+    <span class="num">{{BK_FULL_NET}}</span> per contract; keeping only the 31 cities with a
+    non-negative mean lifted it 2.8×, and keeping the best 12 lifted it 5.5×, from +0.80% to
+    +4.38% on capital.</p></div></div>
+  <div class="field"><span class="lbl">Why it is almost entirely fake</span><div class="val">
+    <p>Reshuffle which city each city-day belongs to — destroying city identity while keeping
+    every price, outcome, date and cluster size exactly as they were — then apply the identical
+    "keep the winners" rule. Across 2,000 permutations that yields
+    <strong>+2.15%</strong>. The real data yields <strong>+2.21%</strong>: the
+    <strong>60th percentile of pure noise</strong>. The rule manufactures nearly the whole gain
+    when there is provably nothing to find.</p>
+    <p>Two further checks agree. The spread of per-city means (sd 0.0252) barely exceeds what
+    sampling noise alone predicts (0.0243) — 49 cities are hard to distinguish from 49 draws of
+    one number. And city edge in the first half of the sample predicts the second half at
+    <strong>ρ = +0.14</strong>, with sign agreement of 49% — a coin flip.</p></div></div>
+  <div class="field"><span class="lbl">Why it was registered anyway</span><div class="val">
+    <p>Because "I am confident this is noise" is an assertion, and a forward gate is a test. Two
+    nested city sets were frozen as literal lists on 4 August, with a threshold copied from the
+    existing gate rather than tuned to the observed cut, and only markets recorded after that
+    date can ever count. The prediction — written down in advance — is that both fail. If one
+    comes back positive, that is informative <em>precisely because</em> this paragraph said it
+    wouldn't.</p>
+    <p>The engineering point matters as much as the statistical one: the lists are hard-coded
+    constants. A selection recomputed at publish time would quietly re-fit itself on every build,
+    so the gate could never fail — it would score its own training data forever while displaying
+    a healthy number. That is the same shape as every entry in the chronology below.</p></div></div>
+</div>
+
 <hr class="div">
 
 <h2 class="sec" id="rulers">Chronology</h2>
-<p class="sec-title">Nine times the measuring instrument was broken</p>
+<p class="sec-title">Twelve times the measuring instrument was broken</p>
 
 <p>This is the part of the project with the most transferable value. Every one of these was
 found <em>after</em> it had already produced numbers that were believed. Every single correction
@@ -963,13 +1051,66 @@ matters here, because each fix changed the numbers the next stage was reasoning 
     <p>The daily job rebuilt only one of the two files the headline comparison needs. The other
     came from a manual job last run three days earlier, so the published verdict sat perfectly
     still while looking perfectly healthy.</p></li>
+
+  <li><span class="when">30 July 2026</span>
+    <p class="tl-t">A partial download overwrote a complete file</p>
+    <p>The observation fetcher pulls one chunk per year. One year's chunk failed all four
+    retries, the loop skipped it silently, and the surviving 35,032 rows cleared the only guard —
+    an absolute floor of "at least 20,000 rows". A complete 40,071-row file was overwritten,
+    losing <strong>every observation for the current year</strong>, after which the
+    settlement-faithful grader returned nothing for recent dates and grading fell back to the
+    wrong thermometer again.</p>
+    <p>On the same sample the settlement audit fell from 97.0% to 94.7%, and the headline gap
+    moved from <span class="num">+0.0178</span>, interval entirely above zero, to
+    <span class="num">+0.0122</span>, interval spanning it. <strong>The project's central verdict
+    flipped from "the model is measurably worse" to "indistinguishable" on a single dropped HTTP
+    request</strong>, and was published. Nothing errored.</p>
+    <p>The fix is a comparison, not a threshold: a refetch may never write fewer rows or an older
+    latest observation than the file already on disk. An absolute floor cannot detect a
+    regression — only a comparison against the previous state can. The publish step also now runs
+    the settlement audit, which it never had, and that asymmetry is precisely why this one reached
+    the public page.</p></li>
+
+  <li><span class="when">31 July 2026</span>
+    <p class="tl-t">A ruler calibrated in the wrong units</p>
+    <p>Each city records the precision its source publishes. Hong Kong's observatory publishes
+    tenths of a degree, so the field read "0.1 °C" — but the <em>markets</em> ask whether the
+    reading will be "31°C", a whole-degree bucket. Comparing a tenths-grid observation to a
+    whole-degree bin means 27.8 never equals 27, so <strong>every Hong Kong bin graded NO:
+    0 YES out of 179</strong>, while the other four cities ran 12–23%.</p>
+    <p>Any strategy that sells a Hong Kong bin therefore looked like a guaranteed win, and Hong
+    Kong was 24% of the structure book — it would have inflated the first gate to mature. The
+    correct rule was <em>inferred</em> rather than assumed: across 171 markets holding both a real
+    settlement and an observation, truncation agrees 171 times out of 171, round-to-nearest 94%.
+    The market floors. The settlement audit rose from 97.0% to 98.5% on the change.</p>
+    <p><strong>Why the audit never caught it:</strong> Hong Kong's agreement rate is dominated by
+    trivially-correct NOs, so a rule that says NO to everything still scores ~97%. An aggregate
+    agreement rate cannot detect a systematically one-sided error. The cheap detector is a
+    per-city table of how often each city says YES — 0.000 against 0.124–0.228 is visible
+    instantly.</p></li>
+
+  <li><span class="when">4 August 2026</span>
+    <p class="tl-t">A gate readout scraped from its own printed report</p>
+    <p>The dashboard obtained one gate's forward count by regular-expression matching the text
+    that the command-line report prints. An unrelated amendment two days earlier added a column
+    to that line, the pattern stopped matching, and the value fell back to its default. The
+    published page read <strong>0 of 80 settled</strong> for a leg that had actually settled
+    <strong>78</strong>, at a positive edge.</p>
+    <p>A test existed and passed throughout, because it matched the same regular expression
+    against a hand-written sample of the report — a second copy of the bug, kept in sync with
+    nothing. The fix was to delete the parser and compute the figure from the same structured
+    result the report itself prints from. A number should never be recovered from its own
+    formatting.</p></li>
 </ol>
 
 <div class="callout">
   <p class="ct">The pattern worth taking away</p>
-  <p>Six of these nine were <strong>silent</strong>: no error, no failed job, no red run. A stale
-  file, a missing column, an unmounted element, a swallowed exception. The system reported
-  success while publishing something wrong.</p>
+  <p>Nine of these twelve were <strong>silent</strong>: no error, no failed job, no red run. A
+  stale file, a missing column, an unmounted element, a swallowed exception, a truncated
+  download, a pattern that stopped matching. The system reported success while publishing
+  something wrong.</p>
+  <p>Note what the last three have in common with the first nine: not one was found by a test
+  failing. They were found by someone looking at a number and thinking it seemed off.</p>
   <p>The defence that now exists is not more tests but louder failure — builds that refuse to
   publish when a city is ungradable or an exception was caught, rather than shipping a partial
   page with a green tick.</p>
@@ -989,17 +1130,26 @@ city-day once, the answer is unambiguous:</p>
   <caption>Pooled model-minus-market Brier gap · positive means the model is worse</caption>
   <thead><tr><th>Window</th><th class="n">Markets</th><th class="n">City-days</th><th class="n">Gap</th><th class="n">95% interval</th><th>Reading</th></tr></thead>
   <tbody>
-    <tr class="hi"><td>All</td><td class="n">261</td><td class="n">143</td><td class="n t-fail">+0.0259</td><td class="n">[+0.0084, +0.0434]</td><td class="t-fail">model measurably worse</td></tr>
-    <tr><td>Last 60</td><td class="n">60</td><td class="n">32</td><td class="n">+0.0038</td><td class="n">[−0.0255, +0.0331]</td><td>indistinguishable</td></tr>
+    <tr class="hi"><td>All</td><td class="n">{{MKTS}}</td><td class="n">{{CITYDAYS}}</td><td class="n t-fail">{{GAP}}</td><td class="n">{{GAP_CI}}</td><td class="t-fail">model measurably worse</td></tr>
+    <tr><td>Last 60</td><td class="n">{{N60}}</td><td class="n">{{GAP60_DAYS}}</td><td class="n">{{GAP60}}</td><td class="n">{{GAP60_CI}}</td><td>indistinguishable</td></tr>
   </tbody></table></div>
 
 <p>The whole interval sits above zero on the full record: this is a real gap, not sampling noise.
 On the most recent 60 markets the gap shrinks and the interval spans zero — worth watching, but
 60 markets is far too few to call it improvement.</p>
 
+<p class="note">Both rows update with the data. The sample has more than doubled since this report
+was first written, for a reason worth recording: on 30 July the market-discovery step was found
+to be capturing roughly <strong>9%</strong> of available markets. It paged through a listing
+endpoint that returned an error at a certain depth, and the code read that error as
+"end of list". Switching to tag-based discovery took capture from 24 markets per cycle to 264.
+The verdict did not change — the interval tightened around the same answer, which is the outcome
+you hope for when the sample grows.</p>
+
 <h3>Why pairing mattered more than more data</h3>
-<p>The same 261 markets, measured three ways. The estimate never changes; only the uncertainty
-does:</p>
+<p>The same markets, measured three ways — the figures below are from the 261-market sample
+as it stood on 28 July, kept fixed so the three methods stay comparable. The estimate never
+changes; only the uncertainty does:</p>
 
 <div class="tw"><table>
   <caption>Identical data, three methods — pairing is what made the answer conclusive</caption>
@@ -1046,8 +1196,8 @@ the sharpest number on the board — its participants are pricing that station e
 
 <h3>1 · The market is not a naive counterparty</h3>
 <p>The persistent assumption behind every model here was that crowd prices are sloppy and a
-proper physics-based forecast should beat them. On 261 markets the price beat every model, every
-baseline, and every combination — in all five cities. Its prices are best calibrated precisely
+proper physics-based forecast should beat them. On {{MKTS}} markets the price beat every model,
+every baseline, and every combination — in all five cities. Its prices are best calibrated precisely
 where we disagreed with them most.</p>
 
 <h3>2 · Better on one metric is not better on the metric that pays</h3>
@@ -1064,11 +1214,25 @@ advantage — it is table stakes, and you are competing on speed.</p>
 <p>Fifteen buckets, ranked by score, systematically crowns the smallest one. In a simulation with
 no edge at all, the apparent best bucket looks <em>better</em> than our real best bucket. If you
 must slice, pre-register every slice and correct for how many you looked at.</p>
+<p>The sharpest demonstration came later, and cost nothing to run. Keeping only the profitable
+cities in the structure book lifts its return 5.5×. Reshuffling which city each city-day belongs
+to — so that city identity carries no information whatsoever — and applying the same rule lifts it
+<strong>2.8×</strong>. Almost the entire improvement is the arithmetic of selecting on the numbers
+you then report. <strong>If you can permute the labels your filter uses and still get your result,
+you do not have a result.</strong> That test takes twenty lines and belongs before a subset is
+believed, not after.</p>
+<p>A related trap: a split drawn <em>backwards</em> through data you have already been publishing
+daily is not held out, however untouched the rows look. Splits have to be drawn forward.</p>
 
 <h3>5 · Every measurement error flattered us</h3>
-<p>Nine broken instruments, nine corrections, all in the same direction. That is not coincidence —
-a bug that makes results look worse gets investigated immediately, while one that makes them look
-better gets celebrated. <strong>Assume the next correction will also cost you.</strong></p>
+<p>Twelve broken instruments, twelve corrections, and for the first eleven every one moved the same
+way. That is not coincidence — a bug that makes results look worse gets investigated immediately,
+while one that makes them look better gets celebrated, so the flattering ones survive longer.
+<strong>Assume the next correction will cost you.</strong></p>
+<p>The exception is recent and small: retraining the calibrator on settlement-faithful labels moved
+the model from clearly behind the raw ensemble to level with it. One correction in twelve went the
+other way, and what it bought was a draw with the free baseline — about the size of good news this
+project has learned to expect.</p>
 
 <h3>6 · Silent failure is the dominant bug class</h3>
 <p>The expensive errors here were not crashes. They were a stale file, a swallowed exception, an
@@ -1081,9 +1245,17 @@ number is far more dangerous than an obvious blank.</p>
   <p>Twelve modelling approaches, four data sources, three distributional families, two
   book designs. The forecasting thread is closed: the model is measurably worse than the market,
   and the pockets where it looked better do not survive contact with a confidence interval.</p>
-  <p>What remains is the model-free structure programme, accruing sample across 49 cities and so
-  far reading zero — with one significant finding, and it is a warning: don't provide liquidity
-  where none is wanted.</p>
+  <p>What remains is the model-free structure programme, accruing sample across {{BK_CITIES}}
+  cities and so far reading zero — with one significant finding, and it is a warning: don't
+  provide liquidity where none is wanted. Four hypotheses in that programme are now under
+  pre-registered forward gates, and because four tests at 95% carry roughly a 20% chance of one
+  false positive between them, a first pass has to clear z = 2.50 rather than 1.96 before it means
+  anything.</p>
+  <p>Work since has gone into the measuring apparatus rather than into new models: a second venue
+  archived alongside the first, order-book depth recorded so we can tell a quoted price from a
+  tradeable one, and seven cities captured on both exchanges against the same weather station.
+  None of that is an edge. It is what you build when you have accepted that the honest answer
+  depends entirely on the quality of the ruler.</p>
 </div>
 
 <hr class="div">
@@ -1133,8 +1305,8 @@ number is far more dangerous than an obvious blank.</p>
 </main>
 
 <footer class="end">
-  Raincheck · model post-mortem · compiled 28 July 2026 · all figures from settlement-faithful
-  grading on 261 common markets · no real capital deployed
+  Raincheck · model post-mortem · first compiled 28 July 2026 · live figures regenerated
+  {{COMPILED}} · settlement-faithful grading on {{MKTS}} markets · no real capital deployed
 </footer>
 
 </div>

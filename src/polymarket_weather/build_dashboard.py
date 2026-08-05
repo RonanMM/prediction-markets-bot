@@ -163,8 +163,14 @@ def _series_error(payload) -> "str | None":
     return str(err) if err else None
 
 
-def _pooled_gap(w) -> dict:
-    """Model-minus-market paired gap + clustered 95% interval. THE powered test.
+def _pooled_gap(w, a: str = "b_model", b: str = "b_mkt") -> dict:
+    """Paired `a`-minus-`b` Brier gap + clustered 95% interval. THE powered test.
+
+    Defaults to model-minus-market. Also used for model-minus-ENSEMBLE, which the guide calls
+    "the number that matters most in the entire report" (a calibrator that cannot beat the physics
+    it calibrates is doing damage) and which had only ever been published as two separate means —
+    the unpaired form this function exists to replace. Model-vs-ensemble needs the common set,
+    since the ensemble structurally cannot price Tmin bins.
 
     Takes whatever frame it is given and scores every row, so hand it ALL gradable markets —
     this question needs the model probability, the traded price and the outcome, and nothing
@@ -179,7 +185,7 @@ def _pooled_gap(w) -> dict:
     import stats_util
 
     iv = stats_util.interval(
-        w["b_model"] - w["b_mkt"],
+        w[a] - w[b],
         stats_util.cluster_key(w.assign(target_date=w["td"].dt.strftime("%Y-%m-%d"))))
     return {"gap": round(float(iv["mean"]), 4),
             "lo": round(float(iv["mean"] - 1.96 * iv["se"]), 4),
@@ -288,6 +294,9 @@ def compute_series() -> dict:
             # Matches evaluate_oos, the arbiter.
             allm = cal.sort_values("td")
             out["pooled"] = {"all": _pooled_gap(allm), "recent": _pooled_gap(allm.tail(60))}
+            # Model vs the ENSEMBLE it calibrates, paired and clustered. On the common set: the
+            # ensemble prices no Tmin bins, so `cal` would compare it on markets it never scored.
+            out["pooled"]["vs_ens"] = _pooled_gap(cs, "b_model", "b_ens")
         except Exception:
             pass
 
@@ -942,6 +951,79 @@ def _missing_cities(payload: dict) -> list:
     return [c for c in CITY_ORDER if c not in present]
 
 
+GUIDE_SRC = Path(__file__).resolve().parent / "guide.html"
+_PLACEHOLDER = re.compile(r"\{\{([A-Z0-9_]+)\}\}")
+
+
+def guide_values(payload: dict) -> dict:
+    """Live figures for the guide's `{{KEY}}` placeholders, from the SAME payload the dashboard
+    renders — so the two pages cannot state different numbers for the same quantity.
+
+    Only figures that are claims about the PRESENT belong here. The chronology's per-incident
+    numbers ("4 of 60 audited markets were graded backwards") are historical facts with a date on
+    them and stay hard-coded: re-deriving them from today's data would silently rewrite the record
+    of what was measured at the time, which is the opposite of a post-mortem's job.
+    """
+    b, s = payload.get("bind", {}), payload.get("series", {})
+    pooled = s.get("pooled") or {}
+    g, r, e = pooled.get("all", {}), pooled.get("recent", {}), pooled.get("vs_ens", {})
+    sc = (s.get("score") or {}).get("all", {})
+
+    def sig(v, nd=4):
+        return "—" if v is None else f"{v:+.{nd}f}".replace("-", "−")
+
+    def ci(d):
+        return "—" if not d else f"[{sig(d.get('lo'))}, {sig(d.get('hi'))}]"
+
+    def num(v, nd=4):
+        # NOT f"{v:.4f}" on a defaulted NaN — that renders the literal string "nan" into the
+        # published prose, which reads as a typo rather than as missing data.
+        return "—" if v is None else f"{float(v):.{nd}f}"
+
+    v = {
+        "COMPILED": (payload.get("generated_at") or "")[:10] or "—",
+        # headline sample + the powered model-vs-market test
+        "MKTS": str(g.get("n", "—")), "CITYDAYS": str(g.get("clusters", "—")),
+        "GAP": sig(g.get("gap")), "GAP_CI": ci(g),
+        "GAP60": sig(r.get("gap")), "GAP60_CI": ci(r), "N60": str(r.get("n", "—")),
+        "GAP60_DAYS": str(r.get("clusters", "—")),
+        # three-way Brier — the COMMON set, which is a different (smaller) sample on purpose
+        "COMMON": str(sc.get("n", "—")),
+        "BR_MARKET": num(sc.get("market")), "BR_ENS": num(sc.get("ens")),
+        "BR_MODEL": num(sc.get("model")),
+        # model vs the ensemble it calibrates — paired, the guide's central Family-A question
+        "VSENS": sig(e.get("gap")), "VSENS_CI": ci(e),
+        "VSENS_N": str(e.get("n", "—")), "VSENS_DAYS": str(e.get("clusters", "—")),
+        "CRPS_MODEL": str(b.get("CRPS_MODEL", "—")), "CRPS_ENS": str(b.get("CRPS_ENS", "—")),
+        # structure books
+        "SB_GRADED": str(b.get("SB_GRADED", "—")), "SB_FULL": str(b.get("SB_FULL", "—")),
+        "SB_FULL_N": str(b.get("SB_FULL_N", "—")), "SB_WR": str(b.get("SB_WR", "—")),
+        "SB_MOD_N": str(b.get("SB_MOD_FWD_N", "—")), "SB_MOD": str(b.get("SB_MOD_FWD", "—")),
+        "BOOK_NET": str(b.get("BOOK_NET", "—")), "BOOK_NET_MOD": str(b.get("BOOK_NET_MOD", "—")),
+        "BOOK_BE": str(b.get("BOOK_BE", "—")),
+        "BK_CITIES": str(b.get("BK_CITIES", "—")), "BK_GRADED": str(b.get("BK_GRADED", "—")),
+        "BK_FULL_N": str(b.get("BK_FULL_N", "—")), "BK_FULL_NET": str(b.get("BK_FULL_NET", "—")),
+        "BK_MOD_N": str(b.get("BK_MOD_N", "—")), "BK_MOD_NET": str(b.get("BK_MOD_NET", "—")),
+        "BK_WR": str(b.get("BK_WR", "—")),
+        "BK_FULL_MAKER": str(b.get("BK_FULL_MAKER", "—")),
+    }
+    return v
+
+
+def render_guide(template: str, values: dict) -> str:
+    """Substitute `{{KEY}}` in the guide, and REFUSE on any placeholder left unresolved.
+
+    The guide publishes as static HTML with no JS, so an unsubstituted `{{GAP}}` would sit on the
+    public page as literal braces — the quiet, plausible-looking wrongness this project keeps
+    paying for. Failing here stops the publish and keeps the last good copy instead.
+    """
+    out = _PLACEHOLDER.sub(lambda m: values.get(m.group(1), m.group(0)), template)
+    left = sorted(set(_PLACEHOLDER.findall(out)))
+    if left:
+        raise KeyError(f"guide has unresolved placeholders: {', '.join(left)}")
+    return out
+
+
 def main() -> None:
     out = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_OUT
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -969,7 +1051,15 @@ def main() -> None:
     out.write_text(render_shell(payload), encoding="utf-8")
     data_out = out.parent / "data.json"
     data_out.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    print(f"wrote {out} ({out.stat().st_size} bytes) + {data_out} ({data_out.stat().st_size} bytes)")
+    # The guide is rendered HERE rather than copied by the workflow, so its live figures come from
+    # this same payload. Two hand-maintained copies of one statistic drifting apart, with only one
+    # of them right, is this repo's most-repeated defect.
+    guide_out = out.parent / "guide.html"
+    guide_out.write_text(
+        render_guide(GUIDE_SRC.read_text(encoding="utf-8"), guide_values(payload)),
+        encoding="utf-8")
+    print(f"wrote {out} ({out.stat().st_size} bytes) + {data_out} ({data_out.stat().st_size} "
+          f"bytes) + {guide_out} ({guide_out.stat().st_size} bytes)")
 
 
 TEMPLATE = r"""<meta charset="utf-8">

@@ -115,10 +115,13 @@ jobs:
           git clone --depth 1 "https://x-access-token:${DASHBOARD_TOKEN}@github.com/${PAGES_REPO}.git" pub
           cp site/index.html pub/index.html
           cp site/data.json  pub/data.json
-          # The guide is a static, checked-in page (no build step, no JS, no external assets).
+          # The guide publishes as static HTML (no JS, no external assets), but its "where things
+          # stand" figures are substituted from the SAME payload the dashboard renders — so take
+          # the BUILT copy from site/, never the checked-in template, which still holds {{...}}
+          # placeholders. build_dashboard refuses to write it if any placeholder is unresolved.
           # It ships alongside the dashboard so the footer link resolves for every visitor —
           # linking the private claude.ai artifact instead would 404 for everyone but the author.
-          cp src/polymarket_weather/guide.html pub/guide.html
+          cp site/guide.html pub/guide.html
           touch pub/.nojekyll
           cd pub
           git config user.name "raincheck-collector"
