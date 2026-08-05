@@ -855,3 +855,37 @@ was just measured. `fetch_asos_1min.py` is built, guarded and gitignored; it cos
 **The transferable lesson:** the best available *measurement* of a physical quantity is not the
 best predictor of a market that settles on a worse one. Match the sensor to the ruler, not to
 reality.
+
+### 13e. Time-of-day microstructure — three results, all negative (2026-08-05)
+
+Hypothesis: activity and price adjustment concentrate at predictable hours ("volume picks up
+around 8am when people wake up"), so entries could be timed. Tested on 172k Kalshi hourly candles
+across 7 cities, which carry volume, bid, ask and OHLC per bin.
+
+**1. The 08:00 spike is markets OPENING, not people waking up.** Mean |close−open| by local hour
+shows a clear 08:00 peak — 0.0394 against 0.0244 at 07:00 and 0.0276 at 09:00 — and the candle
+count jumps 2,662 → 3,991. It is an artifact: **30% of 08:00 candles are a ticker's first candle
+ever**, and excluding first candles collapses the peak to **0.0274**, exactly in line with its
+neighbours. Same at 10:00 (17% first candles, 0.0344 → 0.0284). The intuition was real in the raw
+data and entirely explained by listing times.
+
+**2. Volume really does concentrate 12:00–17:00 local — but spread does not move.** Volume by hour
+peaks near 8% per hour from 12:00–17:00 and falls to ~1% overnight, a **~10× swing**, and it
+survives the obvious confounder (the same shape holds within the final 24h before close, so it is
+time-of-day, not time-to-settlement). But the **median bid-ask spread is 0.010 at every single
+hour of the day** — flat. So the one thing that would have been directly actionable, cheaper
+execution at some hour, is not there. What the volume profile does buy is **capacity**: if a gate
+ever passes, 12:00–17:00 local is when size can actually be worked.
+
+**3. The apparent 06:00–08:00 entry edge is our own collector.** Breadth shoulder entries bucketed
+by local entry hour show 06–08 at **+0.0166 [+0.0073, +0.0258]** against +0.0066 overall — the only
+window clearing zero, and it survives Bonferroni for the six windows tested. It is an artifact:
+**1,167 of those 1,317 entries (89%) were recorded in a single UTC hour, 06:00.** Entries are
+deduped on first sighting, so the bucket is really "markets first discovered by the 06:00 UTC
+sweep", not "markets entered at breakfast". It does not replicate within cities either — Hong Kong
+is −0.0111 in the window against +0.0149 outside it.
+
+**The lesson worth keeping:** a *local*-hour cut of data collected on a *UTC* schedule silently
+encodes the collector's own timetable. Any time-of-day finding here must be checked against the
+UTC-hour histogram before it is believed — and here that check turned a Bonferroni-surviving
+result into an artifact.
