@@ -2065,6 +2065,74 @@ def test_equity_curves_plot_return_on_capital_not_summed_units():
     assert 'id="c_bkwr"' in src
 
 
+def test_capture_cities_are_slugs_not_display_names():
+    """RESOLUTION_ANCHORS is keyed by display name ("Los Angeles"); every data path is
+    `{slug}_*.csv`. Passing the key through worked for single-word cities ONLY because macOS is
+    case-insensitive, so "Atlanta" opened atlanta_*.csv while "Los Angeles" silently vanished from
+    the table. On the Linux CI runner every station would have failed and the report would have
+    read "no data" with no error at all."""
+    import venue_basis as vb
+    cs = vb.capture_cities()
+    assert cs, "no capture-tier cities found"
+    for c in cs:
+        assert c == c.lower() and " " not in c, f"{c!r} is a display name, not a slug"
+    assert "los_angeles" in cs and "san_francisco" in cs
+
+
+def test_an_empty_order_book_is_not_a_price_of_zero():
+    """A Kalshi row with yes_bid = yes_ask = 0.000 is an empty book, not a market priced at zero.
+    Read as a price it manufactures spread against a real bid on the other venue — the first pass
+    of this analysis reported '49% crossed books' entirely from that."""
+    import pandas as pd
+    import venue_basis as vb
+    bid = pd.Series([0.0, 0.0, 0.61, 0.40, 0.30])
+    ask = pd.Series([0.0, 1.0, 0.62, 0.45, 0.99])
+    ok = vb._two_sided(bid, ask).tolist()
+    assert ok == [False, False, True, True, False], ok
+
+
+def test_kalshi_abbreviated_months_parse():
+    """Kalshi writes 'Aug 5, 2026'; Polymarket writes 'August 6'. Parsing both with %B produced
+    NaT for every Kalshi row and an empty join that looked like 'no overlapping markets'."""
+    import pandas as pd
+    import venue_basis as vb
+    for title, want in (("Will the **high temp in Austin** be 98-99° on Aug 5, 2026?", "2026-08-05"),
+                        ("Will the high temp in Miami be 88-89° on May 24, 2026?", "2026-05-24")):
+        m = vb._K_DATE.search(title)
+        assert m, title
+        got = pd.to_datetime(m.group(1), format="%b %d, %Y", errors="coerce")
+        if pd.isna(got):
+            got = pd.to_datetime(m.group(1), format="%B %d, %Y", errors="coerce")
+        assert got.strftime("%Y-%m-%d") == want
+
+
+def test_venue_basis_gate_needs_calendar_as_well_as_city_days():
+    """Same shape as every other gate here: an interval clear of zero is necessary, not
+    sufficient — it must also span enough distinct target dates."""
+    import venue_basis as vb
+    assert vb.GATE_MIN_CLUSTERS == 30 and vb.GATE_MIN_DATES == 30
+    assert vb.BASIS_PREREG_DATE == "2026-08-05"
+    assert vb.directional_test(__import__("pandas").DataFrame()) == {}
+
+
+def test_reconstruct_is_for_analysis_and_grading_still_refuses_unvalidated_cities():
+    """`reconstruct` skips wu_truth's allowlist so a new station's basis can be MEASURED — that
+    measurement is how a city earns admission. It must not become a back door: anything that
+    grades a market still goes through wu_daily_extreme, which refuses cities whose reconstruction
+    has not been validated against real settlements."""
+    import wu_truth
+    assert wu_truth._slug_for("Austin") is None, "Austin was admitted without validation"
+    assert wu_truth._slug_for("Miami") is None
+    assert wu_truth.wu_daily_extreme("Austin", "2026-08-01", "max") is None
+    assert set(wu_truth._WU_RECON_SLUGS.values()) == {"new_york_city", "chicago"}
+    import inspect
+    import venue_basis as vb
+    src = inspect.getsource(vb)
+    assert "wu_truth.reconstruct(" in src
+    # the name appears in a comment explaining the choice; what must not appear is a CALL
+    assert "wu_truth.wu_daily_extreme(" not in src, "analysis module must not grade"
+
+
 def test_guide_publishes_rendered_not_the_template_with_braces_in_it():
     """The guide is static HTML with no JS, so an unsubstituted {{GAP}} would sit on the public
     page as literal braces. The renderer must refuse rather than ship it, and the workflow must

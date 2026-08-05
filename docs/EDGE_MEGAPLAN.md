@@ -662,3 +662,106 @@ helpers. One-off scripts (scratchpad, not committed): Brier-gap decomposition, s
 split, flag-convergence lead-lag, forecast-shift→price-drift event study, and the
 market-center+model-shape hybrid. Headline eval numbers match `python evaluate_oos.py` output on
 that date (model 0.1633, market 0.1278, ensemble 0.1659; ROI −20.2% on 199 bets).
+
+---
+
+## 13. The model's output is exhausted — and where the next edge actually is (2026-08-05)
+
+Two results from one afternoon. The first closes the forecasting workstream for good; the second
+opens the only new one that does not require beating the market at forecasting.
+
+### 13a. Forecast encompassing — the price contains everything the model knows
+
+Every previous test asked *can the model beat the price*. That is the wrong question for finding
+value: a forecast can be worse than the price everywhere and still **improve** it, provided its
+errors are partly orthogonal. The standard test for that is forecast encompassing:
+
+```
+y ~ b_mkt · logit(market) + b_mdl · logit(model)     575 markets, 202 city-days
+    b_mkt  +1.194   95% CI [+0.940, +1.563]   p = 0.000
+    b_mdl  +0.053   95% CI [−0.146, +0.282]   p = 0.618      <- indistinguishable from zero
+```
+
+Conditional on the price, the model's forecast carries **no information about the outcome**. Two
+corroborations:
+
+- **Discrimination.** AUC: market 0.810, model 0.677. Restricted to bins priced under 35¢ — 446 of
+  575 markets, and where every shoulder trade lives — the model's AUC is **0.526**. It cannot rank
+  outcomes there at all.
+- **b_mkt ≈ 1.2 with the interval covering 1.0** means the price is already well calibrated in
+  log-odds. There is no sharpening transformation of the price to sell either.
+
+**Tested and rejected as a consequence** (expanding-window forward protocol: every parameter fitted
+only on target dates preceding the row it predicts, so nothing sees its own test data):
+
+| repair | forward Brier | vs market, clustered |
+|---|---|---|
+| market (benchmark) | 0.1206 | — |
+| model raw | 0.1361 | +0.0155 [+0.0029, +0.0282] worse |
+| blend, weight fitted forward | 0.1202 | −0.0004 [−0.0010, +0.0003] **tie** |
+| conditional logit on both log-odds | 0.1205 | −0.0001 [−0.0028, +0.0027] **tie** |
+
+Isotonic and Platt recalibration were tested on an earlier→later split and made things **much
+worse** (0.1557 and 0.1566 against 0.1344 raw): the map learns spring's distortion (the [0,0.1)
+bucket under-predicts by 4.8× in March) and applies it to summer (2.0× in July–August). This is the
+same seasonal drift that already killed the static sigma widen, arriving by a different route.
+
+**Segment search.** The model coefficient was estimated within 14 pre-listed segments — by lead, by
+price region, by staleness, by disagreement size, by city, and specifically for the 153 same-day
+markets where intraday observations were live. **Not one interval clears zero.** The intraday
+pocket — long described as the best remaining idea — is included and reads +0.109 [−0.289, +0.730].
+
+**Consequence:** stop transforming `forecast_prob`. Recalibration, shrinkage, blending, conditional
+models and bucket selection are all bounded by ~0.0004 Brier, which is indistinguishable from
+nothing. Any future edge must come from **information the price does not contain**, not from better
+processing of information it already has.
+
+### 13b. The two venues settle on DIFFERENT rulers — pre-registered 2026-08-05
+
+Kalshi's US weather markets resolve on the **NWS Climatological Report (Daily)** — verified from
+`rules_primary` in the live capture: *"as reported by the National Weather Service's Climatological
+Report (Daily)"*. Polymarket resolves the same stations on **wunderground** (§10a, W0). Those are
+precisely the two sources this project already proved disagree.
+
+Measured over **3,335 station-days where we hold both feeds** (NYC + Chicago):
+
+```
+CLI − WU:  mean +0.632 °F   median +1.00   sd 0.76
+           CLI higher 53.3%   equal 45.8%   WU higher 1.0%
+different 2 °F bin on 32.4% of days — and CLI is the higher bin in 99% of those
+different whole-degree reading on 53.9% of days
+```
+
+**The same bin is a materially different bet on the two venues, and the difference is one-directional
+and large.** Both venues quote the identical 2 °F grid (Kalshi `floor_strike`/`cap_strike`,
+Polymarket "between 88-89°F"), so this is directly comparable.
+
+**Hypothesis (pre-registered, forward-only from 2026-08-05):** the price gap between venues for the
+same city-day-bin moves in the direction the ruler shift predicts — Kalshi richer on bins above the
+day's centre, Polymarket richer below — and the *size* of that gap deviates from the fair value
+implied by the measured basis distribution often enough to trade.
+
+**Why this is worth a gate when nothing else survived:** it requires no forecasting skill at all.
+The edge, if it exists, is knowing the ruler — which this project has measured on 3,335 days and
+paid for four times over. It is also the first candidate that is **not** a subset of something
+already tested.
+
+**Status: not yet measurable.** Preliminary numbers exist (20 matched bins with a genuine two-sided
+quote on both venues, one target date, three usable city-days; median gap 8.5¢; directional
+correlation −0.57 in the predicted direction) and are **reported here only to record that the
+hypothesis was written before the data existed**. Three city-days is not evidence, and the first
+pass of this same analysis produced a spurious "49% crossed books" purely from empty Kalshi order
+books quoted as 0.000 — the reminder that this measurement has its own ways to lie.
+
+**Blocker, and the reason this is also a bug fix.** `wu_truth._WU_RECON_SLUGS` admits only NYC and
+Chicago, so the seven capture cities currently grade on the **CLI** ruler while Polymarket settles
+them on **wunderground**. That is the W0 defect about to repeat at 7× scale, and it would corrupt
+the capture-city market-Brier report due ~2026-08-11. `fetch_station_obs.OBS_STATIONS` already
+covers all seven stations, so the obs exist; the allowlist must be extended **per city, only after
+the reconstruction is validated against real settlements for that city**, exactly as NYC and Chicago
+were. Those settlements start arriving ~2026-08-10.
+
+**Gate (pre-committed now, so it cannot be moved later):** no basis trade is taken until the
+directional test clears a clustered 95% interval over **≥30 city-days spanning ≥30 distinct target
+dates**, on entries recorded on or after 2026-08-05, with the fair value computed from the
+per-station basis distribution rather than from the NYC/Chicago pooled one.

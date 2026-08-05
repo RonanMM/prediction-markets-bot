@@ -60,6 +60,27 @@ def _load_obs(slug: str):
     return df
 
 
+def reconstruct(slug: str, date_str, kind: str):
+    """WU-style daily extreme in °C from a slug's hourly METARs, WITHOUT the admission check.
+
+    Separated from `wu_daily_extreme` because measuring a station's reconstruction is exactly how
+    one decides whether to admit it to `_WU_RECON_SLUGS` — routing that measurement through the
+    allowlist would make admission unreachable for any new city. Use this for ANALYSIS only;
+    anything that grades a market must call `wu_daily_extreme`, which refuses cities whose
+    reconstruction has not been validated against real settlements.
+    """
+    obs = _load_obs(slug)
+    if obs is None:
+        return None
+    day = obs[obs["date_local"] == str(date_str)].sort_values("valid_local")
+    if len(day) < _MIN_OBS_PER_DAY:
+        return None
+    gaps = day["valid_local"].diff().dt.total_seconds().div(3600.0)
+    if gaps.max() > _MAX_GAP_HOURS:
+        return None
+    return float(day["temp_c"].max() if kind == "max" else day["temp_c"].min())
+
+
 def wu_daily_extreme(city, date_str, kind: str):
     """WU-style daily extreme in °C for a validated city, or None.
 
