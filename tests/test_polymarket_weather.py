@@ -6212,3 +6212,47 @@ def test_capture_coverage_degrades_instead_of_blocking_the_build(monkeypatch, tm
     (tmp_path / "data" / "polymarket" / "los_angeles_snapshots.csv").write_text("not,a\nvalid csv\x00\x00")
     rows = bd.capture_coverage()
     assert len(rows) == len(bd.CAPTURE_META)
+
+
+def test_programme_status_judges_feeds_by_data_age_not_workflow_status():
+    """The daily-check panel. Freshness must come from the DATA's own timestamp: a dead feed and a
+    healthy one look identical in the run list, and a job that dies produces the same "no commit"
+    as one that ran and changed nothing — which is how the calibrator sat frozen for 11 days."""
+    import inspect
+    import build_dashboard as bd
+
+    feeds = bd.feed_status()
+    assert feeds, "no feeds reported"
+    names = {f["feed"] for f in feeds}
+    for need in ("Market snapshots", "Station truth", "Hourly METARs", "Calibrator models"):
+        assert need in names, f"{need} is not being watched"
+    for f in feeds:
+        assert set(f) >= {"feed", "age_h", "stale_h", "note", "ok"}
+        assert f["age_h"] is None or f["age_h"] >= 0, f"{f['feed']} reports a negative age"
+        if f["age_h"] is not None:
+            assert f["ok"] == (f["age_h"] <= f["stale_h"])
+
+    # Station-local stamps (no UTC column) must be clamped, not shown as negative ages.
+    src = inspect.getsource(bd.feed_status)
+    assert "local_stamp" in src, "local wall-clock feeds are parsed as UTC unclamped"
+    assert "trained_at" in src, "model age has no stamped source, only mtime"
+
+
+def test_open_tests_report_the_binding_constraint_not_a_percentage():
+    """For every open gate here the binding constraint is CALENDAR, not sample — 49 cities on one
+    day is 49 clusters and one date. A bar over `n` alone would read as nearly-there while the
+    thing that actually gates it has barely moved."""
+    import build_dashboard as bd
+    import shoulder_book as sb
+
+    hs = bd.hypothesis_status()
+    assert hs, "no open tests reported"
+    for r in hs:
+        assert set(r) >= {"name", "prereg", "n", "need_n", "dates", "need_dates", "blocker"}
+        assert r["need_dates"] == sb.GATE_MIN_DATES
+        # a row that has the bets but not the calendar must say so, never "PASS"
+        if r["n"] >= r["need_n"] and r["dates"] < r["need_dates"]:
+            assert "target dates" in r["blocker"], r
+            assert r["blocker"] != "PASS"
+    # the falsification legs must carry their prior, so nobody reads them as promising
+    assert any("expected to FAIL" in (r.get("extra") or "") for r in hs)

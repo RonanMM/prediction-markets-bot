@@ -20,6 +20,7 @@ Output: models/{slug}_intraday.json
 Run from src/polymarket_weather/:   python train_intraday.py
 """
 import json
+from datetime import datetime, timezone
 import logging
 import os
 
@@ -140,6 +141,11 @@ def _train_one(slug: str, kind: str, spec: dict):
 
         params = {
             "version": 1,
+            # Stamped so staleness is READABLE from the artifact. The models sat frozen at the
+            # 2026-07-25 build for 11 days and nothing reported it, because a retrain that dies
+            # and a retrain that runs and changes nothing both produce no commit.
+            "trained_at": datetime.now(timezone.utc).isoformat(),
+
             "kind": kind,
             "nu": _fit_nu(np.concatenate(resid_pool)),
             "hours": per_hour,

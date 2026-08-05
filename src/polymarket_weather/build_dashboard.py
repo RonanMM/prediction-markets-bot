@@ -227,10 +227,21 @@ def _city_rows(c) -> list[dict]:
 def compute_series() -> dict:
     out: dict = {"acc": [], "roll": [], "city": [], "calib": [], "growth": [],
                  "heartbeat": [], "buckets": [], "recent": [], "equity": [], "capture": [],
-                 "bk_equity": [], "bk_cities": [], "bk_cs_date": ""}
+                 "bk_equity": [], "bk_cities": [], "bk_cs_date": "",
+                 "feeds": [], "hypotheses": []}
     # Capture-tier coverage FIRST, and outside the eval machinery: it reads only collected files,
     # so it must still render if anything downstream fails. capture_coverage never raises.
     out["capture"] = capture_coverage()
+    # Daily-check panel: is every feed the thesis depends on actually current, and how far is
+    # each open pre-registered test from its own gate. Both are exception-safe by contract.
+    try:
+        out["feeds"] = feed_status()
+    except Exception as exc:                      # noqa: BLE001
+        sys.stderr.write(f"::warning::feed status unavailable: {exc}\n")
+    try:
+        out["hypotheses"] = hypothesis_status()
+    except Exception as exc:                      # noqa: BLE001
+        sys.stderr.write(f"::warning::hypothesis status unavailable: {exc}\n")
     if str(PKG) not in sys.path:
         sys.path.insert(0, str(PKG))
     try:
@@ -613,6 +624,150 @@ def _gate_bind_set(prefix: str, st: dict, need_n: int = 80) -> dict:
               f"{prefix}_MAKER": (f"{f['maker']:+.4f}".replace("-", "−")
                                   if f.get("maker_n") else "—")})
     return d
+
+
+def _age_hours(ts) -> float | None:
+    """Hours since `ts` (anything pandas can parse), or None."""
+    import pandas as pd
+    t = pd.to_datetime(ts, utc=True, errors="coerce")
+    if t is None or pd.isna(t):
+        return None
+    return float((pd.Timestamp.now(tz="UTC") - t).total_seconds() / 3600.0)
+
+
+def feed_status() -> list:
+    """Freshness of every feed the thesis depends on, judged by the DATA's own timestamp.
+
+    Never by workflow status. This repo's rule exists because a green run and a dead feed look
+    identical from the run list — and because a job that dies and a job that runs and changes
+    nothing both produce no commit, which is exactly how the model sat frozen at the 2026-07-25
+    build for eleven days without anyone noticing.
+
+    `stale_h` is the age at which a feed is misreporting rather than merely late, set from the
+    cadence that feed actually needs — not from its cron, which GitHub delivers 1-3h late.
+    """
+    import glob
+    import json as _json
+    import pandas as pd
+
+    def newest(pattern, col, parse=None):
+        best = None
+        for f in glob.glob(str(PKG / pattern)):
+            try:
+                d = pd.read_csv(f, low_memory=False, usecols=[col])
+                v = pd.to_datetime(d[col], utc=True, errors="coerce").max()
+                if v is not None and not pd.isna(v) and (best is None or v > best):
+                    best = v
+            except Exception:
+                continue
+        return best
+
+    rows = []
+
+    def add(name, ts, stale_h, note, local_stamp=False):
+        """`local_stamp`: this feed records station-LOCAL wall clock with no UTC column
+        (obs_hourly.valid_local, historical_actuals.date_local). Parsed as UTC that runs up to
+        ±14h fast or slow depending on the city — Seoul is UTC+9, so its newest row can read as
+        the future. Clamp rather than display a negative age, and note that the stale threshold
+        is set wide enough to absorb the offset."""
+        age = _age_hours(ts)
+        if age is not None and local_stamp:
+            age = max(0.0, age)
+        rows.append({"feed": name, "age_h": None if age is None else round(age, 1),
+                     "stale_h": stale_h, "note": note,
+                     "ok": bool(age is not None and age <= stale_h)})
+
+    add("Market snapshots", newest("data/polymarket/*_snapshots.csv", "fetched_at_utc"), 6,
+        "hourly collector")
+    add("Kalshi markets", newest("data/kalshi/*_markets.csv", "fetched_at_utc"), 6,
+        "hourly collector")
+    add("Cross-venue minute", newest("data/crossvenue/*_pm_minute.csv", "fetched_at_utc"), 12,
+        "lead-lag experiment (§13f)")
+    add("Station truth", newest("data/weather/*_historical_actuals.csv", "date_local"), 72,
+        "settlement grading — HK lags a month by design", local_stamp=True)
+    add("Hourly METARs", newest("data/weather/*_obs_hourly.csv", "valid_local"), 72,
+        "wu_truth input — 9 cities grade on it", local_stamp=True)
+    # Models: read the stamp the trainers now write; fall back to file mtime on older artifacts.
+    newest_model, src = None, "mtime"
+    for f in glob.glob(str(PKG / "models" / "*_emos.json")):
+        try:
+            t = _json.load(open(f)).get("trained_at")
+        except Exception:
+            t = None
+        if t:
+            src = "trained_at"
+        else:
+            t = datetime.fromtimestamp(os.path.getmtime(f), tz=timezone.utc).isoformat()
+        t = pd.to_datetime(t, utc=True, errors="coerce")
+        if t is not None and not pd.isna(t) and (newest_model is None or t > newest_model):
+            newest_model = t
+    add("Calibrator models", newest_model, 24 * 10,
+        f"retrain runs twice weekly ({src})")
+    return rows
+
+
+def hypothesis_status() -> list:
+    """Every open pre-registered test, and how far it is from its OWN gate.
+
+    Shows the binding constraint per row rather than a single percentage, because for most of
+    these the binding constraint is CALENDAR, not sample: 49 cities on one day is 49 clusters and
+    one date, and GATE_MIN_DATES exists so that cannot pass. A progress bar over `n` alone would
+    read as nearly-there while the thing that actually gates it has barely moved.
+    """
+    import shoulder_book as sb
+    import shoulder_book_breadth as bb
+
+    out = []
+
+    def add(name, prereg, st, gate, extra=""):
+        if not st:
+            out.append({"name": name, "prereg": prereg, "n": 0, "need_n": gate[0],
+                        "dates": 0, "need_dates": sb.GATE_MIN_DATES, "edge": None,
+                        "blocker": "no forward entries yet", "extra": extra})
+            return
+        f = st["forward"]
+        n, need_n = f["n"], gate[0]
+        dates, need_d = f.get("n_dates", 0), sb.GATE_MIN_DATES
+        if n < need_n:
+            blocker = f"{need_n - n} more settled bets"
+        elif dates < need_d:
+            blocker = f"{need_d - dates} more target dates"
+        elif f.get("ci_hi", 1) >= 0 and f.get("ci_lo", -1) <= 0:
+            blocker = "interval still spans zero"
+        else:
+            blocker = "PASS" if f.get("gate_pass") else "edge below threshold"
+        out.append({"name": name, "prereg": prereg, "n": n, "need_n": need_n,
+                    "dates": dates, "need_dates": need_d,
+                    "edge": round(float(f["taker"]), 4) if n else None,
+                    "blocker": blocker, "extra": extra})
+
+    try:
+        _, g5 = _book_graded()
+        sh5 = g5[g5["leg"] == "shoulder"] if not g5.empty else g5
+        add("Leg 1b · moderate · 5 cities", sb.MOD_PREREG_DATE,
+            sb.moderate_gate_stats(sh5) if len(sh5) else {}, sb.GATE_MOD)
+    except Exception:
+        pass
+    try:
+        _, gb = _breadth_graded()
+        shb = gb[gb["leg"] == "shoulder"] if not gb.empty else gb
+        add("Leg 1b · moderate · all cities", bb.BREADTH_PREREG_DATE,
+            bb.moderate_gate_stats(gb, prereg_date=bb.BREADTH_PREREG_DATE) if not gb.empty else {},
+            bb.GATE_MOD_BREADTH)
+        add("Leg 1c · deep 5-10¢", bb.DEEP_PREREG_DATE,
+            bb.moderate_gate_stats(gb, prereg_date=bb.DEEP_PREREG_DATE, lo=bb.DEEP_LO,
+                                   hi=bb.DEEP_HI, gate=bb.GATE_DEEP_BREADTH) if not gb.empty else {},
+            bb.GATE_DEEP_BREADTH)
+        for label, sel in (("Leg 1d · 31 winning cities", bb.CITYSEL_A),
+                           ("Leg 1e · best 12 cities", bb.CITYSEL_B)):
+            add(label, bb.CITYSEL_PREREG_DATE,
+                bb.moderate_gate_stats(gb, prereg_date=bb.CITYSEL_PREREG_DATE, lo=bb.BAND_LO,
+                                       hi=bb.BAND_HI, gate=bb.GATE_CITYSEL,
+                                       cities=sel) if not gb.empty else {},
+                bb.GATE_CITYSEL, extra="expected to FAIL — see §12c")
+    except Exception:
+        pass
+    return out
 
 
 def _breadth_binds() -> dict:
@@ -1412,6 +1567,23 @@ TEMPLATE = r"""<meta charset="utf-8">
     </div>
   </section>
 
+  <!-- 03b RESEARCH STATUS -->
+  <section>
+    <div class="shd"><span class="n">03b</span><h2>Programme status</h2><span class="r">is everything running, and how far is each test from its gate</span></div>
+    <div class="cwrap">
+      <div class="panel">
+        <div class="find">Feeds the thesis depends on</div>
+        <div class="findsub">Age is measured from the <b>data's own timestamp</b>, never from whether a workflow went green — a dead feed and a healthy one look identical in the run list, and a job that dies produces the same "no commit" as a job that ran and changed nothing.</div>
+        <div id="feedstatus" style="margin-top:12px"></div>
+      </div>
+      <div class="panel">
+        <div class="find">Open pre-registered tests</div>
+        <div class="findsub">Each row shows the <b>binding</b> constraint, not a percentage. For most of these it is <b>calendar</b>, not sample: 49 cities on one day is 49 clusters and one date, and the date requirement exists so that cannot pass.</div>
+        <div id="hypostatus" style="margin-top:12px"></div>
+      </div>
+    </div>
+  </section>
+
   <!-- 04 ENTRIES -->
   <section>
     <div class="shd"><span class="n">04</span><h2>Recent settlements</h2><span class="r">last 60 · every graded market</span></div>
@@ -1873,6 +2045,7 @@ TEMPLATE = r"""<meta charset="utf-8">
     else { var hw = document.getElementById("c_bkwr"); if (hw) hw.innerHTML = '<div style="color:var(--faint);font-size:12px;padding:20px 0">Not enough settled entries to compute a break-even.</div>'; }
 
     renderBkCities();
+    renderStatus();
     renderScore();
     renderRoi();
     renderBuckets();
@@ -1968,6 +2141,41 @@ TEMPLATE = r"""<meta charset="utf-8">
     prevBind = b;
     var h = html || {};
     Object.keys(h).forEach(function (k) { document.querySelectorAll('[data-bind-html="' + k + '"]').forEach(function (e) { if (e.innerHTML !== h[k]) e.innerHTML = h[k]; }); });
+  }
+  function renderStatus() {
+    var host = document.getElementById("feedstatus");
+    if (host) {
+      var rows = D.feeds || [];
+      host.innerHTML = rows.length ? '<table class="data">' +
+        '<tr><th>Feed</th><th class="num">Age</th><th>Status</th><th>Purpose</th></tr>' +
+        rows.map(function (r) {
+          var age = r.age_h == null ? "—" : (r.age_h < 48 ? r.age_h.toFixed(1) + "h"
+                                                          : (r.age_h / 24).toFixed(1) + "d");
+          var chip = r.ok ? '<span class="chip good">current</span>'
+                          : '<span class="chip warn">STALE &gt;' + r.stale_h + 'h</span>';
+          return '<tr><td class="city">' + r.feed + '</td><td class="num">' + age + '</td><td>' +
+                 chip + '</td><td class="dim" style="font-size:11px">' + r.note + '</td></tr>';
+        }).join("") + "</table>"
+        : '<div class="cb mono">no feed data</div>';
+    }
+    var h = document.getElementById("hypostatus");
+    if (!h) return;
+    var hs = D.hypotheses || [];
+    h.innerHTML = hs.length ? '<table class="data">' +
+      '<tr><th>Test</th><th class="num">Settled</th><th class="num">Dates</th>' +
+      '<th class="num">Edge</th><th>Needs</th></tr>' +
+      hs.map(function (r) {
+        var pass = r.blocker === "PASS";
+        var edge = r.edge == null ? "—" : (r.edge >= 0 ? "+" : "\u2212") + Math.abs(r.edge).toFixed(4);
+        return '<tr><td class="city">' + r.name +
+               (r.extra ? ' <span class="dim" style="font-size:10px">' + r.extra + '</span>' : '') +
+               '</td><td class="num">' + r.n + "/" + r.need_n +
+               '</td><td class="num">' + r.dates + "/" + r.need_dates +
+               '</td><td class="num">' + edge + '</td><td>' +
+               (pass ? '<span class="chip good">PASS</span>'
+                     : '<span class="chip">' + r.blocker + '</span>') + '</td></tr>';
+      }).join("") + "</table>"
+      : '<div class="cb mono">no open tests</div>';
   }
   function fmtAgo(iso) {
     var t = Date.parse(iso); if (isNaN(t)) return null;

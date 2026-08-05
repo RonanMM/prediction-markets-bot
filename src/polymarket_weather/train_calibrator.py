@@ -28,6 +28,7 @@ always applies (the spread fix must never be gated away; it is the main correcti
 Run from src/polymarket_weather/:   python train_calibrator.py
 """
 import json
+from datetime import datetime, timezone
 import logging
 import os
 
@@ -258,6 +259,11 @@ def _train_city_target(city: str, slug: str, spec: dict) -> None:
 
     params = {
         "version": 2,
+        # Stamped so staleness is READABLE from the artifact. The models sat frozen at the
+        # 2026-07-25 build for 11 days and nothing reported it, because a retrain that dies
+        # and a retrain that runs and changes nothing both produce no commit.
+        "trained_at": datetime.now(timezone.utc).isoformat(),
+
         "target": target,
         "input": serving_input,
         "input_scores": {k: (None if np.isinf(v) else v) for k, v in scores.items()},
