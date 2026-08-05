@@ -812,3 +812,46 @@ includes the break-even top and excludes the profitable 5–10¢ bottom.
 `market_calibration.py` runs this table. It is the cleanest instrument the project has for "is
 there a trade", precisely because it involves no model — and its answer is *yes, probably, and the
 gate still has 19 more calendar days to run before that means anything.*
+
+### 13d. 1-minute ASOS observations — TESTED and REJECTED for Polymarket (2026-08-05)
+
+Same-day is 60% of graded markets and the slice where the model's advantage over the ensemble
+lives (−0.0093, against +0.0071 at 1d). Same-day skill is an *observations* problem, and we feed
+it **hourly** METARs — 24 samples a day where the ASOS 1-minute archive offers 1,440. The
+information gap is real and large: at KLGA the day's true max sits **+1.20 °C above the hourly
+max**, and at 14:00 local — while same-day markets are still trading — the running max we condition
+on is **+0.74 °C too low**.
+
+It does not help, in either formulation, over 1,118 NYC and 861 Chicago days:
+
+| | NYC | Chicago |
+|---|---|---|
+| 1-min **replacing** hourly M | better at 7/19 hours | 5/19 |
+| `max(hourly, 1-min)` (gap-safe) | **0/19** | 4/19 |
+| 1-min **added** as a 4th regressor | **1/11** | 4/11 |
+
+**Why, and it is not a data-quality story.** The Polymarket target *is* the max of hourly METARs.
+By late afternoon the hourly running max **is** the answer — NYC hour 23 conditions at RMSE
+**0.014**, which is not skill but tautology. The 1-minute max converges to the *CLI* value instead,
+so against the WU target it carries a permanent upward bias; its RMSE plateaus around 0.3–1.3 where
+the hourly one goes to zero. The augmented fit confirms there is nothing left over: the coefficient
+on the 1-min max is 0.0–0.26 and flips sign between cities.
+
+Where 1-minute genuinely wins is the **early** hours (NYC 1.410 vs 1.622 at 05 local, 1.253 vs
+1.322 at 11) — before hourly sampling has caught the day's heat. But that is exactly where
+conditioning matters least, and the gain is gone by the hours that trade.
+
+⚠️ **Using it would be actively wrong for Polymarket, not merely useless.** Serving floors the
+predictive distribution at M (Tmax cannot end below what was already observed). The 1-minute max
+exceeds the WU max on essentially every day, so flooring at it would push the distribution *above*
+the value the market settles on. This is the ruler-precision trap of §10a in a new costume.
+
+**Kept, for the other venue.** Kalshi settles US weather on the NWS CLI, which is computed from
+these same 1-minute sensors — so there the running 1-min max is the *correct* conditioner and a
+genuine floor, by exactly the argument that makes hourly correct for wunderground. That is
+untested (the capture tier has no settled Kalshi markets yet) but it is the mirror image of what
+was just measured. `fetch_asos_1min.py` is built, guarded and gitignored; it costs nothing to keep.
+
+**The transferable lesson:** the best available *measurement* of a physical quantity is not the
+best predictor of a market that settles on a worse one. Match the sensor to the ruler, not to
+reality.
