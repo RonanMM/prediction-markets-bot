@@ -349,6 +349,7 @@ def _roi_at_production(df):
 
     profit = staked = 0.0
     wins = n = 0
+    per = []                       # per-bet (city-day, stake, profit) for the interval below
     for _, r in g.iterrows():
         size = 1000.0 * r["k"]
         if size < 1.0:
@@ -362,12 +363,51 @@ def _roi_at_production(df):
         won = (r["bet_side"] == "Yes" and r["outcome"] == 1) or \
               (r["bet_side"] == "No" and r["outcome"] == 0)
         # Winning payout is $1/share minus the taker fee; a loss forfeits the stake.
-        profit += (shares * (1.0 - config.FEE_RATE) - size) if won else -size
+        pl = (shares * (1.0 - config.FEE_RATE) - size) if won else -size
+        profit += pl
         staked += size
         wins += int(won)
         n += 1
-    return {"bets": n, "wins": wins, "roi": (profit / staked if staked else 0.0),
-            "profit": profit, "staked": staked}
+        per.append((r["group_key"], size, pl))
+    out = {"bets": n, "wins": wins, "roi": (profit / staked if staked else 0.0),
+           "profit": profit, "staked": staked}
+    out.update(_roi_dispersion(per))
+    return out
+
+
+def _roi_dispersion(per) -> dict:
+    """Clustered interval on ROI, plus how much of the profit rides on the single biggest bet.
+
+    A bare ROI number invites exactly one mistake, and this project made it: the raw ensemble's
+    "+2.2% ROI" was read as a target the model had to beat. Decomposed, ALL of that came from 128
+    markets the model did not bet, and ONE of those — Seoul 2026-07-07, $42 staked, $1,058 back —
+    was 51% of the profit; the top three were 97%. Per-bet return over those markets was
+    +0.250 with a clustered interval of [−0.220, +0.720], and the median bet made $1.60.
+
+    Kelly-sized longshot books are heavy-tailed by construction, so ROI is dominated by its
+    largest few outcomes long before it is informative about skill. Print the interval and the
+    concentration next to the point estimate, or the point estimate will be believed.
+    """
+    if not per:
+        return {"roi_lo": None, "roi_hi": None, "top_share": None, "n_clusters": 0}
+    import numpy as np
+    keys = np.array([p[0] for p in per], dtype=object)
+    stake = np.array([p[1] for p in per], float)
+    pl = np.array([p[2] for p in per], float)
+    tot = pl.sum()
+    uniq = np.unique(keys)
+    idx = {k: np.where(keys == k)[0] for k in uniq}
+    rng = np.random.default_rng(0)
+    boots = []
+    for _ in range(1000):
+        pick = np.concatenate([idx[k] for k in rng.choice(uniq, len(uniq), replace=True)])
+        s = stake[pick].sum()
+        if s > 0:
+            boots.append(pl[pick].sum() / s)
+    lo, hi = (float(np.percentile(boots, 2.5)), float(np.percentile(boots, 97.5))) if boots \
+        else (None, None)
+    top = float(pl[np.argmax(np.abs(pl))] / tot) if tot else None
+    return {"roi_lo": lo, "roi_hi": hi, "top_share": top, "n_clusters": int(len(uniq))}
 
 
 def main():
@@ -617,8 +657,13 @@ def main():
 
     roi = _roi_at_production(ml)
     wr = roi["wins"] / roi["bets"] if roi["bets"] else 0.0
+    ci = (f"  95% CI [{roi['roi_lo']:+.1%}, {roi['roi_hi']:+.1%}] over {roi['n_clusters']} city-days"
+          if roi.get("roi_lo") is not None else "")
     print(f"\n  ROI at production params: {roi['roi']:.1%}  on {roi['bets']} bets  "
-          f"(win rate {wr:.1%}, staked ${roi['staked']:.0f})")
+          f"(win rate {wr:.1%}, staked ${roi['staked']:.0f}){ci}")
+    if roi.get("top_share") is not None and abs(roi["top_share"]) >= 0.25:
+        print(f"    ⚠️ the single largest bet is {roi['top_share']:.0%} of total P&L — this ROI is "
+              f"one outcome, not a track record. Read the Brier.")
 
     # ---- Single arbiter: does the model out-predict the market AND at least match the ensemble? --
     beats_market = brier_model < brier_mkt

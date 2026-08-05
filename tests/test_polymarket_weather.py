@@ -2065,6 +2065,35 @@ def test_equity_curves_plot_return_on_capital_not_summed_units():
     assert 'id="c_bkwr"' in src
 
 
+def test_roi_is_printed_with_its_interval_and_flags_a_one_bet_result():
+    """A bare ROI invites exactly one mistake, and it was nearly made: the raw ensemble's '+2.2%'
+    was treated as a bar the model had to beat. All of that came from 128 markets the model did not
+    bet, and ONE of them was 51% of the profit. Kelly-sized longshot books are heavy-tailed by
+    construction, so ROI is dominated by its largest few outcomes long before it says anything
+    about skill."""
+    import evaluate_oos as eo
+
+    # One bet dominating -> flagged, whatever the sign.
+    per = [("A|2026-08-01", 100.0, 900.0)] + [("B|2026-08-02", 100.0, -10.0)] * 20
+    d = eo._roi_dispersion(per)
+    assert d["top_share"] > 0.5, "a bet worth most of the P&L was not flagged"
+    assert d["roi_lo"] is not None and d["roi_lo"] < d["roi_hi"]
+    assert d["n_clusters"] == 2
+
+    # A broad, even book is not flagged.
+    even = [(f"C|2026-08-{i:02d}", 100.0, 5.0) for i in range(1, 26)]
+    assert abs(eo._roi_dispersion(even)["top_share"]) < 0.25
+
+    # Empty input must not raise — the eval must still print.
+    empty = eo._roi_dispersion([])
+    assert empty["roi_lo"] is None and empty["top_share"] is None and empty["n_clusters"] == 0
+
+    import inspect
+    src = inspect.getsource(eo)
+    assert 'roi["top_share"]) >= 0.25' in src, "the concentration warning is not wired to output"
+    assert "95% CI [" in src.split("ROI at production params")[0][-400:], "ROI prints without a CI"
+
+
 def test_capture_panel_counts_graded_markets_instead_of_publishing_a_hardcoded_zero(tmp_path):
     """`graded` was declared, rendered, and never assigned — so all 7 capture cities published
     'awaiting first resolution' forever and the '{n} graded' branch was unreachable. Dead payload
