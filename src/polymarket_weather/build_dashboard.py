@@ -796,8 +796,16 @@ def build_payload(d: dict, series: dict) -> dict:
     # collector widened. ROI is invariant to how many tickets were bought.
     eq = series.get("equity") or []
     book_net = f"{eq[-1]['roi']:+.2f}%".replace("-", "−") if eq else "—"
+    # Leg 1b's return on capital was plotted but never stated. The panel showed ONE headline
+    # number beside a TWO-line chart, so the moderate band — the leg that is actually gated, and
+    # the one running above the full band — had no figure a reader could quote.
+    book_net_mod = (f"{eq[-1]['mroi']:+.2f}%".replace("-", "−")
+                    if eq and eq[-1].get("mroi") is not None else "—")
     book_be = (f"{eq[-1]['be']:.1f}" if eq and eq[-1].get("be") is not None else "—")
     book_cap = f"${eq[-1]['cap']:,.0f}" if eq else "—"
+    # Name the five cities. This panel and the breadth panel below run the SAME legs over
+    # different universes, and only the breadth one said which ("every Polymarket weather city").
+    book_cities = ", ".join(CITY_META[c][0] for c in CITY_ORDER)
     hb = series.get("heartbeat") or []
     runs_today = str(hb[-1]["n"]) if hb else "—"
 
@@ -819,6 +827,8 @@ def build_payload(d: dict, series: dict) -> dict:
             "N_MKTS": G("n_mkts"), "CRPS_MODEL": G("crps_model"), "CRPS_ENS": G("crps_ens"),
             "SKILL": skill_txt, "BOOK_NET": book_net, "RUNS_TODAY": runs_today,
             "BOOK_BE": book_be, "BOOK_CAP": book_cap,
+            "BOOK_NET_MOD": book_net_mod, "BOOK_CITIES": book_cities,
+            "BOOK_NCITIES": str(len(CITY_ORDER)),
             # SB_* (5-city book) and BK_* (breadth) both come from their graded frames — never
             # from a printed report. SB_FULL_N is Leg 1 only; SB_GRADED counts every leg.
             **_book_binds(),
@@ -1205,16 +1215,16 @@ TEMPLATE = r"""<meta charset="utf-8">
 
   <!-- 03 PAPER BOOK -->
   <section>
-    <div class="shd"><span class="n">03</span><h2>Paper book</h2><span class="r">model-free structure legs</span> <span class="paperflag">Paper — no real money</span></div>
+    <div class="shd"><span class="n">03</span><h2>Paper book</h2><span class="r">model-free structure legs · <span data-bind="BOOK_NCITIES">5</span> modelled cities</span> <span class="paperflag">Paper — no real money</span></div>
     <p class="lede" style="margin:0 2px 14px">A <b>separate book</b> from the model above — it bets on market <b>structure</b>, not the weather. <b>Leg 1</b> sells over-priced 5–35¢ shoulder bins; <b>Leg 2</b> buys 65–85¢ YES-favourites &gt;12h before close. Independent mispricings, each gated on its own before a single real order. <b>Leg 1b</b> refines Leg 1 to the over-priced 10–25¢ sub-band (pre-registered 2026-07-23, forward-only).</p>
     <div class="cwrap">
       <div class="panel">
-        <div class="find" id="sb_title">Shoulder book · return on capital</div>
-        <div class="findsub">Cumulative return on the capital actually laid out · taker fees paid. <b>Not</b> a running total of units — that number grows with how many tickets we buy, so it climbs even when the edge doesn't. The early points sit on a handful of contracts and swing wildly; the line settling downward is the sample growing, <b>not</b> the edge improving.</div>
+        <div class="find" id="sb_title">Shoulder book · return on capital · <span data-bind="BOOK_NCITIES">5</span> modelled cities</div>
+        <div class="findsub"><b><span data-bind="BOOK_CITIES">—</span></b> only — the same legs run across every weather city in the breadth book below, which is the wider cross-check. Cumulative return on the capital actually laid out · taker fees paid. <b>Not</b> a running total of units — that number grows with how many tickets we buy, so it climbs even when the edge doesn't. The early points sit on a handful of contracts and swing wildly; the line settling downward is the sample growing, <b>not</b> the edge improving.</div>
         <div class="chartwrap"><div id="c_equity"></div></div>
         <div class="leg" style="margin-top:8px"><span><i style="background:var(--good)"></i>Leg 1 · all shoulder [5–35¢]</span><span><i style="background:var(--market)"></i>Leg 1b · moderate [10–25¢]</span></div>
         <div class="statrow">
-          <div class="st"><div class="k">Return on capital</div><div class="v" id="sb_net" data-bind="BOOK_NET">—</div></div>
+          <div class="st"><div class="k">Return on capital <span class="dim">1 / 1b</span></div><div class="v"><span id="sb_net" data-bind="BOOK_NET">—</span> <span class="dim" style="font-size:11px">/ <span id="sb_net_mod" data-bind="BOOK_NET_MOD">—</span></span></div></div>
           <div class="st"><div class="k">Capital laid out</div><div class="v" data-bind="BOOK_CAP">—</div></div>
           <div class="st"><div class="k">Win rate <span class="dim">/ breakeven</span></div><div class="v"><span data-bind="SB_WR">—</span>% <span class="dim" style="font-size:11px">/ <span data-bind="BOOK_BE">—</span>%</span></div></div>
           <div class="st"><div class="k">Settled</div><div class="v" data-bind="SB_GRADED">—</div></div>
@@ -1752,6 +1762,8 @@ TEMPLATE = r"""<meta charset="utf-8">
     if (b.BOOK_NET != null) {
       // net-units value stays sign-coloured (green +, red −) — the number shows good/bad, not a title.
       var netEl = document.getElementById("sb_net"); if (netEl) netEl.style.color = _neg(b.BOOK_NET) ? "var(--model)" : "var(--good)";
+      var netMod = document.getElementById("sb_net_mod");
+      if (netMod && b.BOOK_NET_MOD && b.BOOK_NET_MOD !== "—") netMod.style.color = _neg(b.BOOK_NET_MOD) ? "var(--model)" : "var(--good)";
     }
     // CRPS: green ONLY when the model actually beats the ensemble (lower is better).
     var cv = document.getElementById("crps_v");

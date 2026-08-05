@@ -2065,6 +2065,36 @@ def test_equity_curves_plot_return_on_capital_not_summed_units():
     assert 'id="c_bkwr"' in src
 
 
+def test_five_city_panel_states_its_universe_and_both_legs_return_on_capital():
+    """Two gaps a reader hit: the panel plotted Leg 1 AND Leg 1b but stated only Leg 1's return,
+    and it never said which cities it covered — while the breadth panel right below it, running
+    the same legs, says 'every Polymarket weather city'. Same chart, different universe, only one
+    of them labelled."""
+    import inspect
+    import build_dashboard as bd
+    src = inspect.getsource(bd)
+
+    # Both legs' return on capital is stated, not just plotted.
+    assert 'data-bind="BOOK_NET"' in src and 'data-bind="BOOK_NET_MOD"' in src
+    assert "eq[-1]['mroi']" in src, "the 1b figure must come from the same series the chart plots"
+    # The universe is named, and derived from CITY_ORDER so it cannot drift from what is graded.
+    assert 'data-bind="BOOK_CITIES"' in src and 'data-bind="BOOK_NCITIES"' in src
+    assert "CITY_META[c][0] for c in CITY_ORDER" in src
+
+    # A curve point carrying both legs must yield both figures — a dash beside a plotted line is
+    # the bug being fixed, so assert the 1b cell fills from the same point the chart reads.
+    pt = {"t": "Aug 4", "roi": 2.62, "mroi": 3.53, "be": 83.5, "cap": 278.0, "n": 334}
+    b = bd.build_payload({}, {"equity": [pt]})["bind"]
+    assert b["BOOK_NET"] == "+2.62%" and b["BOOK_NET_MOD"] == "+3.53%"
+    assert b["BOOK_NCITIES"] == "5"
+    assert b["BOOK_CITIES"] == "Seoul, London, Chicago, New York, Hong Kong"
+    # Negatives keep the typographic minus the panel's colour test keys off.
+    neg = bd.build_payload({}, {"equity": [{**pt, "mroi": -1.4}]})["bind"]
+    assert neg["BOOK_NET_MOD"] == "−1.40%"
+    # An empty book must dash rather than raise or print a stale number.
+    assert bd.build_payload({}, {"equity": []})["bind"]["BOOK_NET_MOD"] == "—"
+
+
 def test_both_books_plot_leg1_and_leg1b_from_one_shared_function():
     """Both panels show Leg 1 and Leg 1b. They must come from the SAME function: while they were
     two copies the 5-city curve silently aggregated a different set of legs (it included Leg 2
