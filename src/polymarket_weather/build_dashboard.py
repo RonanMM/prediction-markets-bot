@@ -853,6 +853,43 @@ def build_payload(d: dict, series: dict) -> dict:
     }
 
 
+def _capture_gradable(city: str, snapshots_path) -> int:
+    """Distinct capture-tier markets for `city` whose target day has ended AND which truth can
+    actually resolve. Returns 0 on any failure — this panel must never block a publish.
+
+    "Gradable" deliberately means resolvable, not merely past: before the 2026-08-05 ruler fix
+    these cities had no wunderground reconstruction, so a count of "days elapsed" would have
+    claimed scoreable markets we could not in fact score.
+    """
+    import pandas as pd
+    try:
+        from datetime import date as _date
+        from grading import resolves_yes
+        from pmf import parse_question, parse_question_date
+
+        d = pd.read_csv(snapshots_path, low_memory=False)
+        if not {"condition_id", "question", "end_date_iso"}.issubset(d.columns):
+            return 0
+        d = d.sort_values("fetched_at_utc").groupby("condition_id").last().reset_index()
+        end = pd.to_datetime(d["end_date_iso"], errors="coerce", utc=True).dt.tz_localize(None)
+        today = _date.today()
+        n = 0
+        for (_, r), e in zip(d.iterrows(), end):
+            q = str(r["question"])
+            pq = parse_question(q)
+            if not pq or pd.isna(e):
+                continue
+            tgt = parse_question_date(q, e) or e.date()
+            if tgt >= today:                       # day not over — cannot have settled
+                continue
+            if resolves_yes(city, str(tgt), q, pq["temp_c"]) is not None:
+                n += 1
+        return n
+    except Exception as exc:                       # noqa: BLE001 — must never block publish
+        sys.stderr.write(f"::warning::capture gradable count for {city} unavailable: {exc}\n")
+        return 0
+
+
 def capture_coverage() -> list:
     """Per-city collection health for the CAPTURE tier. Never raises.
 
@@ -889,6 +926,15 @@ def capture_coverage() -> list:
                 p = PKG / "data" / "kalshi" / f"{slug}_{fname}.csv"
                 if p.exists():
                     rec[key] = int(len(pd.read_csv(p, low_memory=False)))
+
+            # `graded` was declared above, rendered by _capture_html, and NEVER ASSIGNED — so
+            # every capture city published "awaiting first resolution" permanently and the
+            # "{n} graded" branch was unreachable. Dead payload rendered as a measurement: the
+            # same defect class as the 0/80 Leg-1b readout. Count it for real — a market counts
+            # only when its day has ended AND truth resolves it, which is exactly the question
+            # the panel exists to answer ("can we score this pipeline yet?").
+            if rec["pm_markets"]:
+                rec["graded"] = _capture_gradable(city, pm)
         except Exception as exc:                      # noqa: BLE001 — must never block publish
             sys.stderr.write(f"::warning::capture coverage for {city} unavailable: {exc}\n")
         rows.append(rec)

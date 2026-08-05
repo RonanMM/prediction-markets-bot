@@ -2065,6 +2065,32 @@ def test_equity_curves_plot_return_on_capital_not_summed_units():
     assert 'id="c_bkwr"' in src
 
 
+def test_capture_panel_counts_graded_markets_instead_of_publishing_a_hardcoded_zero(tmp_path):
+    """`graded` was declared, rendered, and never assigned — so all 7 capture cities published
+    'awaiting first resolution' forever and the '{n} graded' branch was unreachable. Dead payload
+    rendered as a measurement, same class as the 0/80 Leg-1b readout."""
+    import inspect
+    import pandas as pd
+    import build_dashboard as bd
+
+    src = inspect.getsource(bd.capture_coverage)
+    assert 'rec["graded"] = ' in src, "graded is back to being a hardcoded zero"
+
+    # A market whose day has ended and which truth can resolve counts; a future one does not.
+    rows = [{"fetched_at_utc": "2026-08-05T00:00:00+00:00", "condition_id": "0xA",
+             "question": "Will the highest temperature in Miami be between 88-89°F on August 1?",
+             "end_date_iso": "2026-08-02T00:00:00Z"},
+            {"fetched_at_utc": "2026-08-05T00:00:00+00:00", "condition_id": "0xB",
+             "question": "Will the highest temperature in Miami be between 88-89°F on December 30?",
+             "end_date_iso": "2026-12-31T00:00:00Z"}]
+    p = tmp_path / "miami_snapshots.csv"
+    pd.DataFrame(rows).to_csv(p, index=False)
+    assert bd._capture_gradable("Miami", p) == 1, "past market not counted, or future one was"
+
+    # Never raises — this panel must not be able to block a publish.
+    assert bd._capture_gradable("Miami", tmp_path / "does_not_exist.csv") == 0
+
+
 def test_capture_cities_grade_on_the_ruler_polymarket_actually_settles_on():
     """Polymarket settles the 7 capture cities on wunderground; they were being graded on the NWS
     CLI — the W0 defect at 7x scale. Validated 2026-08-05 against 412 settled breadth markets:
