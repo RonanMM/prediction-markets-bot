@@ -29,8 +29,27 @@ _OBS_DIR = Path(__file__).resolve().parent / "data" / "weather"
 
 # Cities whose WU page is METAR-driven AND whose reconstruction is settlement-validated.
 # Keys are city names normalized by _slug_for (lowercase, spaces/underscores stripped).
+#
+# ⚠️ ADMISSION IS EARNED, NEVER ASSUMED. A city joins this map only after its reconstruction is
+# shown to grade REAL settlements at least as well as the CLI feed it replaces. Adding a city
+# because "Polymarket says it settles on wunderground" is not enough — that is the claim being
+# tested, and a station whose METARs miss its true extreme would grade WORSE on the WU rule.
+#
+# The 7 capture-tier cities were admitted 2026-08-05 against 412 settled breadth-book markets over
+# 11 target dates (the book reads each resolved market's own outcome). Every city improved and none
+# regressed:
+#     Atlanta 49/55→55/55 · Austin 46/49→49/49 · Houston 38/40→40/40 · Los Angeles 36/43→43/43
+#     Miami 101/110→110/110 · San Francisco 58/66→66/66 · Seattle 42/49→49/49
+#     OVERALL 370/412 (89.8%) → 412/412 (100.0%)
+# 89.8% was BELOW the project's 95% settlement-audit floor, i.e. these cities were being graded
+# with a ruler that would have failed the guard had the guard been watching them (it was not —
+# audit_settlements covered only the 5 modelled cities; it now covers all 12).
 _WU_RECON_SLUGS = {"nyc": "new_york_city", "newyorkcity": "new_york_city",
-                   "newyork": "new_york_city", "chicago": "chicago"}
+                   "newyork": "new_york_city", "chicago": "chicago",
+                   # capture tier — validated 2026-08-05, see above
+                   "losangeles": "los_angeles", "austin": "austin", "atlanta": "atlanta",
+                   "houston": "houston", "miami": "miami", "seattle": "seattle",
+                   "sanfrancisco": "san_francisco"}
 
 # A day qualifies only with reasonably complete METAR coverage: a missing stretch can hide the
 # extreme (the min usually lives 03-06 local, the max 13-17). CLI fallback covers gappy days.
@@ -46,7 +65,9 @@ def _slug_for(city) -> str | None:
     return _WU_RECON_SLUGS.get(key)
 
 
-@lru_cache(maxsize=8)
+# 16, not 8: with the capture tier there are 11 reconstruction slugs, and a cache smaller than the
+# working set thrashes — every city switch would re-read and re-parse a ~40k-row CSV.
+@lru_cache(maxsize=16)
 def _load_obs(slug: str):
     path = _OBS_DIR / f"{slug}_obs_hourly.csv"
     if not path.exists():

@@ -2065,6 +2065,34 @@ def test_equity_curves_plot_return_on_capital_not_summed_units():
     assert 'id="c_bkwr"' in src
 
 
+def test_capture_cities_grade_on_the_ruler_polymarket_actually_settles_on():
+    """Polymarket settles the 7 capture cities on wunderground; they were being graded on the NWS
+    CLI — the W0 defect at 7x scale. Validated 2026-08-05 against 412 settled breadth markets:
+    370/412 (89.8%) on the CLI, 412/412 (100%) on the reconstruction, every city improving."""
+    import wu_truth
+    for city in ("Los Angeles", "Austin", "Atlanta", "Houston", "Miami", "Seattle",
+                 "San Francisco"):
+        assert wu_truth._slug_for(city) is not None, f"{city} still grades on the CLI ruler"
+    # aliases and spacing must resolve too — "san_francisco" and "San Francisco" are one city
+    assert wu_truth._slug_for("san_francisco") == "san_francisco"
+    assert wu_truth._slug_for("SAN FRANCISCO") == "san_francisco"
+    # the cache must hold the whole working set or every city switch re-parses a 40k-row CSV
+    assert wu_truth._load_obs.cache_info().maxsize >= len(set(wu_truth._WU_RECON_SLUGS.values()))
+
+
+def test_the_settlement_audit_watches_every_city_we_grade():
+    """The capture tier graded at 89.8% — below this file's own 95% floor — and nothing caught it,
+    because the audit's city map listed only the modelled five. A guard that watches a subset
+    reports the subset's health as the system's."""
+    import audit_settlements as aud
+    from resolution_anchors import RESOLUTION_ANCHORS, slug
+    audited = set(aud._SLUGS)          # keys are the data-file slugs
+    for city in RESOLUTION_ANCHORS:
+        assert slug(city) in audited, f"{city} is graded but never audited"
+    # every audited city needs a timezone, or its day-end test throws at runtime
+    assert set(aud._SLUGS.values()) <= set(aud._TZ), "an audited city has no timezone"
+
+
 def test_market_calibration_binds_on_the_date_clustered_interval():
     """545 'city-days' are 49 cities across ~12 DATES, and cities on one date share a continental
     weather regime. Clustering on city-day treats ~49 correlated observations as independent, so
@@ -2151,10 +2179,13 @@ def test_reconstruct_is_for_analysis_and_grading_still_refuses_unvalidated_citie
     grades a market still goes through wu_daily_extreme, which refuses cities whose reconstruction
     has not been validated against real settlements."""
     import wu_truth
-    assert wu_truth._slug_for("Austin") is None, "Austin was admitted without validation"
-    assert wu_truth._slug_for("Miami") is None
-    assert wu_truth.wu_daily_extreme("Austin", "2026-08-01", "max") is None
-    assert set(wu_truth._WU_RECON_SLUGS.values()) == {"new_york_city", "chicago"}
+    # London / Seoul / Hong Kong are deliberately NOT reconstruction cities (London had no audit
+    # misses and stays on IEM daily; Hong Kong resolves on the HKO itself). They are the standing
+    # proof that the allowlist still refuses, now that the capture tier has been admitted.
+    for city in ("London", "Seoul", "Hong Kong"):
+        assert wu_truth._slug_for(city) is None, f"{city} was admitted without validation"
+        assert wu_truth.wu_daily_extreme(city, "2026-08-01", "max") is None
+    assert "london" not in wu_truth._WU_RECON_SLUGS.values()
     import inspect
     import venue_basis as vb
     src = inspect.getsource(vb)

@@ -25,10 +25,21 @@ from grading import resolves_yes, fetch_actual_weather
 from pmf import parse_question, parse_question_date
 
 _DATA = Path(__file__).resolve().parent / "data" / "polymarket"
+# EVERY city we grade, not just the modelled five. The capture tier was graded on the NWS CLI
+# while Polymarket settles it on wunderground — 370/412 = 89.8%, below this file's own floor —
+# and nothing caught it because this map did not list those cities. A guard that watches a subset
+# reports the subset's health as the system's.
 _SLUGS = {"chicago": "Chicago", "new_york_city": "NYC", "london": "London",
-          "seoul": "Seoul", "hong_kong": "HongKong"}
+          "seoul": "Seoul", "hong_kong": "HongKong",
+          "los_angeles": "Los Angeles", "austin": "Austin", "atlanta": "Atlanta",
+          "houston": "Houston", "miami": "Miami", "seattle": "Seattle",
+          "san_francisco": "San Francisco"}
 _TZ = {"Chicago": "America/Chicago", "NYC": "America/New_York", "London": "Europe/London",
-       "Seoul": "Asia/Seoul", "HongKong": "Asia/Hong_Kong"}
+       "Seoul": "Asia/Seoul", "HongKong": "Asia/Hong_Kong",
+       "Los Angeles": "America/Los_Angeles", "Austin": "America/Chicago",
+       "Atlanta": "America/New_York", "Houston": "America/Chicago",
+       "Miami": "America/New_York", "Seattle": "America/Los_Angeles",
+       "San Francisco": "America/Los_Angeles"}
 _PIN = 0.03           # last price within this of 0/1 counts as settled
 _AGREEMENT_FLOOR = 0.95
 
