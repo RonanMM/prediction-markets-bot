@@ -769,6 +769,51 @@ def hypothesis_status() -> list:
                 bb.GATE_CITYSEL, extra="expected to FAIL — see §12c")
     except Exception:
         pass
+
+    # ── the cross-venue programme ────────────────────────────────────────────────────────
+    # These are NOT shoulder-book legs and have no moderate_gate_stats, so they were missing
+    # from this table entirely — the feed showed data arriving while the test it feeds had no
+    # visible status at all. Progress here is measured in what the test actually needs.
+    try:
+        import venue_basis as vbm
+        bins = [vbm.matched_bins(c) for c in vbm.capture_cities()]
+        bins = [b for b in bins if not b.empty]
+        import pandas as _pd
+        allb = _pd.concat(bins) if bins else _pd.DataFrame()
+        t = vbm.directional_test(allb) if not allb.empty else {}
+        nclu, ndat = t.get("n_clusters", 0), t.get("n_dates", 0)
+        out.append({"name": "Venue basis · direction", "prereg": vbm.BASIS_PREREG_DATE,
+                    "n": int(len(allb)), "need_n": vbm.GATE_MIN_CLUSTERS,
+                    "dates": int(ndat), "need_dates": vbm.GATE_MIN_DATES,
+                    "edge": round(t["slope"], 4) if t.get("slope") is not None else None,
+                    "blocker": ("PASS" if t.get("pass") else
+                                "no co-timed two-sided quotes yet" if not len(allb) else
+                                f"{max(0, vbm.GATE_MIN_CLUSTERS - nclu)} more city-days"),
+                    "extra": "§13b · both venues, same bin, different rulers"})
+    except Exception:
+        pass
+    try:
+        import glob as _glob
+        import pandas as _pd
+        rows, series, dates = 0, 0, set()
+        for f in _glob.glob(str(PKG / "data" / "crossvenue" / "*_minute.csv")):
+            d = _pd.read_csv(f, low_memory=False)
+            rows += len(d)
+            if "target_date" in d:
+                dates |= set(d["target_date"].dropna().astype(str))
+            key = "ticker" if "ticker" in d.columns else "token_id"
+            if key in d.columns:
+                series += int(d[key].nunique())
+        NEED_DATES = 14           # ~a fortnight of minute data before the test is worth running
+        out.append({"name": "Cross-venue lead-lag", "prereg": "2026-08-05",
+                    "n": rows, "need_n": 0, "dates": len(dates), "need_dates": NEED_DATES,
+                    "edge": None,
+                    "blocker": ("accumulating minute data"
+                                if len(dates) < NEED_DATES else
+                                "ready — run the contemporaneous-correlation sanity check first"),
+                    "extra": f"§13f · {series} series captured, minute resolution"})
+    except Exception:
+        pass
     return out
 
 
@@ -2171,7 +2216,7 @@ TEMPLATE = r"""<meta charset="utf-8">
         var edge = r.edge == null ? "—" : (r.edge >= 0 ? "+" : "\u2212") + Math.abs(r.edge).toFixed(4);
         return '<tr><td class="city">' + r.name +
                (r.extra ? ' <span class="dim" style="font-size:10px">' + r.extra + '</span>' : '') +
-               '</td><td class="num">' + r.n + "/" + r.need_n +
+               '</td><td class="num">' + (r.need_n ? r.n + "/" + r.need_n : r.n.toLocaleString()) +
                '</td><td class="num">' + r.dates + "/" + r.need_dates +
                '</td><td class="num">' + edge + '</td><td>' +
                (pass ? '<span class="chip good">PASS</span>'

@@ -6257,10 +6257,25 @@ def test_open_tests_report_the_binding_constraint_not_a_percentage():
     assert hs, "no open tests reported"
     for r in hs:
         assert set(r) >= {"name", "prereg", "n", "need_n", "dates", "need_dates", "blocker"}
-        assert r["need_dates"] == sb.GATE_MIN_DATES
-        # a row that has the bets but not the calendar must say so, never "PASS"
-        if r["n"] >= r["need_n"] and r["dates"] < r["need_dates"]:
-            assert "target dates" in r["blocker"], r
-            assert r["blocker"] != "PASS"
+        # Pre-registered GATES all use the repo-wide calendar floor. The accumulating experiments
+        # (cross-venue lead-lag) carry a practical target instead — they are not gates and must
+        # not be dressed as one.
+        if r["need_n"]:
+            assert r["need_dates"] == sb.GATE_MIN_DATES, r["name"]
+            # a row that has the bets but not the calendar must say so, never "PASS"
+            if r["n"] >= r["need_n"] and r["dates"] < r["need_dates"]:
+                assert "city-days" in r["blocker"] or "target dates" in r["blocker"], r
+                assert r["blocker"] != "PASS"
     # the falsification legs must carry their prior, so nobody reads them as promising
     assert any("expected to FAIL" in (r.get("extra") or "") for r in hs)
+
+    # Every OPEN research lead needs a status row, not just a feed. The cross-venue work was
+    # accumulating data with no visible progress anywhere — the feed table showed rows arriving
+    # while the test it feeds had no row at all, which is indistinguishable from not running.
+    names = " ".join(r["name"] for r in hs)
+    assert "Venue basis" in names, "the §13b gate has no status row"
+    assert "lead-lag" in names, "the §13f experiment has no status row"
+    # a row with no bet threshold must not render as "n/0"
+    for r in hs:
+        assert r["need_n"] >= 0
+        assert r["dates"] <= r["need_dates"] or r["blocker"] != "accumulating minute data"
