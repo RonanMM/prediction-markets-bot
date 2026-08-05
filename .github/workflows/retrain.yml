@@ -35,7 +35,22 @@ on:
   # sample can now span more than one model version. Acceptable while everything is paper;
   # revisit before any bucket goes live (see config.LIVE_BUCKETS / E3_NOMINATION_DATE).
   schedule:
+    # TWICE weekly (Sun + Wed), and the second run is not about fresher models — it is what keeps
+    # the archive cache ALIVE. GitHub evicts a cache after 7 days without access; a weekly cron is
+    # exactly 7 days apart, so it sits ON the eviction boundary. This repo's own measurements show
+    # schedules firing 1-3h late with slots dropped outright, so any lateness tips a run past it.
+    #
+    # That failure is SELF-PERPETUATING, and it already happened: the 2026-08-02 run came 8 days
+    # after 2026-07-25, found a cold cache, ran the full 2022->now refetch, consumed all 360
+    # minutes (the hosted-runner hard cap — it cannot simply be raised) and was killed at the Tmin
+    # archive step. A killed run banks less cache, so the next run is colder still. The model sat
+    # frozen at the 2026-07-25 build for 11 days and nothing reported it, because a job that
+    # produces no commit looks identical whether it ran and changed nothing or died.
+    #
+    # Two runs 3-4 days apart stay comfortably inside the window even when late. A warm run is
+    # only an incremental pull, so the extra one is cheap.
     - cron: "20 4 * * 0"
+    - cron: "20 4 * * 3"
   workflow_dispatch: {}
 
 concurrency:
