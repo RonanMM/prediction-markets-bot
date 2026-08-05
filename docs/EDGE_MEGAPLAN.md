@@ -765,3 +765,50 @@ were. Those settlements start arriving ~2026-08-10.
 directional test clears a clustered 95% interval over **≥30 city-days spanning ≥30 distinct target
 dates**, on entries recorded on or after 2026-08-05, with the fair value computed from the
 per-station basis distribution rather than from the NYC/Chicago pooled one.
+
+### 13c. The PRICE is miscalibrated — the one positive-ROI finding (2026-08-05)
+
+§13a shows our forecasts add nothing given the price. That test assumes the price is calibrated in
+log-odds (b_mkt = 1.194, interval [0.940, 1.563] — consistent with 1.0, but also with 1.5), and a
+linear log-odds term cannot see a tail-only distortion. So the price was tested directly, in price
+space, on the largest model-free sample the project has: 3,419 graded breadth entries carrying the
+traded price and the market's own settlement. **No forecast is involved.**
+
+| bucket | n | price | realized | date-clustered CI | sell ROI | verdict |
+|---|---|---|---|---|---|---|
+| [0.05,0.10) | 964 | 0.068 | 0.033 | [+0.013, +0.054] | **+2.4%** | SELL |
+| [0.10,0.15) | 623 | 0.121 | 0.072 | [+0.025, +0.120] | **+3.8%** | SELL |
+| [0.15,0.20) | 452 | 0.174 | 0.133 | [+0.108, +0.158] | **+3.0%** | SELL |
+| [0.20,0.25) | 429 | 0.224 | 0.205 | [+0.138, +0.273] | −0.0% | — |
+| [0.25,0.30) | 416 | 0.273 | 0.296 | [+0.249, +0.342] | −5.8% | — |
+| [0.30,0.35) | 463 | 0.325 | 0.335 | [+0.256, +0.413] | −4.5% | — |
+
+Intervals are **Bonferroni-corrected for 11 declared buckets**, clustered on **date** (not
+city-day), with **t(k−1)** critical values — cluster-robust SEs under-cover badly below ~30
+clusters, which is why `GATE_MIN_DATES` exists. Three buckets survive all of that. This is classic
+**favourite–longshot bias**, monotone in price, and it is the first thing in this project to show a
+positive expected return after real spread and fees.
+
+**What is genuinely new is the localisation, not the effect.** This is the same phenomenon the
+shoulder book already trades; measuring it in calibration space rather than P&L space shows where
+it actually lives: the edge is **[0.05, 0.20)**, [0.20,0.25) is break-even, and **[0.25,0.35) has
+the wrong sign** — realized 0.316 against a price of 0.300, so selling it loses. Leg 1's [5,35)¢
+band is therefore diluted by a segment that is actively negative, and Leg 1b's [10,25)¢ band
+includes the break-even top and excludes the profitable 5–10¢ bottom.
+
+**What has NOT changed, and must not be argued away:**
+
+- **12 distinct target dates.** The pre-registered gate requires 30. That is not a formality here:
+  "extreme bins hit less often than priced" is precisely what a calm stretch looks like, and the
+  dispersion monitor records Tmax std(z) **1.78 in March against 0.98 in July**. Eleven summer days
+  could produce this table with no persistent edge at all. **Significance is not the binding
+  constraint — calendar is**, and no amount of extra cities fixes that (§10b amendment 2026-08-02).
+- **Re-cutting the band to [0.05,0.20) on this table is exactly the §12c trap.** A band chosen after
+  seeing these numbers is fitted, not discovered. If it is to be traded it must be pre-registered
+  and graded forward, like everything else.
+- The payoff is **short-volatility**: 5.6× loss-to-win ratio, so 11 days of data have almost
+  certainly not sampled the tail that pays for the wins.
+
+`market_calibration.py` runs this table. It is the cleanest instrument the project has for "is
+there a trade", precisely because it involves no model — and its answer is *yes, probably, and the
+gate still has 19 more calendar days to run before that means anything.*

@@ -2065,6 +2065,36 @@ def test_equity_curves_plot_return_on_capital_not_summed_units():
     assert 'id="c_bkwr"' in src
 
 
+def test_market_calibration_binds_on_the_date_clustered_interval():
+    """545 'city-days' are 49 cities across ~12 DATES, and cities on one date share a continental
+    weather regime. Clustering on city-day treats ~49 correlated observations as independent, so
+    the DATE-clustered interval is the binding one and the verdict must be read off it."""
+    import inspect
+    import market_calibration as mc
+    src = inspect.getsource(mc)
+    assert '"SELL" if out["dt_hi"] < px' in src, "verdict is not taken from the date clustering"
+    assert "cd_hi" not in src.split("out[\"verdict\"]")[1][:200], "verdict leaked onto city-day"
+    # Below ~30 clusters a cluster-robust SE under-covers; the critical value must widen.
+    assert mc._t_crit(11, 11) > mc._t_crit(500, 11) > 0
+    assert mc._t_crit(11, 11) > 3.0, "no small-sample correction at k=11"
+    assert mc._t_crit(500, 1) < mc._t_crit(500, 11), "no multiplicity correction"
+
+
+def test_sell_roi_pays_the_real_spread_and_fee():
+    """A calibration edge that vanishes after costs is not a trade. Selling YES = buying NO, so the
+    cost is (1-price) plus the half-spread, and the fee is the verified 0.05*p*(1-p)."""
+    import config
+    import market_calibration as mc
+    # A bin priced 0.10 that never happens: sell it, win every time, but not for free.
+    r = mc.sell_roi([0.10] * 50, [0] * 50)
+    cost = 0.90 + config.HALF_SPREAD
+    want = (1 - (cost + config.taker_fee_per_share(cost))) / (cost + config.taker_fee_per_share(cost))
+    assert abs(r - want) < 1e-9
+    assert r < (1 - 0.90) / 0.90, "costs were not charged"
+    # A bin priced 0.10 that always happens loses essentially the whole stake.
+    assert mc.sell_roi([0.10] * 50, [1] * 50) < -0.99
+
+
 def test_capture_cities_are_slugs_not_display_names():
     """RESOLUTION_ANCHORS is keyed by display name ("Los Angeles"); every data path is
     `{slug}_*.csv`. Passing the key through worked for single-word cities ONLY because macOS is
