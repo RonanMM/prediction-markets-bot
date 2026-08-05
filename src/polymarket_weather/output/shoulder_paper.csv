@@ -533,3 +533,4 @@ entered_at_utc,city,condition_id,question,target_date,leg,side,entry_side_price,
 2026-08-05T15:33:53.685703+00:00,HongKong,0x838c8b1374b74742b25ef4a15c8f99969fdf346f1922741a352f4bc10ada0a3f,Will the lowest temperature in Hong Kong be 25°C on August 7?,2026-08-07,shoulder,No,0.945,0.055,outer,1362.59
 2026-08-05T18:03:36.967941+00:00,Seoul,0xbcce3c540bb8fb47a52e7e1e7bb3afba68989d42678a5ef57cb665c6330b1109,Will the lowest temperature in Seoul (Incheon) be 27°C on August 7?,2026-08-07,shoulder,No,0.7,0.3,core,1043.71
 2026-08-05T20:01:46.749119+00:00,Chicago,0x92ada4f084cf03090a240da55b42bdc4de3b75d78ad5a67639596823fa540f65,Will the highest temperature in Chicago be between 78-79°F on August 6?,2026-08-06,shoulder,No,0.67,0.33,core,2638.35
+2026-08-05T21:40:29.145131+00:00,Seoul,0x33c9b5f328f4c2a1eaa5f149820f6d9423c206975821a63366295936cbdac708,Will the lowest temperature in Seoul (Incheon) be 29°C on August 7?,2026-08-07,shoulder,No,0.925,0.075,outer,1412.17
