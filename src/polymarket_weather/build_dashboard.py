@@ -687,22 +687,24 @@ def feed_status() -> list:
         "settlement grading — HK lags a month by design", local_stamp=True)
     add("Hourly METARs", newest("data/weather/*_obs_hourly.csv", "valid_local"), 72,
         "wu_truth input — 9 cities grade on it", local_stamp=True)
-    # Models: read the stamp the trainers now write; fall back to file mtime on older artifacts.
-    newest_model, src = None, "mtime"
+    # Models: ONLY the stamp the trainers write. Never file mtime — `actions/checkout` writes
+    # every file fresh, so on the CI runner mtime equals build time and the age reads ~0h no
+    # matter how old the model really is. Shipped that way once: locally it correctly showed
+    # 11.4d STALE, and the very first cloud build published "0.1h current" for the same frozen
+    # 2026-07-25 artifacts. An unverifiable age is reported as UNKNOWN and counts as NOT ok,
+    # because a freshness panel that cannot tell must never claim fresh.
+    newest_model = None
     for f in glob.glob(str(PKG / "models" / "*_emos.json")):
         try:
-            t = _json.load(open(f)).get("trained_at")
+            t = pd.to_datetime(_json.load(open(f)).get("trained_at"), utc=True, errors="coerce")
         except Exception:
-            t = None
-        if t:
-            src = "trained_at"
-        else:
-            t = datetime.fromtimestamp(os.path.getmtime(f), tz=timezone.utc).isoformat()
-        t = pd.to_datetime(t, utc=True, errors="coerce")
+            continue
         if t is not None and not pd.isna(t) and (newest_model is None or t > newest_model):
             newest_model = t
     add("Calibrator models", newest_model, 24 * 10,
-        f"retrain runs twice weekly ({src})")
+        "retrain runs twice weekly"
+        if newest_model is not None else
+        "UNKNOWN — artifacts predate trained_at stamping; the next retrain fixes this")
     return rows
 
 

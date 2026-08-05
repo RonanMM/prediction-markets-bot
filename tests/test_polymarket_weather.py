@@ -6235,7 +6235,15 @@ def test_programme_status_judges_feeds_by_data_age_not_workflow_status():
     # Station-local stamps (no UTC column) must be clamped, not shown as negative ages.
     src = inspect.getsource(bd.feed_status)
     assert "local_stamp" in src, "local wall-clock feeds are parsed as UTC unclamped"
-    assert "trained_at" in src, "model age has no stamped source, only mtime"
+
+    # Model age must come ONLY from the stamped artifact. actions/checkout writes every file
+    # fresh, so on the runner mtime == build time and the age would read ~0h for a model frozen
+    # for weeks — which is what the first cloud build published.
+    assert "trained_at" in src
+    assert "getmtime" not in src, "model freshness is falling back to mtime, which CI resets"
+    models = [f for f in bd.feed_status() if f["feed"] == "Calibrator models"]
+    assert models and (models[0]["age_h"] is not None or models[0]["ok"] is False), \
+        "an unverifiable model age must count as NOT ok, never as fresh"
 
 
 def test_open_tests_report_the_binding_constraint_not_a_percentage():
