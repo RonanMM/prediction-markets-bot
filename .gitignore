@@ -69,6 +69,9 @@ src/polymarket_weather/polymarket/
 #   *_nbm.csv           — NBM guidance (IEM archive)
 src/polymarket_weather/data/weather/*_historical_*.csv
 src/polymarket_weather/data/weather/*_obs_hourly.csv
+# *_obs_1min.csv — 1-minute ASOS (IEM). Refetchable, and LARGE: ~85 MB per station,
+# ~765 MB across the nine US stations. Never commit these.
+src/polymarket_weather/data/weather/*_obs_1min.csv
 src/polymarket_weather/data/weather/*_nbm.csv
 # EXCEPTION — the daily settlement-truth actuals ARE committed as a resilience fallback.
 # They are small (~200KB/city, daily) and the grading of the ENTIRE dashboard depends on

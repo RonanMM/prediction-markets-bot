@@ -2065,6 +2065,75 @@ def test_equity_curves_plot_return_on_capital_not_summed_units():
     assert 'id="c_bkwr"' in src
 
 
+def test_asos_1min_keeps_the_existing_file_when_a_chunk_fails(tmp_path, monkeypatch):
+    """The obs-truncation incident, written down as code: one chunk failed all its retries, the
+    loop skipped it silently, and a complete 40,071-row file was replaced by a 35,032-row one that
+    still looked plausible. A partial download must never overwrite a complete file."""
+    import pandas as pd
+    import fetch_asos_1min as f
+
+    monkeypatch.setattr(f, "OUT_DIR", tmp_path)
+    good = pd.DataFrame({"valid_utc": pd.to_datetime(
+        ["2026-08-01T00:00Z", "2026-08-01T00:01Z"], utc=True), "temp_c": [20.0, 21.0]})
+    good["valid_local"] = good["valid_utc"].dt.tz_localize(None)
+    p = tmp_path / "new_york_city_obs_1min.csv"
+    good.to_csv(p, index=False)
+    before = p.read_text()
+
+    monkeypatch.setattr(f, "_fetch_chunk", lambda *a, **k: None)      # every retry failed
+    assert f.fetch_station("new_york_city", __import__("datetime").date(2026, 8, 1)) is False
+    assert p.read_text() == before, "a failed fetch overwrote the existing file"
+
+
+def test_asos_1min_never_loses_an_observation_it_already_had(tmp_path, monkeypatch):
+    """Guard 2. NOT a row-count test: the fetch is incremental and unions with the existing file,
+    so len can never shrink and a count comparison could never fire — a guard that cannot trigger
+    reads as protection that isn't there. The real post-union risk is old rows going MISSING (a
+    timestamp-parse regression, a dedupe on the wrong key, a refactor dropping the concat), so the
+    written file must be a strict superset of what was on disk."""
+    import datetime as dt
+    import inspect
+    import pandas as pd
+    import fetch_asos_1min as f
+
+    monkeypatch.setattr(f, "OUT_DIR", tmp_path)
+    old_rows = pd.DataFrame(
+        {"valid_utc": pd.date_range("2026-08-01", periods=500, freq="min", tz="UTC"),
+         "temp_c": 20.0})
+    old_rows["valid_local"] = old_rows["valid_utc"].dt.tz_localize(None)
+    p = tmp_path / "chicago_obs_1min.csv"
+    old_rows.to_csv(p, index=False)
+
+    # A normal top-up returning only a short new tail must PRESERVE every earlier observation.
+    tail = pd.DataFrame(
+        {"valid_utc": pd.date_range("2026-08-02", periods=10, freq="min", tz="UTC"),
+         "temp_c": 25.0})
+    monkeypatch.setattr(f, "_fetch_chunk", lambda *a, **k: tail)
+    assert f.fetch_station("chicago", dt.date(2026, 8, 1), today=dt.date(2026, 8, 3)) is True
+    after = pd.read_csv(p)
+    after["valid_utc"] = pd.to_datetime(after["valid_utc"], utc=True)
+    assert len(after) == 510, f"union lost rows: {len(after)}"
+    assert set(old_rows["valid_utc"]) <= set(after["valid_utc"]), "an earlier observation was lost"
+
+    # And the refusal is wired to that property, not to a count.
+    src = inspect.getsource(f.fetch_station)
+    assert "set(existing[" in src and "- set(fresh[" in src, "guard 2 is not a superset check"
+
+
+def test_asos_1min_covers_the_us_stations_and_skips_the_rest():
+    """The 1-minute archive is a US ASOS product. London and Seoul have no equivalent and must
+    keep the hourly path rather than silently getting an empty feed."""
+    import fetch_asos_1min as f
+    import fetch_station_obs as fso
+    assert set(f.ASOS_1MIN) <= set(fso.OBS_STATIONS), "a 1-min station has no hourly counterpart"
+    assert "london" not in f.ASOS_1MIN and "seoul" not in f.ASOS_1MIN
+    for slug in ("new_york_city", "chicago", "miami", "san_francisco"):
+        assert slug in f.ASOS_1MIN
+    # same station id as the hourly feed, or the two running maxes describe different places
+    for slug, (st, tz) in f.ASOS_1MIN.items():
+        assert fso.OBS_STATIONS[slug] == (st, tz), f"{slug} disagrees with the hourly feed"
+
+
 def test_retrain_buys_time_by_splitting_jobs_not_by_raising_a_cap_that_cannot_move():
     """GitHub terminates any single job on a hosted runner at 6 hours. `timeout-minutes` can only
     LOWER that ceiling — setting 720 changes nothing and the job still dies at 360, which is what
