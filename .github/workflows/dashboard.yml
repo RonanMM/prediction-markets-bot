@@ -83,11 +83,14 @@ jobs:
 
       # Without this the published dashboard grades NYC/Chicago on the NWS CLI feed rather
       # than the wunderground-faithful reconstruction (wu_truth.py), which flips ~3% of rows
-      # — concentrated in NYC|same-day and Chicago|1d. Best-effort to match the step above:
-      # a network blip should degrade the numbers, not block the publish.
+      # — concentrated in NYC|same-day and Chicago|1d. Best-effort HERE, but no longer harmless:
+      # since 2026-08-05 the 7 capture cities also reconstruct from these obs, so a failed fetch
+      # drops NINE cities to the CLI ruler, and the settlement audit below (which grades all 12)
+      # will fall under its 95% floor and block the publish. That is the intended behaviour — a
+      # degraded ruler must stop the page, not quietly change the numbers on it.
       - name: Refresh hourly station observations (wu_truth input)
         working-directory: src/polymarket_weather
-        run: python fetch_station_obs.py || echo "obs refresh skipped (network) — NYC/Chicago fall back to CLI truth"
+        run: python fetch_station_obs.py || echo "::warning::obs refresh failed — 9 cities fall back to the CLI ruler; the settlement audit below is expected to block the publish"
 
       # Settlement audit BEFORE building. truth-eval has run this since W0; the dashboard never
       # did, and that asymmetry is why the 2026-07-30 incident reached the public page: LGA's
