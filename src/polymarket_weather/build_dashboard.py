@@ -665,6 +665,11 @@ def feed_status() -> list:
     rows = []
 
     def add(name, ts, stale_h, note, local_stamp=False):
+        # NOTE: `age_h` is computed HERE, at build time, and the page recomputes it from `ts` on
+        # load — see renderStatus. Baking only the age was a real bug: if the dashboard itself
+        # stops rebuilding, every feed keeps reporting the age it had when the build ran, so the
+        # panel stays permanently green precisely when the thing it monitors has stopped. Same
+        # class as trusting file mtime. `ts` is the source of truth; age_h is a fallback.
         """`local_stamp`: this feed records station-LOCAL wall clock with no UTC column
         (obs_hourly.valid_local, historical_actuals.date_local). Parsed as UTC that runs up to
         ±14h fast or slow depending on the city — Seoul is UTC+9, so its newest row can read as
@@ -673,7 +678,13 @@ def feed_status() -> list:
         age = _age_hours(ts)
         if age is not None and local_stamp:
             age = max(0.0, age)
+        iso = None
+        if ts is not None:
+            t = pd.to_datetime(ts, utc=True, errors="coerce")
+            if t is not None and not pd.isna(t):
+                iso = t.isoformat()
         rows.append({"feed": name, "age_h": None if age is None else round(age, 1),
+                     "ts": iso, "local_stamp": bool(local_stamp),
                      "stale_h": stale_h, "note": note,
                      "ok": bool(age is not None and age <= stale_h)})
 
@@ -2252,13 +2263,24 @@ TEMPLATE = r"""<meta charset="utf-8">
     if (host) {
       var rows = D.feeds || [];
       host.innerHTML = rows.length ? rows.map(function (r) {
-        var known = r.age_h != null;
-        var frac = known ? r.age_h / r.stale_h : 1;   // share of the allowed gap used up
-        var bad = !r.ok;
+        // Recompute the age NOW from the absolute timestamp, never from the age baked at build
+        // time. If the dashboard stops rebuilding, a baked age would freeze and every feed would
+        // stay green exactly when the pipeline it monitors has stopped.
+        var age = r.age_h;
+        if (r.ts) {
+          var t = Date.parse(r.ts);
+          if (!isNaN(t)) {
+            age = (Date.now() - t) / 3600000;
+            if (r.local_stamp) age = Math.max(0, age);   // station-local stamps, no UTC column
+          }
+        }
+        var known = age != null;
+        var frac = known ? age / r.stale_h : 1;   // share of the allowed gap used up
+        var bad = !(known && age <= r.stale_h);
         return '<div class="psrow"><span class="psdot ' + (bad ? "bad" : "") + '"></span>' +
                '<div><div class="psname">' + r.feed +
                '<span class="psage ' + (bad ? "bad" : "") + '" style="float:right">' +
-               psAgo(r.age_h) + '</span></div>' +
+               psAgo(known ? age : null) + '</span></div>' +
                psBar(frac, bad ? "bad" : "") +
                '<div class="psnote">' + r.note +
                '<span style="float:right">' + psLimit(r.stale_h) + '</span></div></div>' +

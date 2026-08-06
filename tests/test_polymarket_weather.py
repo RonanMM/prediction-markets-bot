@@ -6237,6 +6237,18 @@ def test_programme_status_judges_feeds_by_data_age_not_workflow_status():
         if f["age_h"] is not None:
             assert f["ok"] == (f["age_h"] <= f["stale_h"])
 
+    # Every feed must carry an ABSOLUTE timestamp, and the page must age it from Date.now().
+    # A baked age freezes when the dashboard stops rebuilding, so every feed would keep reporting
+    # the age it had at build time and stay green precisely when the pipeline it monitors has
+    # stopped — the panel failing in the exact way it exists to prevent. Observed live: a build
+    # from 15:05 still showed "Market snapshots 2.7h" at 16:53, when the true age was 4.5h.
+    for f in feeds:
+        assert "ts" in f, f"{f['feed']} has no absolute timestamp to age from"
+        if f["age_h"] is not None:
+            assert f["ts"], f"{f['feed']} has an age but no timestamp"
+    src_js = inspect.getsource(bd)
+    assert "Date.now() - t" in src_js, "the page is not recomputing feed ages on load"
+
     # Station-local stamps (no UTC column) must be clamped, not shown as negative ages.
     src = inspect.getsource(bd.feed_status)
     assert "local_stamp" in src, "local wall-clock feeds are parsed as UTC unclamped"
