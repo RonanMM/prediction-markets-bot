@@ -710,18 +710,23 @@ def feed_status() -> list:
     # 11.4d STALE, and the very first cloud build published "0.1h current" for the same frozen
     # 2026-07-25 artifacts. An unverifiable age is reported as UNKNOWN and counts as NOT ok,
     # because a freshness panel that cannot tell must never claim fresh.
-    newest_model = None
+    newest_model, backfilled = None, False
     for f in glob.glob(str(PKG / "models" / "*_emos.json")):
         try:
-            t = pd.to_datetime(_json.load(open(f)).get("trained_at"), utc=True, errors="coerce")
+            j = _json.load(open(f))
+            t = pd.to_datetime(j.get("trained_at"), utc=True, errors="coerce")
         except Exception:
             continue
         if t is not None and not pd.isna(t) and (newest_model is None or t > newest_model):
-            newest_model = t
+            newest_model, backfilled = t, bool(j.get("trained_at_source"))
+    # A backfilled stamp is a REAL training time recovered from the commit that published the
+    # artifacts — not a value the trainer wrote. Say which, so the number is trusted for the right
+    # reason; the next retrain replaces it with a stamp written at training time.
     add("Calibrator models", newest_model, 24 * 10,
-        "retrain runs twice weekly"
+        ("retrain runs twice weekly · time recovered from the publishing commit"
+         if backfilled else "retrain runs twice weekly")
         if newest_model is not None else
-        "UNKNOWN — artifacts predate trained_at stamping; the next retrain fixes this")
+        "UNKNOWN — artifacts carry no training time; the next retrain fixes this")
     return rows
 
 

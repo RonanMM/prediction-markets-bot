@@ -193,5 +193,7 @@
       "holdout_rmse_conditioned": 0.15407104408560124,
       "holdout_rmse_forecast_only": 1.8172992160272967
     }
-  }
+  },
+  "trained_at": "2026-08-05T19:06:49+00:00",
+  "trained_at_source": "backfilled_from_commit_cc0d747"
 }

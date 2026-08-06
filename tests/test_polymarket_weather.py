@@ -6250,6 +6250,17 @@ def test_programme_status_judges_feeds_by_data_age_not_workflow_status():
     assert models and (models[0]["age_h"] is not None or models[0]["ok"] is False), \
         "an unverifiable model age must count as NOT ok, never as fresh"
 
+    # Every shipped artifact must carry a training time — either stamped by the trainer or
+    # recovered from the commit that published it. "unknown" was the honest answer while neither
+    # existed, but it is not an acceptable resting state: the age IS knowable from git.
+    import glob
+    import json as _j
+    from pathlib import Path as _P
+    arts = glob.glob(str(_P(bd.PKG) / "models" / "*_emos.json"))
+    assert arts, "no calibrator artifacts found"
+    for a in arts:
+        assert _j.load(open(a)).get("trained_at"), f"{_P(a).name} has no training time"
+
 
 def test_open_tests_report_the_binding_constraint_not_a_percentage():
     """For every open gate here the binding constraint is CALENDAR, not sample — 49 cities on one

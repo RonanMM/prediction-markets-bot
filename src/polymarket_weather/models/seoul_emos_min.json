@@ -224,5 +224,7 @@
         "holdout_rmse_raw": 2.4649445554883016
       }
     }
-  }
+  },
+  "trained_at": "2026-08-05T19:06:49+00:00",
+  "trained_at_source": "backfilled_from_commit_cc0d747"
 }
