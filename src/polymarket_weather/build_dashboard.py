@@ -1431,6 +1431,24 @@ TEMPLATE = r"""<meta charset="utf-8">
   table.data td{padding:9px 12px 9px 0;border-bottom:1px solid var(--line);color:var(--ink2);white-space:nowrap}
   table.data tr:last-child td{border-bottom:0}
   td.city{color:var(--ink);font-weight:500} .pos{color:var(--good)} .neg{color:var(--model)}
+  /* programme status */
+  .psrow{display:grid;grid-template-columns:9px 1fr auto;gap:9px;align-items:baseline;padding:9px 0;border-top:1px solid var(--line)}
+  .psrow:first-child{border-top:0}
+  .psdot{width:7px;height:7px;border-radius:50%;background:var(--good);align-self:center}
+  .psdot.warn{background:var(--warn)} .psdot.bad{background:var(--model)}
+  .psname{font-size:12.5px;color:var(--ink)}
+  .psnote{font-size:10px;color:var(--muted);margin-top:3px;line-height:1.45}
+  .psage{font-family:var(--mono);font-size:11.5px;color:var(--ink2);white-space:nowrap}
+  .psage.bad{color:var(--model)}
+  .pstrack{height:3px;background:var(--surf2);border-radius:2px;overflow:hidden;margin-top:6px}
+  .psfill{height:100%;background:var(--good);border-radius:2px}
+  .psfill.warn{background:var(--warn)} .psfill.bad{background:var(--model)}
+  .psmet{display:grid;grid-template-columns:52px 1fr 62px;gap:8px;align-items:center;margin-top:5px}
+  .psmet .k{font-size:9.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}
+  .psmet .v{font-family:var(--mono);font-size:10.5px;color:var(--ink2);text-align:right}
+  .psblock{font-size:10.5px;color:var(--ink2);margin-top:7px}
+  .psblock b{color:var(--warn);font-weight:500}
+  .psedge{font-family:var(--mono);font-size:12px}
   .pill2{font-size:9px;letter-spacing:.06em;text-transform:uppercase;padding:3px 8px;border-radius:3px;border:1px solid var(--line);color:var(--muted)}
   .pill2.on{color:var(--good);border-color:rgba(34,197,94,.45);background:rgba(34,197,94,.08)}
   .pill2.warn{color:var(--warn);border-color:rgba(250,178,25,.4);background:rgba(250,178,25,.08)}
@@ -2206,40 +2224,65 @@ TEMPLATE = r"""<meta charset="utf-8">
     var h = html || {};
     Object.keys(h).forEach(function (k) { document.querySelectorAll('[data-bind-html="' + k + '"]').forEach(function (e) { if (e.innerHTML !== h[k]) e.innerHTML = h[k]; }); });
   }
+  function psBar(frac, cls) {
+    var w = Math.max(0, Math.min(1, frac || 0)) * 100;
+    return '<div class="pstrack"><div class="psfill ' + (cls || "") +
+           '" style="width:' + w.toFixed(1) + '%"></div></div>';
+  }
   function renderStatus() {
     var host = document.getElementById("feedstatus");
     if (host) {
       var rows = D.feeds || [];
-      host.innerHTML = rows.length ? '<table class="data">' +
-        '<tr><th>Feed</th><th class="num">Age</th><th>Status</th><th>Purpose</th></tr>' +
-        rows.map(function (r) {
-          var age = r.age_h == null ? "—" : (r.age_h < 48 ? r.age_h.toFixed(1) + "h"
-                                                          : (r.age_h / 24).toFixed(1) + "d");
-          var chip = r.ok ? '<span class="chip good">current</span>'
-                          : '<span class="chip warn">STALE &gt;' + r.stale_h + 'h</span>';
-          return '<tr><td class="city">' + r.feed + '</td><td class="num">' + age + '</td><td>' +
-                 chip + '</td><td class="dim" style="font-size:11px">' + r.note + '</td></tr>';
-        }).join("") + "</table>"
-        : '<div class="cb mono">no feed data</div>';
+      host.innerHTML = rows.length ? rows.map(function (r) {
+        var known = r.age_h != null;
+        var age = !known ? "unknown"
+                : (r.age_h < 48 ? r.age_h.toFixed(1) + "h" : (r.age_h / 24).toFixed(1) + "d");
+        // the bar fills toward the staleness threshold, so "how close to stale" is visible
+        var frac = known ? r.age_h / r.stale_h : 1;
+        var cls = r.ok ? "" : "bad";
+        return '<div class="psrow"><span class="psdot ' + (r.ok ? "" : "bad") + '"></span>' +
+               '<div><div class="psname">' + r.feed + '</div>' +
+               psBar(frac, cls) +
+               '<div class="psnote">' + r.note + '</div></div>' +
+               '<div class="psage ' + (r.ok ? "" : "bad") + '">' + age +
+               '<div class="psnote" style="text-align:right">stale &gt; ' +
+               (r.stale_h < 48 ? r.stale_h + "h" : (r.stale_h / 24) + "d") + '</div></div></div>';
+      }).join("") : '<div class="cb mono">no feed data</div>';
     }
+
     var h = document.getElementById("hypostatus");
     if (!h) return;
     var hs = D.hypotheses || [];
-    h.innerHTML = hs.length ? '<table class="data">' +
-      '<tr><th>Test</th><th class="num">Settled</th><th class="num">Dates</th>' +
-      '<th class="num">Edge</th><th>Needs</th></tr>' +
-      hs.map(function (r) {
-        var pass = r.blocker === "PASS";
-        var edge = r.edge == null ? "—" : (r.edge >= 0 ? "+" : "\u2212") + Math.abs(r.edge).toFixed(4);
-        return '<tr><td class="city">' + r.name +
-               (r.extra ? ' <span class="dim" style="font-size:10px">' + r.extra + '</span>' : '') +
-               '</td><td class="num">' + (r.need_n ? r.n + "/" + r.need_n : r.n.toLocaleString()) +
-               '</td><td class="num">' + r.dates + "/" + r.need_dates +
-               '</td><td class="num">' + edge + '</td><td>' +
-               (pass ? '<span class="chip good">PASS</span>'
-                     : '<span class="chip">' + r.blocker + '</span>') + '</td></tr>';
-      }).join("") + "</table>"
-      : '<div class="cb mono">no open tests</div>';
+    h.innerHTML = hs.length ? hs.map(function (r) {
+      var pass = r.blocker === "PASS";
+      var edge = r.edge == null ? "" :
+        '<span class="psedge" style="color:' + (r.edge >= 0 ? "var(--good)" : "var(--model)") +
+        '">' + (r.edge >= 0 ? "+" : "\u2212") + Math.abs(r.edge).toFixed(4) + "</span>";
+      var calFrac = r.need_dates ? r.dates / r.need_dates : 1;
+      var betFrac = r.need_n ? r.n / r.need_n : 1;
+      // Calendar is the binding constraint on nearly everything here, so it is the bar that
+      // carries the warn colour when short — the point of showing both is that the sample bar
+      // is usually FULL while this one has barely moved.
+      var rows = "";
+      if (r.need_n) {
+        rows += '<div class="psmet"><span class="k">Settled</span>' +
+                psBar(betFrac, betFrac >= 1 ? "" : "warn") +
+                '<span class="v">' + r.n.toLocaleString() + "/" + r.need_n + "</span></div>";
+      } else {
+        rows += '<div class="psmet"><span class="k">Captured</span>' +
+                '<span class="v" style="text-align:left">' + r.n.toLocaleString() +
+                ' rows</span><span class="v"></span></div>';
+      }
+      rows += '<div class="psmet"><span class="k">Calendar</span>' +
+              psBar(calFrac, calFrac >= 1 ? "" : "warn") +
+              '<span class="v">' + r.dates + "/" + r.need_dates + "</span></div>";
+      return '<div class="psrow"><span class="psdot ' + (pass ? "" : "warn") + '"></span>' +
+             '<div><div class="psname">' + r.name + '</div>' +
+             (r.extra ? '<div class="psnote">' + r.extra + '</div>' : '') + rows +
+             '<div class="psblock">' + (pass ? '<b style="color:var(--good)">PASS</b>'
+                                             : 'Needs <b>' + r.blocker + '</b>') + '</div></div>' +
+             '<div style="text-align:right">' + edge + '</div></div>';
+    }).join("") : '<div class="cb mono">no open tests</div>';
   }
   function fmtAgo(iso) {
     var t = Date.parse(iso); if (isNaN(t)) return null;
