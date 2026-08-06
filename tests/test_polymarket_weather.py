@@ -6224,6 +6224,11 @@ def test_programme_status_judges_feeds_by_data_age_not_workflow_status():
     feeds = bd.feed_status()
     assert feeds, "no feeds reported"
     names = {f["feed"] for f in feeds}
+    # SETTLEMENTS specifically: every other feed is refreshed by collect or by the dashboard's own
+    # run, so all of them stay green even when truth-eval — the only job that freezes settlements —
+    # stops. Without this row the breadth book could silently stop grading behind a fully green
+    # panel, with the sole symptom a settled count that never moves.
+    assert "Settlements graded" in names, "nothing watches whether grading is still advancing"
     for need in ("Market snapshots", "Station truth", "Hourly METARs", "Calibrator models"):
         assert need in names, f"{need} is not being watched"
     for f in feeds:

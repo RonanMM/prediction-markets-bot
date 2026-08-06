@@ -683,6 +683,23 @@ def feed_status() -> list:
         "hourly collector")
     add("Cross-venue minute", newest("data/crossvenue/*_pm_minute.csv", "fetched_at_utc"), 12,
         "lead-lag experiment (§13f)")
+    # SETTLEMENTS. The gap this panel had: every feed above is refreshed by collect or by the
+    # dashboard's own run, so all of them stay green even when truth-eval — the ONLY job that
+    # freezes settlements — stops. The breadth book would silently stop grading and the sole
+    # symptom would be a settled count that never moves, which nothing was watching. Measured as
+    # the newest target day carrying a settlement: it advances daily while truth-eval runs.
+    try:
+        import shoulder_book_breadth as _bb
+        _bk = _bb._load_book()
+        _st = _bk[_bk["settled_outcome"].map(lambda v: not _bb._is_unset(v))] \
+            if not _bk.empty and "settled_outcome" in _bk.columns else _bk.iloc[:0]
+        _newest = pd.to_datetime(_st["target_date"], errors="coerce").max() if len(_st) else None
+        # a settled target day is only "current" once the day itself has ended
+        add("Settlements graded", None if _newest is None else _newest + pd.Timedelta(days=1),
+            48, "truth-eval is the only job that freezes these", local_stamp=True)
+    except Exception:
+        pass
+
     add("Station truth", newest("data/weather/*_historical_actuals.csv", "date_local"), 72,
         "settlement grading — HK lags a month by design", local_stamp=True)
     add("Hourly METARs", newest("data/weather/*_obs_hourly.csv", "valid_local"), 72,
