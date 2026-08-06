@@ -64,11 +64,11 @@ jobs:
       # checkout would therefore rebuild the page from the pre-grading tree and republish the
       # stale numbers, on a green run, which is worse than the lag this trigger removes.
       # Checking out by branch NAME resolves to the current tip and picks up that push.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: master
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: pip
