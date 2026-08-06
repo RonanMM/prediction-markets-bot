@@ -1655,7 +1655,7 @@ TEMPLATE = r"""<meta charset="utf-8">
     <div class="cwrap">
       <div class="panel">
         <div class="find">Feeds the thesis depends on</div>
-        <div class="findsub">Age is measured from the <b>data's own timestamp</b>, never from whether a workflow went green — a dead feed and a healthy one look identical in the run list, and a job that dies produces the same "no commit" as a job that ran and changed nothing.</div>
+        <div class="findsub">Each row shows <b>how long ago that feed last produced data</b>, and how much of its allowed gap that uses up — a full bar means we would call it broken. Age comes from the <b>data's own timestamp</b>, never from whether a workflow went green: a dead feed and a healthy one look identical in the run list, and a job that dies produces the same "no commit" as one that ran and changed nothing.</div>
         <div id="feedstatus" style="margin-top:12px"></div>
       </div>
       <div class="panel">
@@ -2229,24 +2229,35 @@ TEMPLATE = r"""<meta charset="utf-8">
     return '<div class="pstrack"><div class="psfill ' + (cls || "") +
            '" style="width:' + w.toFixed(1) + '%"></div></div>';
   }
+  // Plain words beat decimal hours. "0.8h" next to "stale > 6h" made a reader decode two
+  // numbers to learn one thing; "48 min ago" and "flagged after 6h" each say it outright.
+  function psAgo(h) {
+    if (h == null) return "age unknown";
+    if (h < 1) return Math.max(1, Math.round(h * 60)) + " min ago";
+    if (h < 24) return (h < 10 ? h.toFixed(1) : Math.round(h)) + "h ago";
+    var d = h / 24;
+    return (d < 10 ? d.toFixed(1) : Math.round(d)) + " days ago";
+  }
+  function psLimit(h) {
+    if (h < 48) return "flagged after " + h + "h";
+    return "flagged after " + Math.round(h / 24) + " days";
+  }
   function renderStatus() {
     var host = document.getElementById("feedstatus");
     if (host) {
       var rows = D.feeds || [];
       host.innerHTML = rows.length ? rows.map(function (r) {
         var known = r.age_h != null;
-        var age = !known ? "unknown"
-                : (r.age_h < 48 ? r.age_h.toFixed(1) + "h" : (r.age_h / 24).toFixed(1) + "d");
-        // the bar fills toward the staleness threshold, so "how close to stale" is visible
-        var frac = known ? r.age_h / r.stale_h : 1;
-        var cls = r.ok ? "" : "bad";
-        return '<div class="psrow"><span class="psdot ' + (r.ok ? "" : "bad") + '"></span>' +
-               '<div><div class="psname">' + r.feed + '</div>' +
-               psBar(frac, cls) +
-               '<div class="psnote">' + r.note + '</div></div>' +
-               '<div class="psage ' + (r.ok ? "" : "bad") + '">' + age +
-               '<div class="psnote" style="text-align:right">stale &gt; ' +
-               (r.stale_h < 48 ? r.stale_h + "h" : (r.stale_h / 24) + "d") + '</div></div></div>';
+        var frac = known ? r.age_h / r.stale_h : 1;   // share of the allowed gap used up
+        var bad = !r.ok;
+        return '<div class="psrow"><span class="psdot ' + (bad ? "bad" : "") + '"></span>' +
+               '<div><div class="psname">' + r.feed +
+               '<span class="psage ' + (bad ? "bad" : "") + '" style="float:right">' +
+               psAgo(r.age_h) + '</span></div>' +
+               psBar(frac, bad ? "bad" : "") +
+               '<div class="psnote">' + r.note +
+               '<span style="float:right">' + psLimit(r.stale_h) + '</span></div></div>' +
+               '<span></span></div>';
       }).join("") : '<div class="cb mono">no feed data</div>';
     }
 
