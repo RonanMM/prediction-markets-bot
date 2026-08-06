@@ -54,11 +54,23 @@ MINUTE_WINDOW_HOURS = 48       # 2880 minute-candles per request, safely under K
 PM_FIDELITY = 1                # minutes
 
 # Retention. This data MUST be committed — a fresh CI runner has no local state, so gitignoring it
-# would mean it never accumulates across runs, which is the entire point. Committed and unbounded,
-# it grows ~6 MB/day (measured: 110k rows over ~2.5 days, 7 cities, 57 matched bins) = ~2 GB/year.
-# So the window is bounded: target dates older than this are pruned on write. Twenty-one days is
-# comfortably more than the lead-lag test needs and caps the footprint near ~130 MB.
-RETAIN_DAYS = 21
+# would mean it never accumulates across runs, which is the entire point.
+#
+# ⚠️ MEASURED 2026-08-06, correcting the estimate this comment originally carried. Actual cost is
+# 187 bytes/row, not the ~106 assumed, and growth is ~79,000 rows/day:
+#     RETAIN_DAYS = 21  ->  1.66M rows  ->  311 MB      (the original setting; ~2.4x the
+#                                                        "~130 MB" first written here)
+#     RETAIN_DAYS = 16  ->  1.27M rows  ->  237 MB
+# Against a repo already carrying 460 MB of data and 593 MB of history, 311 MB is material, so the
+# window is now 16: the lead-lag test needs 14 distinct dates, and 2 days of slack is enough to
+# absorb a late collector run without buying a third of a gigabyte of headroom nobody uses.
+#
+# ⚠️ AND RETENTION BOUNDS THE WORKING TREE, NOT THE HISTORY. Every hourly commit stores a new blob
+# per changed file; appends delta-compress well, but `prune` REWRITES whole files, so each prune
+# cycle costs a full copy that deltas poorly. Pruning caps what a checkout weighs; it does not cap
+# what the repo weighs. That is the reason this experiment needs an end date rather than a
+# retention window — see docs/EDGE_MEGAPLAN.md §13f.
+RETAIN_DAYS = 16
 
 _PM_BIN = re.compile(r"between (\d+)-(\d+)°F on (\w+ \d+)", re.I)
 

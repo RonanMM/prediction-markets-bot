@@ -889,3 +889,46 @@ is −0.0111 in the window against +0.0149 outside it.
 encodes the collector's own timetable. Any time-of-day finding here must be checked against the
 UTC-hour histogram before it is believed — and here that check turned a Bonferroni-surviving
 result into an artifact.
+
+### 13f. Cross-venue lead-lag — the experiment, and when it ends
+
+Kalshi and Polymarket quote the same 2 °F bins for the same US stations. If one venue reprices
+before the other, that is a model-free edge. At the routine collector's sampling — one point per
+hour on each venue — the question has **zero observations**: "who moved first inside the hour"
+cannot be answered from two hourly series. An hourly-resolution attempt (2026-08-05) returned a
+*contemporaneous* correlation of **−0.169** across 24 bins, which is not a dynamics result — two
+venues pricing the same bin cannot genuinely anti-correlate — but the signature of comparing stale
+hourly stamps.
+
+`fetch_crossvenue_minute.py` therefore captures minute data, scoped to near-dated bins quoted on
+both venues, and runs hourly inside `collect.yml`.
+
+**The test, when there is enough data (≥14 distinct target dates):**
+
+1. **Sanity gate first, and it is a gate.** Compute the *contemporaneous* correlation between the
+   two venues' minute returns on matched bins. If it is not clearly positive, the matching is
+   wrong and **no lead-lag number from that sample means anything** — stop and fix the join. This
+   check is what exposed the −0.169 as an artifact rather than a finding, and it is the reason
+   this section exists at all.
+2. Only then: cross-correlate at ±1…±30 minute lags, clustered by city-day.
+3. Direction is *not* pre-supposed. The hourly hint pointed at **Polymarket leading Kalshi**, the
+   opposite of the original hypothesis, on a sample far too small to mean anything.
+
+**Cost, and the decision point.** Measured 2026-08-06: 187 bytes/row, ~79,000 rows/day. At the
+current `RETAIN_DAYS = 16` that steady-states near **237 MB** of working tree — on a repo already
+carrying 460 MB of data and 593 MB of history. Retention bounds the checkout; it does **not** bound
+the history, because every hourly commit stores new blobs and each prune cycle rewrites whole files
+in a form that deltas poorly.
+
+So this capture is **an experiment with an end date, not a permanent feed**. When the test runs,
+one of three things must happen, explicitly:
+
+- **A lead-lag is found and is tradeable** → the capture becomes production and earns its cost, and
+  the retention window is re-derived from what the strategy actually needs.
+- **No lead-lag** → *turn the capture off* and delete the directory. The negative result is
+  recorded here; the data has no further use.
+- **Inconclusive** → decide whether to extend with a stated new end date. "Leave it running" is not
+  that decision; it is how a 237 MB experiment becomes a 2 GB one nobody chose.
+
+Left to default, this accumulates indefinitely — which is exactly the failure mode this project
+keeps finding elsewhere, in a different costume.
