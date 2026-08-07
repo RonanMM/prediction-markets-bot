@@ -622,3 +622,4 @@ entered_at_utc,city,condition_id,question,target_date,leg,side,entry_side_price,
 2026-08-07T18:16:27.579084+00:00,HongKong,0x204e807414541ac671b61a008f78aacc9cdf2fe3d78a444b8eb79e4040cc6138,Will the lowest temperature in Hong Kong be 26°C on August 9?,2026-08-09,shoulder,No,0.935,0.065,outer,1877.47
 2026-08-07T18:16:27.579084+00:00,HongKong,0x6edb16975851a414cc1d27ceb9a287d53f9f06af1c27e0ee37f3e494ecdd9613,Will the lowest temperature in Hong Kong be 30°C on August 9?,2026-08-09,shoulder,No,0.885,0.115,outer,3226.88
 2026-08-07T18:16:27.579084+00:00,HongKong,0x72ea3da5045123454418b14b024822b37e978dd633eeaff6ef9bf6c50d13366f,Will the lowest temperature in Hong Kong be 27°C on August 9?,2026-08-09,shoulder,No,0.935,0.065,outer,1690.78
+2026-08-07T19:23:33.242335+00:00,NYC,0xefc6eba08418c2e491fe531501d584feef434b04ae1d3563c8300e77bfe7cc8c,Will the lowest temperature in New York City be between 74-75°F on August 8?,2026-08-08,shoulder,No,0.835,0.165,outer,1036.2
