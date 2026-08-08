@@ -673,3 +673,4 @@ entered_at_utc,city,condition_id,question,target_date,leg,side,entry_side_price,
 2026-08-08T10:59:53.705476+00:00,Seoul,0x035e6d2f47add92c2f9d83aebe383bad54815c2199d0e0b9ba605f7ca192eece,Will the lowest temperature in Seoul (Incheon) be 23°C on August 10?,2026-08-10,shoulder,No,0.95,0.05,outer,1184.68
 2026-08-08T10:59:53.705476+00:00,Seoul,0x701aa90940d31b461151b9a85fe885d05ed6f86af4ceaf5361f056fd9b5ec03e,Will the lowest temperature in Seoul (Incheon) be 27°C on August 10?,2026-08-10,shoulder,No,0.95,0.05,outer,1067.92
 2026-08-08T13:21:18.876300+00:00,HongKong,0x34d0610bc11bd78a62a5cacd4d42b2830af7aae9ef0c0bf8408067ac7fbe4f91,Will the lowest temperature in Hong Kong be 31°C on August 9?,2026-08-09,shoulder,No,0.908,0.092,outer,1113.46
+2026-08-08T14:58:21.023056+00:00,NYC,0xb20b1391e5fbb5ef6a5d62d4bdefb35604388d32fa4e9e300d51dba08c30c125,Will the lowest temperature in New York City be between 74-75°F on August 9?,2026-08-09,shoulder,No,0.855,0.145,outer,1035.4
