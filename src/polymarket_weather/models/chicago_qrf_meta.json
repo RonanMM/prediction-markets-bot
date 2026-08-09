@@ -1,9 +1,1 @@
-{
-  "beats_ensemble": false,
-  "holdout_crps": 1.055318225186211,
-  "ens_holdout_crps": 1.022541447942223,
-  "n": 6708,
-  "max_lead": 4,
-  "trained_at": "2026-08-05T19:06:49+00:00",
-  "trained_at_source": "backfilled_from_commit_cc0d747"
-}
+{"beats_ensemble": false, "holdout_crps": 1.0318439011489524, "ens_holdout_crps": 1.0114628796930187, "n": 6724, "max_lead": 4}
