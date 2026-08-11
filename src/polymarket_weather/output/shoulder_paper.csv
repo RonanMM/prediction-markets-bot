@@ -811,3 +811,5 @@ entered_at_utc,city,condition_id,question,target_date,leg,side,entry_side_price,
 2026-08-11T12:05:01.288396+00:00,London,0x03948ebde3118b7d1d1f135b2fb69644cd69a801e0e81712c3624068f1224c94,Will the lowest temperature in London be 20°C on August 13?,2026-08-13,shoulder,No,0.745,0.255,core,1539.63
 2026-08-11T12:05:01.288396+00:00,HongKong,0x45c75ef95133ef97596beeebfef988ea28ea797b3df28c1154bad392efc759cb,Will the lowest temperature in Hong Kong be 31°C on August 13?,2026-08-13,shoulder,No,0.95,0.05,outer,1695.42
 2026-08-11T12:05:01.288396+00:00,HongKong,0xf0bb4b878fc1b0177085648bb71c3ff7f8e50db5c391bc12432d2d58e819303a,Will the lowest temperature in Hong Kong be 29°C on August 13?,2026-08-13,shoulder,No,0.71,0.29,core,1417.58
+2026-08-11T15:23:39.603607+00:00,Chicago,0xe6535e3dad969c73b7c3c5b0858ea5d8861e796952a65eba2abae5003d427ca4,Will the highest temperature in Chicago be 77°F or below on August 12?,2026-08-12,shoulder,No,0.915,0.085,outer,2582.24
+2026-08-11T15:23:39.603607+00:00,London,0x65c1b3c704891704bacf3e7cd21814cf5b94020d064953a133e3c5c959064be0,Will the lowest temperature in London be 17°C on August 13?,2026-08-13,shoulder,No,0.93,0.07,outer,1129.31
