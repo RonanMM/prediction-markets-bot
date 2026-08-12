@@ -10,6 +10,20 @@ So "the same bin" is a materially different bet on the two venues, one-direction
 measures (a) that basis per station and (b) whether the venues' PRICES reflect it. It takes no
 forecast view at all — the hypothesis is about the ruler, not the weather.
 
+⚠️ **The pre-2026-08-12 basis numbers above are INFLATED and must be re-measured.** This module
+compares the CLI against OUR wu_truth reconstruction, so any error in that reconstruction is
+indistinguishable from a real venue difference — the one measurement in the project where a
+ruler bug lands directly on the estimand rather than on the noise. Ruler #13 (see
+`fetch_station_obs.py`) is exactly such an error: the obs feed requested routine METARs only,
+omitting SPECIs, which biased our WU max LOW and its min HIGH — one-sidedly, in the same
+direction as the "CLI reads higher" finding this module reports. Some unknown share of the
+53.3%/32.4% above is therefore our own bug, not the venues disagreeing.
+
+The direction gate below is forward-only from BASIS_PREREG_DATE and was at 13/30 city-days when
+this was found, so nothing measured under the old ruler has matured — but the headline basis
+figures in this docstring stay quarantined until a specials-inclusive obs backfill has run and
+the table is regenerated. Do not quote them meanwhile.
+
 Nothing here trades. The gate is pre-registered below and forward-only.
 
 CLI:  python venue_basis.py            # basis table + cross-venue price gap + gate status

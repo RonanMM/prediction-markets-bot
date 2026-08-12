@@ -86,10 +86,35 @@ jobs:
             exit 0
           fi
           git commit -m "data: scheduled snapshot $(date -u '+%Y-%m-%d %H:%M UTC')"
-          # Rebase-retry push: tolerate racing commits from the laptop collector.
-          # --autostash: a dirty tracked file otherwise aborts the rebase and loses the run.
+          # Conflict-proof push (same shape as truth-eval.yml / retrain.yml — this job was the
+          # only committer WITHOUT it, and that gap cost a cycle of perishable data on
+          # 2026-08-12, run 31586909186).
+          #
+          # What happened: truth-eval committed at 10:04 while this job was collecting, so the
+          # 10:28 push was rejected. The bare `git pull --rebase` then hit a real CONTENT
+          # conflict on output/shoulder_paper_breadth.csv — truth-eval's grade_book() FREEZES
+          # settled_outcome into rows this job had appended, so both sides genuinely rewrite the
+          # same lines. With no `-X` strategy the rebase stopped at the conflict, and with no
+          # `|| git rebase --abort` the tree stayed mid-rebase on a detached HEAD: all three
+          # retries and the final push then failed against the half-finished rebase. The run
+          # went red and that hour's Polymarket + Kalshi snapshot was lost for good.
+          #
+          # `-X theirs` during a rebase KEEPS OUR COMMIT's side (the naming inverts under
+          # rebase: "ours" is the upstream being replayed onto). That is the right way round
+          # here, because the two losses are not symmetric:
+          #   - our appended rows are PERISHABLE — an entry price only exists while the market
+          #     sits in the band, and no job can reconstruct it later;
+          #   - the grades we would drop are SELF-HEALING — grade_book re-looks-up any entry
+          #     whose settled_outcome is still unset, so the next truth-eval refreezes them.
+          # Keep the irreplaceable side and let the reproducible side rebuild itself.
+          #
+          # NOTE: this job deliberately stays OUT of the shared `git-push` concurrency group.
+          # retrain holds that group for up to 6h, which would queue away ~6 hourly collections
+          # (GitHub keeps only one pending run per group and cancels the rest) — far worse than
+          # an occasional rebase. Serialise the cheap jobs; never block the perishable one.
           for i in 1 2 3; do
             git push && exit 0
-            git pull --rebase --autostash && continue
+            echo "push rejected (attempt $i) — rebasing onto latest origin/master"
+            git pull --rebase --autostash -X theirs || git rebase --abort
           done
           git push

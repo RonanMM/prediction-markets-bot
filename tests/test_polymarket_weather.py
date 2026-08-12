@@ -4532,6 +4532,111 @@ def test_obs_fetch_still_writes_when_the_refetch_grows(tmp_path, monkeypatch):
     assert len(pd.read_csv(out)) > 21000, "a healthy growing refetch was wrongly rejected"
 
 
+# --------------------------------------------------------------------------------------
+# Ruler #13: wunderground's day includes SPECIs, so the obs fetch must request them
+# --------------------------------------------------------------------------------------
+
+def test_obs_fetch_requests_special_observations(monkeypatch):
+    """Routine METARs alone are not wunderground's day.
+
+    WU's daily table lists every observation, so its high/low span routine METARs AND SPECIs
+    (filed off-schedule when conditions change). Requesting report_type=3 only reconstructs a
+    max that is too LOW and a min too HIGH, one-sidedly — dropping observations can never widen
+    an extreme. Measured: specials raise the daily max on 2.5% of station-days and lower the min
+    on 6.1%. On the four settled market-rows where the two rulers disagree, +specials matches the
+    actual settlement 4/4 and routine-only 0/4 (ATL 2026-08-10 peaked 94°F in a 15:39 SPECI; the
+    :52 routines top out at 92°F, and we graded the 92-93 bin YES against a 94-95 settlement).
+    """
+    from datetime import datetime
+
+    import fetch_station_obs as fso
+
+    seen = {}
+
+    class _Resp:
+        status_code = 200
+        text = "station,valid,tmpf\nATL,2026-08-10 15:39,94.0\n"
+
+        def raise_for_status(self):
+            pass
+
+    def fake_get(url, params=None, timeout=None):
+        seen.update(params or {})
+        return _Resp()
+
+    monkeypatch.setattr(fso.requests, "get", fake_get)
+    fso._fetch_range("ATL", "America/New_York", datetime(2026, 8, 10), datetime(2026, 8, 12))
+
+    rt = seen.get("report_type")
+    assert isinstance(rt, (list, tuple)), \
+        f"report_type must request BOTH routine and special, got scalar {rt!r} — this is ruler #13"
+    assert set(int(x) for x in rt) == {3, 4}, \
+        f"expected routine(3)+special(4), got {rt!r}: 3 alone reconstructs a one-sidedly low max"
+
+
+def test_obs_topup_forces_full_backfill_on_a_pre_speci_file(tmp_path, monkeypatch):
+    """A routine-only file must not be topped up with specials-inclusive rows.
+
+    That would leave ONE csv graded by TWO rulers, split at whatever date the fix shipped —
+    worse than either rule applied consistently, and undetectable afterwards because the file
+    looks complete. The `source` stamp is the self-describing marker that triggers the one-time
+    full refetch.
+    """
+    import fetch_station_obs as fso
+
+    out = tmp_path / "atlanta_obs_hourly.csv"
+    old = _hourly_obs_csv(30000)
+    old["source"] = "iem_metar:ATL"                  # pre-ruler-#13 stamp
+    old.to_csv(out, index=False)
+
+    years = []
+    monkeypatch.setattr(fso, "OUT_DIR", str(tmp_path))
+    monkeypatch.setattr(fso, "OBS_STATIONS", {"atlanta": ("ATL", "America/New_York")})
+    monkeypatch.setattr(fso.time, "sleep", lambda *_: None)
+
+    def fake_range(station, tz, start, end):
+        years.append(start.year)
+        return _hourly_obs_csv(9000, start_year=start.year)
+
+    monkeypatch.setattr(fso, "_fetch_range", fake_range)
+    fso.fetch_station_obs(recent_only=True)          # asked for a top-up...
+
+    assert len(years) > 1 and min(years) == fso.START_YEAR, \
+        (f"a --recent run against a pre-speci file must refetch from {fso.START_YEAR}, not "
+         f"top up; fetched year chunks were {years}")
+    assert pd.read_csv(out)["source"].str.contains("+speci", regex=False).all(), \
+        "the rewritten file must be stamped with the new ruler"
+
+
+def test_obs_topup_stays_incremental_once_the_file_carries_specials(tmp_path, monkeypatch):
+    """The forced backfill must fire ONCE, not on every hourly run.
+
+    Without this, the collector would refetch 2022→now for twelve stations every cycle and get
+    itself rate-limited off IEM — turning a grading fix into a grading outage.
+    """
+    import fetch_station_obs as fso
+
+    out = tmp_path / "atlanta_obs_hourly.csv"
+    old = _hourly_obs_csv(30000)
+    old["source"] = "iem_metar+speci:ATL"            # already on the new ruler
+    old.to_csv(out, index=False)
+
+    years = []
+    monkeypatch.setattr(fso, "OUT_DIR", str(tmp_path))
+    monkeypatch.setattr(fso, "OBS_STATIONS", {"atlanta": ("ATL", "America/New_York")})
+    monkeypatch.setattr(fso.time, "sleep", lambda *_: None)
+
+    def fake_range(station, tz, start, end):
+        years.append(start.year)
+        return _hourly_obs_csv(50, start_year=2026)
+
+    monkeypatch.setattr(fso, "_fetch_range", fake_range)
+    fso.fetch_station_obs(recent_only=True)
+
+    assert len(years) == 1, \
+        f"a specials-stamped file must take the 3-day top-up path, but fetched {years}"
+
+
 def test_gate_ci_str_shows_the_binding_condition():
     """A gate line must show WHY it is not passing, not just n-vs-threshold.
 
