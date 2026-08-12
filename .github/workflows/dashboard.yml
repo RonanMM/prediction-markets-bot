@@ -135,4 +135,20 @@ jobs:
             exit 0
           fi
           git commit -m "dashboard: $(date -u '+%Y-%m-%d %H:%M UTC')"
+          # Retry the publish. This was a BARE `git push` until 2026-08-12, when run 31607452460
+          # built cleanly, passed the settlement audit, committed — and then lost the push to a
+          # transient `remote: Internal Server Error` from GitHub. One 500 and the public page
+          # silently kept the previous build until the next slot ~2h later, with the run red for
+          # a reason that had nothing to do with the data.
+          #
+          # Every other committing job in this repo already retries; this one was the exception,
+          # the same gap collect.yml had. `pull --rebase` covers the other reachable case: a
+          # previous dashboard run that pushed while this one was building (concurrency cancels
+          # in-progress runs, but a cancelled run can already have pushed).
+          for i in 1 2 3; do
+            git push && exit 0
+            echo "publish failed (attempt $i) — retrying"
+            sleep $((i * 10))
+            git pull --rebase --autostash -X theirs || git rebase --abort
+          done
           git push
