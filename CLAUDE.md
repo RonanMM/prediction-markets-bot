@@ -436,6 +436,42 @@ The absolute `< 20000` floor is kept as a third, weakest guard — it is what fa
 35,032 > 20,000. **An absolute floor cannot detect a regression; only a comparison against the
 previous state can.**
 
+⚠️ **RULER #13 — routine METARs are not wunderground's day (found + fixed 2026-08-12).** The two
+incidents above are about the obs file being *missing* or *truncated*. This one is about the file
+being **complete and wrong**: `fetch_station_obs.py` requested `report_type=3` (routine METAR) for
+its entire life, but WU's daily table — what Polymarket settles on — lists **every** observation
+including **SPECIs**, filed off-schedule when conditions change, and takes its high/low over that
+full set. Routine-only therefore reconstructs a max that is too LOW and a min too HIGH, and the
+error is **strictly one-sided**: dropping observations can never widen an extreme.
+
+Caught from the settlement audit's *disagreement list*, not its rate: 4 of 6 disagreements were
+Atlanta, paired (adjacent bins wrong in opposite directions on the same day) and all ~2 °F low —
+the signature of a ruler, not of noise. ATL 2026-08-10 peaked **94 °F in a 15:39 SPECI**; the :52
+routines top out at 92 °F, so we graded the 92-93 bin YES against a 94-95 settlement.
+
+Measured 2026-03-01→08-12 over nine US stations, 1,476 station-days: specials raise the daily max
+on **2.5%** of days and lower the daily min on **6.1%** (Tmin markets are hit MORE often, and are
+~20% of the book), changing the whole-°F max on 35 station-days. On the four settled market-rows
+in the entire history where the two candidate rulers grade differently, **+specials agrees with
+the actual settlement 4/4 and routine-only 0/4** — the same discriminating inference that settled
+the HK floor rule, just with a much smaller n, so treat it as strong-mechanism/weak-sample.
+
+Two things this changes beyond grading:
+- **`venue_basis.py` (§13b) was measuring partly its own bug.** It compares the CLI against OUR WU
+  reconstruction, so a one-sidedly-low WU inflates the "CLI reads higher" basis that IS its
+  estimand. Its headline 53.3%/32.4% figures are quarantined until a specials-inclusive backfill
+  regenerates them; the forward gate was only 13/30 city-days, so nothing mature was lost.
+- **Direction of the correction.** Truth biased low makes hot bins look like losers, so the market
+  — which priced the true outcome — was being scored against labels tilted against it. Fixing this
+  makes the market look *better*, consistent with every prior measurement change.
+
+The fix is self-healing: obs rows are now stamped `iem_metar+speci:{station}`, and a `--recent`
+top-up against a file still stamped plain `iem_metar:` forces a one-time full backfill rather than
+leaving **one file graded by two rulers** split at the deploy date. Three mutation-tested guards
+cover it. **Corollary: the settlement audit's aggregate rate did not move (99.6%) — 4 bad rows in
+1,409 is invisible in the percentage. Read the disagreement LIST, not just the rate; a ruler bug
+shows up as clustering by city and by direction long before it shows up in the total.**
+
 Corollary worth remembering: the eval trackers carry **no grade column**. Grading is applied at
 *read time* by `evaluate_oos.py` / `data_status.py` / `build_dashboard.py`. So a truth-source bug
 corrupts *reported numbers*, never stored data — which is why these fixes need no backfill. It also
