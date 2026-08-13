@@ -16,6 +16,7 @@ change is isolated to NYC/Chicago.
 
 Run from src/polymarket_weather/:   python settlement_truth.py
 """
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -75,7 +76,28 @@ def build_settlement_actuals(slug: str) -> pd.DataFrame:
     return out
 
 
-def build_all() -> None:
+def build_all() -> int:
+    """Rebuild every city's settlement-faithful training targets. Returns an exit code.
+
+    NON-ZERO if a city that SHOULD be WU-reconstructed produced zero WU days. That is not a
+    cosmetic warning — it means `{slug}_obs_hourly.csv` was missing or unreadable, so the targets
+    silently fell back to the NWS CLI (the pre-W0 ruler) and any model trained on them learns the
+    wrong ruler.
+
+    This exists because it happened. Retrain run 31716755287 (2026-08-13) was dispatched
+    specifically to train against the corrected SPECI-inclusive truth; three IEM year-chunks
+    failed, `fetch_station_obs`'s guard correctly refused to write a partial file, and on a fresh
+    runner "keep the existing CSV" means NO file at all. The rebuild then printed
+
+        new_york_city   4240 days  (1685 WU-reconstructed)
+        chicago         4242 days  (   0 WU-reconstructed)     <- silently CLI-ruled
+
+    and training continued. Chicago's EMOS models were trained entirely on CLI targets and
+    committed. The count was on screen the whole time; nothing was watching it, exactly like the
+    "larger than GitHub's recommended maximum" warnings that preceded the 100 MB outage the day
+    before. A number nobody reads is not a guard.
+    """
+    bad = []
     for slug in _SLUGS:
         try:
             df = build_settlement_actuals(slug)
@@ -86,7 +108,19 @@ def build_all() -> None:
         df.to_csv(path, index=False)
         wu = _wu_daily_table(slug)
         n_wu = 0 if wu is None else len(wu)
-        print(f"  {slug:<15} {len(df):>5} days  ({n_wu} WU-reconstructed) → {path.name}")
+        expected = slug in set(_WU_RECON_SLUGS.values())
+        flag = "  <- EXPECTED WU, GOT NONE" if (expected and n_wu == 0) else ""
+        if expected and n_wu == 0:
+            bad.append(slug)
+        print(f"  {slug:<15} {len(df):>5} days  ({n_wu} WU-reconstructed) → {path.name}{flag}")
+
+    if bad:
+        print(f"\nERROR: {', '.join(bad)} resolve on wunderground but produced ZERO "
+              f"WU-reconstructed days — their {'{slug}'}_obs_hourly.csv is missing or unreadable. "
+              f"The targets just fell back to the NWS CLI ruler; training on them teaches the "
+              f"wrong ruler. Re-run fetch_station_obs.py (full) and rebuild before training.")
+        return 1
+    return 0
 
 
 def load_training_truth(slug: str) -> pd.DataFrame:
@@ -98,4 +132,4 @@ def load_training_truth(slug: str) -> pd.DataFrame:
 
 
 if __name__ == "__main__":
-    build_all()
+    sys.exit(build_all())

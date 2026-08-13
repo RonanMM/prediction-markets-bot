@@ -4637,6 +4637,45 @@ def test_obs_topup_stays_incremental_once_the_file_carries_specials(tmp_path, mo
         f"a specials-stamped file must take the 3-day top-up path, but fetched {years}"
 
 
+def test_build_all_fails_when_a_wu_city_yields_no_wu_days(tmp_path, monkeypatch, capsys):
+    """Retrain 31716755287 (2026-08-13). Three IEM year-chunks failed; fetch_station_obs's guard
+    correctly refused to write a partial file, and on a fresh runner "keep the existing CSV"
+    means NO file. The target rebuild then printed
+
+        new_york_city   4240 days  (1685 WU-reconstructed)
+        chicago         4242 days  (   0 WU-reconstructed)
+
+    and carried on. Chicago's EMOS models were trained entirely on the pre-W0 CLI ruler and
+    committed — by a retrain dispatched specifically to train on the CORRECTED ruler. The count
+    was on screen the whole time. A number nobody reads is not a guard.
+    """
+    import pandas as pd
+    import settlement_truth as st
+
+    w = tmp_path / "weather"
+    w.mkdir()
+    for slug in ("new_york_city", "chicago"):
+        pd.DataFrame({"date_local": ["2026-08-10", "2026-08-11"],
+                      "temp_max_c": [30.0, 31.0],
+                      "temp_min_c": [20.0, 21.0]}).to_csv(
+            w / f"{slug}_historical_actuals.csv", index=False)
+
+    monkeypatch.setattr(st, "_W", w)
+    monkeypatch.setattr(st, "_SLUGS", ["new_york_city", "chicago"])
+    # NYC reconstructs; chicago's obs file is missing, so it silently falls back to the CLI
+    monkeypatch.setattr(st, "_wu_daily_table",
+                        lambda slug: (pd.DataFrame({"wu_max": [30.0], "wu_min": [20.0]},
+                                                   index=["2026-08-10"])
+                                      if slug == "new_york_city" else None))
+
+    rc = st.build_all()
+    out = capsys.readouterr().out
+
+    assert rc == 1, "a WU city with zero reconstructed days must fail the build, not just print"
+    assert "chicago" in out and "EXPECTED WU, GOT NONE" in out, \
+        "the failing city must be named on the line that reports it"
+
+
 # --------------------------------------------------------------------------------------
 # Kalshi archive: static per-ticker text belongs in a dimension table, not on every snapshot
 # --------------------------------------------------------------------------------------
