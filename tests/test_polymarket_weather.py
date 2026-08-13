@@ -4637,6 +4637,80 @@ def test_obs_topup_stays_incremental_once_the_file_carries_specials(tmp_path, mo
         f"a specials-stamped file must take the 3-day top-up path, but fetched {years}"
 
 
+# --------------------------------------------------------------------------------------
+# Kalshi archive: static per-ticker text belongs in a dimension table, not on every snapshot
+# --------------------------------------------------------------------------------------
+
+def test_split_market_rows_keeps_static_text_out_of_the_fact_table():
+    """The 2026-08-12 outage. Four static per-ticker fields were re-serialised on every hourly
+    snapshot of every ticker (~103 each). On the real san_francisco_markets.csv — 50,748 rows,
+    100.3 MB — they were 71.3 MB, **74% of all field bytes**, `rules_secondary` alone being
+    44.5 MB across exactly ONE distinct value. That took the file past GitHub's hard 100 MB
+    limit; the pre-receive hook then rejected every collect push for ten consecutive runs and
+    ~16 hours of perishable snapshots were lost, with six more cities at 80-100 MB behind it.
+    """
+    from fetch_kalshi import META_COLS, split_market_rows
+
+    rows = [{"ticker": "KXHIGHTSFO-26AUG12-B70", "fetched_at_utc": "2026-08-12T10:00:00Z",
+             "yes_bid": "0.40", "title": "High temp in SF", "rules_primary": "R1" * 200,
+             "rules_secondary": "R2" * 400, "early_close_condition": "E" * 100,
+             "price_ranges": "[]"},
+            {"ticker": "KXHIGHTSFO-26AUG12-B70", "fetched_at_utc": "2026-08-12T11:00:00Z",
+             "yes_bid": "0.41", "title": "High temp in SF", "rules_primary": "R1" * 200,
+             "rules_secondary": "R2" * 400, "early_close_condition": "E" * 100,
+             "price_ranges": "[]"}]
+
+    facts, meta = split_market_rows(rows)
+
+    assert len(facts) == 2, "every snapshot must still produce a fact row"
+    for f in facts:
+        for c in META_COLS:
+            assert c not in f, f"{c} still on the fact row — this is the 100 MB blow-up"
+    # the quote data, which is what varies per snapshot, must be untouched
+    assert [f["yes_bid"] for f in facts] == ["0.40", "0.41"]
+    assert all("title" in f for f in facts), \
+        "title is read by venue_basis.matched_bins and must stay on the fact row"
+
+    # both snapshots carry identical static text, so the dimension dedupe (ticker + content,
+    # applied by _append_csv in main.py) collapses them to one archived row
+    assert len({tuple(sorted(m.items())) for m in meta}) == 1
+    assert set(meta[0]) == {"ticker", *META_COLS}
+
+
+def test_split_market_rows_skips_a_meta_row_with_no_text():
+    """The vendor omits these static fields on ~0.9% of snapshots. Archiving that row would add
+    a ticker-with-no-text entry, which the content-keyed dedupe treats as a DISTINCT variant —
+    on the real SF archive a naive split produced 930 dimension rows for 492 tickers, an empty
+    twin for nearly every one."""
+    from fetch_kalshi import split_market_rows
+
+    rows = [{"ticker": "T1", "yes_bid": "0.5", "rules_primary": None,
+             "rules_secondary": "", "early_close_condition": None, "price_ranges": None}]
+    facts, meta = split_market_rows(rows)
+
+    assert len(facts) == 1, "the snapshot itself is still archived"
+    assert meta == [], f"an all-empty meta row must not be archived, got {meta}"
+
+
+def test_migration_refuses_when_a_meta_column_is_not_actually_static():
+    """Moving a field into a dimension table discards WHEN it changed. That is only safe if it
+    never changes, so the migration verifies staticness instead of assuming it — the assumption
+    that looked true (438/492 tickers showed >1 distinct value) turned out to be null-vs-value,
+    and checking the difference is the whole job."""
+    import pandas as pd
+    from migrate_kalshi_meta import _varying_tickers
+
+    static = pd.DataFrame({"ticker": ["A", "A", "B"],
+                           "rules_primary": ["r", None, "s"]})
+    assert _varying_tickers(static, ["rules_primary"]) == {}, \
+        "null-vs-value is an absence, not a change"
+
+    changed = pd.DataFrame({"ticker": ["A", "A", "B"],
+                            "rules_primary": ["r", "r-amended", "s"]})
+    assert _varying_tickers(changed, ["rules_primary"]) == {"rules_primary": 1}, \
+        "a genuine mid-life amendment must block the migration"
+
+
 def test_gate_ci_str_shows_the_binding_condition():
     """A gate line must show WHY it is not passing, not just n-vs-threshold.
 

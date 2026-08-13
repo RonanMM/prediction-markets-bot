@@ -169,6 +169,50 @@ MARKET_COLS = [col for col, _, _ in _MARKET_FIELDS] + [
     "fetched_at_utc", "city", "series_ticker",
 ]
 
+# ── Static per-ticker text, stored ONCE in a dimension table ───────────────────────────
+#
+# These four fields are constant for the life of a ticker but were re-serialised on EVERY
+# hourly snapshot — and each ticker is snapshotted ~103 times. Measured on the real
+# san_francisco_markets.csv (50,748 rows, 100.3 MB): they accounted for **71.3 MB, 74% of all
+# field bytes**, `rules_secondary` alone being 44.5 MB across exactly ONE distinct value.
+#
+# That growth pushed the file past GitHub's HARD 100 MB per-file limit on 2026-08-12, and the
+# pre-receive hook then rejected every collect push: TEN consecutive failed runs, ~16 hours of
+# perishable market snapshots lost, with six more cities at 80-100 MB right behind it. The size
+# warnings had been printed on every push for days; nothing read them, because the runs were
+# green until the moment the limit was crossed.
+#
+# NOTHING IS DROPPED — this only stops writing the same text 103 times. That distinction matters
+# here: `_MARKET_FIELDS` above documents why every vendor field is captured (Kalshi serves market
+# objects for only ~2 months, so an uncaptured field is unrecoverable at any price). Normalising
+# preserves that guarantee; curating would break it.
+META_COLS = ["rules_primary", "rules_secondary", "early_close_condition", "price_ranges"]
+
+
+def split_market_rows(rows: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Split snapshot rows into (fact rows, dimension rows) — see META_COLS.
+
+    The dimension row carries `ticker` plus the static text, and is deduped on ticker AND
+    content (see main.py). Keying on content as well as ticker is deliberate: if Kalshi ever
+    edits a market's rules mid-life, a ticker-only key would silently keep whichever version
+    landed first and discard the amendment, which is exactly the kind of quiet loss this
+    archive exists to prevent. Keyed on content, an edit simply appends a second row and both
+    survive.
+    """
+    facts, meta = [], []
+    for r in rows:
+        facts.append({k: v for k, v in r.items() if k not in META_COLS})
+        if not r.get("ticker"):
+            continue
+        vals = {c: r.get(c) for c in META_COLS if c in r and r.get(c) not in (None, "")}
+        # An all-empty meta row is skipped rather than archived. The vendor omits these static
+        # fields on ~0.9% of snapshots; writing that row would append a spurious ticker-with-no-
+        # text entry that the content-keyed dedupe treats as a distinct variant, so the
+        # dimension table would carry two rows per ticker for no information.
+        if vals:
+            meta.append({"ticker": r["ticker"], **vals})
+    return facts, meta
+
 
 def fetch_series_markets(series_ticker: str, session=None, page_size: int = 200,
                          max_pages: int = 50):

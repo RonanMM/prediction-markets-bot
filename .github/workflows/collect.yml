@@ -71,6 +71,34 @@ jobs:
         continue-on-error: true
         run: python fetch_crossvenue_minute.py
 
+      # GitHub rejects any file over 100 MB at the PRE-RECEIVE HOOK, which means the failure
+      # arrives as an opaque "remote rejected" after the data has already been collected and
+      # committed. On 2026-08-12 san_francisco_markets.csv crossed the line and every collect
+      # push failed for ten consecutive runs — ~16 hours of perishable snapshots lost.
+      #
+      # GitHub HAD been printing "larger than GitHub's recommended maximum" warnings on every
+      # push for days beforehand. They scrolled past in a green log and nobody read them. This
+      # step exists to convert that unread warning into something with a threshold attached:
+      # it names the offenders while there is still headroom to act, and fails the run at 95 MB
+      # — where the push is doomed anyway, so failing here costs nothing and at least says why.
+      - name: Guard — data files approaching GitHub's 100 MB hard limit
+        run: |
+          find src/polymarket_weather/data -type f -size +75M -printf '%s\t%p\n' \
+            | sort -rn > /tmp/bigfiles || true
+          if [ ! -s /tmp/bigfiles ]; then
+            echo "All tracked data files are under 75 MB."
+            exit 0
+          fi
+          awk -F'\t' '{printf "  %6.1f MB  %s\n", $1/1048576, $2}' /tmp/bigfiles
+          awk -F'\t' '$1 >  99614720 {print "::error::"   $2 " is over 95 MB — GitHub rejects at 100 MB"}
+                      $1 <= 99614720 {print "::warning::" $2 " is over 75 MB — normalise it before it reaches 100 MB"}' /tmp/bigfiles
+          over=$(awk -F'\t' '$1 > 99614720' /tmp/bigfiles | wc -l)
+          if [ "$over" -gt 0 ]; then
+            echo "$over file(s) will be rejected by the pre-receive hook."
+            echo "See src/polymarket_weather/migrate_kalshi_meta.py for the fact/dimension split."
+            exit 1
+          fi
+
       - name: Commit appended data
         run: |
           git config user.name "raincheck-collector"

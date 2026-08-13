@@ -245,7 +245,8 @@ def _kalshi_one_city(city: str, series: str, now: str, manifest: list) -> None:
     """
     from kalshi_series import manifest_row, LIVE_STATUSES
     from fetch_kalshi import (fetch_series_markets, summarize_market, count_live,
-                              fetch_orderbooks, fetch_candles, summarize_candle, candle_log_row)
+                              fetch_orderbooks, fetch_candles, summarize_candle, candle_log_row,
+                              split_market_rows, META_COLS)
     from processing import (save_kalshi_rows, save_kalshi_candle_log, kalshi_candles_path)
     from resolution_anchors import slug
 
@@ -258,7 +259,16 @@ def _kalshi_one_city(city: str, series: str, now: str, manifest: list) -> None:
 
     rows = [{**summarize_market(m), "fetched_at_utc": now, "city": city,
              "series_ticker": series} for m in markets]
-    save_kalshi_rows("markets", cslug, rows, ["ticker", "fetched_at_utc"])
+    # Static per-ticker text goes to a dimension table instead of being repeated on all ~103
+    # snapshots of each ticker (fetch_kalshi.META_COLS). That redundancy was 74% of the archive
+    # and took san_francisco_markets.csv past GitHub's hard 100 MB limit on 2026-08-12, after
+    # which the pre-receive hook rejected every push and the collector lost ~16 hours of
+    # perishable snapshots. Nothing is dropped — see split_market_rows.
+    facts, meta = split_market_rows(rows)
+    save_kalshi_rows("markets", cslug, facts, ["ticker", "fetched_at_utc"])
+    # Keyed on ticker AND content: an unchanged ticker never re-appends, but a mid-life rules
+    # amendment lands as a second row rather than being silently discarded.
+    save_kalshi_rows("markets_meta", cslug, meta, ["ticker"] + META_COLS)
 
     # ONE definition of "live" (kalshi_series.LIVE_STATUSES), shared with fetch_kalshi.count_live.
     # This line used to hardcode ("active", "initialized") one call after count_live consulted the
