@@ -945,3 +945,5 @@ entered_at_utc,city,condition_id,question,target_date,leg,side,entry_side_price,
 2026-08-14T23:46:47.939644+00:00,Seoul,0x4f1a6a7f5e043f5615e3a75f126096914543d00059a5f26cc709fab7f984eaf4,Will the highest temperature in Seoul (Incheon) be 26°C on August 16?,2026-08-16,shoulder,No,0.945,0.055,outer,4252.48
 2026-08-15T07:06:39.129876+00:00,HongKong,0x2ce3e927e183bc41c8ae64678787f0e423da30dce3805342d1b46d63203143d5,Will the lowest temperature in Hong Kong be 28°C on August 17?,2026-08-17,shoulder,No,0.665,0.335,core,1047.21
 2026-08-15T07:06:39.129876+00:00,HongKong,0xf699f495408f509873cdded0d7b6c6ddb137368a22b61bf929deb9b6e66ba79d,Will the lowest temperature in Hong Kong be 27°C on August 16?,2026-08-16,shoulder,No,0.705,0.295,core,1185.5
+2026-08-15T07:52:29.824705+00:00,London,0x4c1628c39cb6e56dac96d257756655d2336ad64fef44b93d96a1b9d30f5987a7,Will the lowest temperature in London be 19°C on August 17?,2026-08-17,shoulder,No,0.755,0.245,core,1046.15
+2026-08-15T07:52:29.824705+00:00,London,0x94cb2f074ced1a2eb4fba0a628a4d5e5ca7cf6dba17e547a49962570a1eca90d,Will the lowest temperature in London be 20°C on August 17?,2026-08-17,shoulder,No,0.78,0.22,core,1017.31
