@@ -1125,3 +1125,4 @@ entered_at_utc,city,condition_id,question,target_date,leg,side,entry_side_price,
 2026-08-18T09:56:25.046814+00:00,HongKong,0x2bec2f7ca8b4600b778171ec329f286cc579d573a878f038c4328fb7e4816c3b,Will the lowest temperature in Hong Kong be 29°C on August 20?,2026-08-20,shoulder,No,0.675,0.325,core,1004.62
 2026-08-18T10:54:14.532031+00:00,HongKong,0x20fb861df25f0333efc755ef3ea5c1d78d350c98fcefcf7fec8462238f2af71e,Will the lowest temperature in Hong Kong be 30°C on August 20?,2026-08-20,shoulder,No,0.94,0.06,outer,1002.86
 2026-08-18T10:54:14.532031+00:00,HongKong,0xab74b06d13706ef09de3ed8b507c9dbc59e98bb4f2b7eeb74e64f9d7daddc1e0,Will the lowest temperature in Hong Kong be 28°C on August 20?,2026-08-20,shoulder,No,0.67,0.33,core,1102.73
+2026-08-18T15:02:45.831098+00:00,HongKong,0x25dd0bf4dbeb53a5e02eb4ea50d887c6358ff9e6c045ccf7825f0e0c078aa7b4,Will the highest temperature in Hong Kong be 34°C on August 19?,2026-08-19,shoulder,No,0.945,0.055,outer,3927.09
