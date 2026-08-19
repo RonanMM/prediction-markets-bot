@@ -2,14 +2,23 @@
 
 The markets resolve on **wunderground.com** station pages (`resolution_anchors.resolution_url`),
 NOT on the NWS CLI our historical-actuals feed reads. WU's daily max/min for an airport is the
-extreme over the ROUTINE HOURLY METAR observations in the station-local calendar day — which can
-differ from the CLI by a whole degree, because the CLI uses continuous 1-minute sensor data (it
-sees spikes/dips between METARs) and a local-STANDARD-time day window.
+extreme over EVERY observation in the station-local calendar day — the routine hourly METARs AND
+the SPECIs filed off-schedule when conditions change — which can differ from the CLI by a whole
+degree, because the CLI uses continuous 1-minute sensor data (it sees spikes/dips between
+observations) and a local-STANDARD-time day window.
+
+⚠️ SPECIALS ARE PART OF THE RULER, NOT AN EXTRA. Reconstructing from routine METARs alone yields
+a max that is too LOW and a min that is too HIGH, and the error is strictly one-sided — dropping
+observations can never widen an extreme. This module trusted routine-only obs until 2026-08-12
+(ruler #13; see `fetch_station_obs.py`, which now requests `report_type=[3, 4]`). Measured over
+2026-03-01→08-12 across nine US stations and 1,476 station-days, specials raise the daily max on
+2.5% of days and lower the daily min on 6.1%; on the four settled rows where the two candidate
+rulers disagree, +specials matched the actual settlement 4/4 and routine-only 0/4.
 
 The 2026-07-12 settlement audit (audit_settlements.py) found 4/60 markets graded OPPOSITE to how
 they actually settled, all at whole-degree boundaries. Reconstructing the WU reading from our
-stored hourly METARs (data/weather/{slug}_obs_hourly.csv, IEM report_type=3, station-local time)
-matched the real settlement in ALL THREE US cases:
+stored hourly observations (data/weather/{slug}_obs_hourly.csv, station-local time) matched the
+real settlement in ALL THREE US cases:
     NYC 2026-07-03  Tmin: CLI 79°F, hourly-METAR/WU 80°F  → '80-81°F' settled YES
     NYC 2026-06-27  Tmin: CLI 69°F, hourly-METAR/WU 70°F  → '68-69°F' settled NO
     Chicago 2026-05-28 Tmax: CLI 72°F, hourly-METAR/WU 71°F → '72-73°F' settled NO
