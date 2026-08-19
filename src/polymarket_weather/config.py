@@ -76,9 +76,15 @@ MARKET_KEYWORDS = [
 # ── Open-Meteo API ───────────────────────────────────────────────────────────
 OPEN_METEO_BASE          = "https://api.open-meteo.com/v1/forecast"
 OPEN_METEO_ENSEMBLE_BASE = "https://ensemble-api.open-meteo.com/v1/ensemble"
-# ~119 members (ICON 40 + GFS 31 + ECMWF 50). NOTE: ecmwf_ifs04 was retired upstream and
-# silently returned zero members (audit 2026-07-04 found only 69 = ICON+GFS); ifs025 is
-# the live ECMWF ensemble id.
+# 119 members MAX, and the count FALLS WITH LEAD — do not quote a single fixed number.
+# Measured over the 43,902 stored ensemble rows: 119 out to ~day 6, 80 from day 8, 30 at the
+# longest leads (the three models have different horizons). Only 41% of rows carry the full 119;
+# at the leads the engine actually bets (1-7 d) the mean is ~114. The five observed values are
+# exactly {30, 39, 69, 80, 119}. (An earlier version of this comment decomposed it as
+# "ICON 40 + GFS 31 + ECMWF 50", which sums to 121 — that per-model split was never verified,
+# whereas the totals above are measured from the data.)
+# NOTE: ecmwf_ifs04 was retired upstream and silently returned zero members (audit 2026-07-04
+# found only 69 = ICON+GFS); ifs025 is the live ECMWF ensemble id.
 ENSEMBLE_MODEL           = "icon_seamless,gfs_seamless,ecmwf_ifs025"
 OPEN_METEO_PARAMS = {
     "daily": "temperature_2m_max,temperature_2m_min",

@@ -171,7 +171,7 @@ CV RMSE ≈1.2 (Bucheon) vs ≈1.96 (airport cell). A loud comment in the file s
 | `data_status.py` | Track-record progress report: collected / resolved / station-gradable counts vs the pre-committed gate. |
 | `fetch_polymarket.py` | Gamma API (market search/details) + CLOB API (price history). Parses temperature bins from market questions. |
 | `fetch_weather.py` | Open-Meteo 16-day forecast (daily + hourly) **plus `fetch_forecast_multimodel`** — per-model deterministic Tmax (ECMWF/GFS/ICON/JMA → `{slug}_daily_mm.csv`), the exact serving input for the calibrated multi-model mean. |
-| `fetch_ensemble.py` | Fetches Open-Meteo ensemble forecasts (ICON+GFS+ECMWF, 122 members) to compute dynamic uncertainty metrics. |
+| `fetch_ensemble.py` | Fetches Open-Meteo ensemble forecasts (ICON+GFS+ECMWF, **up to 119 members — the count falls with lead**, see `config.ENSEMBLE_MODEL`) to compute dynamic uncertainty metrics. |
 | `fetch_historical_truth.py` | **Resolution-faithful station truth** (NWS CLI / IEM METAR / HKO API, 2015→now, ~1-day lag). Replaced Meteostat (corrupted; see Resolution Anchors). |
 | `fetch_historical_leads.py` | Archived real forecasts at leads 1–7 (Open-Meteo Previous Runs, `best_match`, 2022→now) — EMOS v2 training data. |
 | `fetch_historical_leads_mm.py` | Same, per model chain (ECMWF/GFS/ICON) for the multi-model mean input. Seoul additionally uses a JMA file (`{slug}_historical_leads_jma.csv`). |
@@ -351,7 +351,7 @@ Four workflows in `.github/workflows/`. All commit as `raincheck-collector`
 | `collect.yml` | hourly (`13 * * * *`) | `main.py --collect-only` | `data/polymarket`, `data/weather`, `shoulder_paper.csv` |
 | `truth-eval.yml` | daily 09:00 UTC | truth + obs refresh → regenerate tracker → **audit** → gate | `output/` trackers |
 | `dashboard.yml` | every 2h (`40 */2 * * *`) | truth + obs refresh → `build_dashboard.py` | **separate public repo** (below) |
-| `retrain.yml` | weekly (`20 4 * * 0`) + `workflow_dispatch` | full fetch → rebuild targets → `train_calibrator.py` → both trackers → arbiter | `models/`, `output/` |
+| `retrain.yml` | twice weekly (`20 4 * * 0` + `20 4 * * 3`) + `workflow_dispatch` | full fetch → rebuild targets → `train_calibrator.py` → both trackers → arbiter | `models/`, `output/` |
 
 ⚠️ **Those crons are deliberately ~2× the cadence we want.** GitHub schedules are best-effort:
 measured 2026-07-27, the old every-2h collect cron delivered **3h49 gaps** (roughly every other
@@ -359,16 +359,21 @@ slot, each 1-2h late) and dashboard runs fired **~3h after** their slot with som
 are idempotent (append-only + dedupe on read) and the repo is public (free minutes), so
 over-scheduling is the fix. Judge health by the gap between *data* timestamps, never by the cron.
 
-`retrain.yml` runs **weekly (Sun 04:20 UTC)** as of 2026-07-28, plus manual dispatch. Weekly is
-cheaper than monthly, not dearer: the per-fetch archive cache is evicted after 7 days unused, so
-a monthly schedule would run COLD every time (full 2022→now refetch, ~3-4h) while weekly keeps it
-warm and pulls only the new week. **Retrain is NOT the measurement tool** — `truth-eval` (daily)
-regenerates the trackers and grades; retrain does so only as a side effect. ⚠️ Model artifacts now
+`retrain.yml` runs **twice weekly (Sun AND Wed, 04:20 UTC)**, plus manual dispatch. Frequent is
+cheaper than rare, not dearer: the per-fetch archive cache is evicted after 7 days unused, so
+a monthly schedule would run COLD every time (full 2022→now refetch, ~3-4h) while a sub-7-day
+cadence keeps it warm and pulls only the new days. The measured effect is large — the 2026-08-19
+run finished in **40m46s** against the ~3-4h cold cost. **Retrain is NOT the measurement
+tool** — `truth-eval` (daily) regenerates the trackers and grades; retrain does so only as a
+side effect. ⚠️ Model artifacts now
 change under the E3 forward gates, so a gate's forward sample can span model versions — fine while
 everything is paper, revisit before any bucket goes live. ⚠️ It is also timeout-constrained: run #1 (2026-07-17) was killed at
 `timeout-minutes: 60`, so W0.2 did not land on that attempt. The heavy steps are
 `fetch_historical_leads*.py` (2022→now × leads 1–7 × models × 5 cities, Open-Meteo rate limits).
-Raise the timeout rather than assuming the run "just took a while".
+Both jobs now sit at **`timeout-minutes: 360`**, and that is the CEILING, not a dial: GitHub kills
+any single job on a hosted runner at 6 hours, and `timeout-minutes` can only LOWER that limit,
+never raise it (`timeout-minutes: 720` silently does nothing). A retrain that needs more than 6h
+must be split across jobs — which is why the archive fetch and the training run are already two.
 
 The dashboard publishes to **`RonanMM/prediction-markets-bot-dashboard`** (`PAGES_REPO`), a
 separate public repo, via the `DASHBOARD_TOKEN` secret. Without that secret the build *succeeds*

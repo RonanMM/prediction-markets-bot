@@ -63,7 +63,7 @@ MM_MODELS_BY_CITY = {
     "new_york_city": ("ecmwf", "gfs", "icon", "mf", "aifs"),
 }
 # Proxy fit: when serving lacks the exact multi-model inputs (pre-daily_mm snapshots, a
-# model outage), the predictor falls back to the live 122-member ensemble mean — whose
+# model outage), the predictor falls back to the live ensemble mean (<=119 members) — whose
 # model families are ECMWF/GFS/ICON. A calibration fit on THAT mean keeps the fallback's
 # sigma honest; applying the sharper full-blend sigma to the blunter proxy input would be
 # silently overconfident.
