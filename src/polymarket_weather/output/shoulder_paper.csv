@@ -1202,3 +1202,4 @@ entered_at_utc,city,condition_id,question,target_date,leg,side,entry_side_price,
 2026-08-20T07:14:44.770542+00:00,HongKong,0xaf6eef93771e24364ae5b2cb2900f906ab81e3d01fa757641df5a255833ef441,Will the highest temperature in Hong Kong be 33°C on August 22?,2026-08-22,shoulder,No,0.94,0.06,outer,1185.04
 2026-08-20T07:14:44.770542+00:00,HongKong,0xbed0cb2ec485a8b0261210e096eb7ab756e42071310a4e6fe7e4e08fa40015e7,Will the highest temperature in Hong Kong be 29°C on August 22?,2026-08-22,shoulder,No,0.93,0.07,outer,1166.89
 2026-08-20T08:09:11.772593+00:00,HongKong,0xcbc15a068153279c1c03885f53b5efa71556e11933f1aae24750f2f38e09f11a,Will the lowest temperature in Hong Kong be 24°C on August 22?,2026-08-22,shoulder,No,0.94,0.06,outer,1473.56
+2026-08-20T09:07:24.701612+00:00,Seoul,0x515a10ee3a7bb07c77b18c1f76ea2a6fbc33ca0e7a47354ea7842565cf11d407,Will the lowest temperature in Seoul (Incheon) be 23°C on August 22?,2026-08-22,shoulder,No,0.75,0.25,core,1067.4
