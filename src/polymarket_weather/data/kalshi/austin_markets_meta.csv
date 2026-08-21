@@ -1091,3 +1091,39 @@ KXHIGHAUS-26AUG21-B103.5,"If the maximum temperature recorded at Austin (CLIAUS)
 AM ET following the release of the data for August 21, 2026, or one week after August 21, 2026.","[{""end"":""1.0000"",""start"":""0.0000"",""step"":""0.0100""}]"
 KXHIGHAUS-26AUG21-B101.5,"If the maximum temperature recorded at Austin (CLIAUS) for Aug 21, 2026, is between 101-102° fahrenheit according to The Weather Company, then the market resolves to Yes.","Not all weather data is the same. While checking a source like AccuWeather or Google Weather may help guide your decision, the official and final value used to determine this market is the maximum/minimum temperature as reported by the Weather Company.","The Last Trading Time will be 11:59 PM local time on August 21, 2026 regardless of any data releases or events occurring. Expiration will occur on the sooner of the first 7:00 or 8:00
 AM ET following the release of the data for August 21, 2026, or one week after August 21, 2026.","[{""end"":""1.0000"",""start"":""0.0000"",""step"":""0.0100""}]"
+KXHIGHAUS-26AUG22-T109,"If the maximum temperature recorded at Austin (CLIAUS) for Aug 22, 2026, is greater than 109° fahrenheit according to The Weather Company, then the market resolves to Yes.","Not all weather data is the same. While checking a source like AccuWeather or Google Weather may help guide your decision, the official and final value used to determine this market is the maximum/minimum temperature as reported by the Weather Company.
+
+Reading weather data
+Preliminary Weather Company data may be subject to rounding and conversion differences from the final reported value.
+Use caution when interpreting preliminary Weather Company readings.","The Last Trading Time will be 11:59 PM local time on August 22, 2026 regardless of any data releases or events occurring. Expiration will occur on the sooner of the first 7:00 or 8:00
+AM ET following the release of the data for August 22, 2026, or one week after August 22, 2026.","[{""end"":""1.0000"",""start"":""0.0000"",""step"":""0.0100""}]"
+KXHIGHAUS-26AUG22-T102,"If the maximum temperature recorded at Austin (CLIAUS) for Aug 22, 2026, is less than 102° fahrenheit according to The Weather Company, then the market resolves to Yes.","Not all weather data is the same. While checking a source like AccuWeather or Google Weather may help guide your decision, the official and final value used to determine this market is the maximum/minimum temperature as reported by the Weather Company.
+
+Reading weather data
+Preliminary Weather Company data may be subject to rounding and conversion differences from the final reported value.
+Use caution when interpreting preliminary Weather Company readings.","The Last Trading Time will be 11:59 PM local time on August 22, 2026 regardless of any data releases or events occurring. Expiration will occur on the sooner of the first 7:00 or 8:00
+AM ET following the release of the data for August 22, 2026, or one week after August 22, 2026.","[{""end"":""1.0000"",""start"":""0.0000"",""step"":""0.0100""}]"
+KXHIGHAUS-26AUG22-B108.5,"If the maximum temperature recorded at Austin (CLIAUS) for Aug 22, 2026, is between 108-109° fahrenheit according to The Weather Company, then the market resolves to Yes.","Not all weather data is the same. While checking a source like AccuWeather or Google Weather may help guide your decision, the official and final value used to determine this market is the maximum/minimum temperature as reported by the Weather Company.
+
+Reading weather data
+Preliminary Weather Company data may be subject to rounding and conversion differences from the final reported value.
+Use caution when interpreting preliminary Weather Company readings.","The Last Trading Time will be 11:59 PM local time on August 22, 2026 regardless of any data releases or events occurring. Expiration will occur on the sooner of the first 7:00 or 8:00
+AM ET following the release of the data for August 22, 2026, or one week after August 22, 2026.","[{""end"":""1.0000"",""start"":""0.0000"",""step"":""0.0100""}]"
+KXHIGHAUS-26AUG22-B106.5,"If the maximum temperature recorded at Austin (CLIAUS) for Aug 22, 2026, is between 106-107° fahrenheit according to The Weather Company, then the market resolves to Yes.","Not all weather data is the same. While checking a source like AccuWeather or Google Weather may help guide your decision, the official and final value used to determine this market is the maximum/minimum temperature as reported by the Weather Company.
+
+Reading weather data
+Preliminary Weather Company data may be subject to rounding and conversion differences from the final reported value.
+Use caution when interpreting preliminary Weather Company readings.","The Last Trading Time will be 11:59 PM local time on August 22, 2026 regardless of any data releases or events occurring. Expiration will occur on the sooner of the first 7:00 or 8:00
+AM ET following the release of the data for August 22, 2026, or one week after August 22, 2026.","[{""end"":""1.0000"",""start"":""0.0000"",""step"":""0.0100""}]"
+KXHIGHAUS-26AUG22-B104.5,"If the maximum temperature recorded at Austin (CLIAUS) for Aug 22, 2026, is between 104-105° fahrenheit according to The Weather Company, then the market resolves to Yes.","Not all weather data is the same. While checking a source like AccuWeather or Google Weather may help guide your decision, the official and final value used to determine this market is the maximum/minimum temperature as reported by the Weather Company.
+
+Reading weather data
+Preliminary Weather Company data may be subject to rounding and conversion differences from the final reported value.
+Use caution when interpreting preliminary Weather Company readings.","The Last Trading Time will be 11:59 PM local time on August 22, 2026 regardless of any data releases or events occurring. Expiration will occur on the sooner of the first 7:00 or 8:00
+AM ET following the release of the data for August 22, 2026, or one week after August 22, 2026.","[{""end"":""1.0000"",""start"":""0.0000"",""step"":""0.0100""}]"
+KXHIGHAUS-26AUG22-B102.5,"If the maximum temperature recorded at Austin (CLIAUS) for Aug 22, 2026, is between 102-103° fahrenheit according to The Weather Company, then the market resolves to Yes.","Not all weather data is the same. While checking a source like AccuWeather or Google Weather may help guide your decision, the official and final value used to determine this market is the maximum/minimum temperature as reported by the Weather Company.
+
+Reading weather data
+Preliminary Weather Company data may be subject to rounding and conversion differences from the final reported value.
+Use caution when interpreting preliminary Weather Company readings.","The Last Trading Time will be 11:59 PM local time on August 22, 2026 regardless of any data releases or events occurring. Expiration will occur on the sooner of the first 7:00 or 8:00
+AM ET following the release of the data for August 22, 2026, or one week after August 22, 2026.","[{""end"":""1.0000"",""start"":""0.0000"",""step"":""0.0100""}]"
