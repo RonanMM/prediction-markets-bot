@@ -1285,3 +1285,4 @@ entered_at_utc,city,condition_id,question,target_date,leg,side,entry_side_price,
 2026-08-22T07:56:37.353231+00:00,Seoul,0x32993fce2cddd96f589ba2c6972c782a759ba0eede360dd7741d0d1d707cbab6,Will the lowest temperature in Seoul (Incheon) be 25°C on August 24?,2026-08-24,shoulder,No,0.665,0.335,core,1227.18
 2026-08-22T07:56:37.353231+00:00,Seoul,0x68716d894407f8b56fbb4c7a2896617d49d0cd75d86c6ef7598772d25a53584d,Will the lowest temperature in Seoul (Incheon) be 27°C on August 24?,2026-08-24,shoulder,No,0.875,0.125,outer,1118.38
 2026-08-22T07:56:37.353231+00:00,Seoul,0x6dd0d1e5a5fb322dce21143d6741f0ed06ec6b9609241bb9b92d30de5b5a459c,Will the lowest temperature in Seoul (Incheon) be 24°C on August 24?,2026-08-24,shoulder,No,0.885,0.115,outer,1081.81
+2026-08-22T09:00:41.233132+00:00,HongKong,0x0c150b570f7fc9840b072548a9b9225f5a40e0ba23f94bfc5310e2afec0f1aa5,Will the lowest temperature in Hong Kong be 27°C on August 24?,2026-08-24,shoulder,No,0.72,0.28,core,1028.32
