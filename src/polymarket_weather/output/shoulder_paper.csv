@@ -1288,3 +1288,5 @@ entered_at_utc,city,condition_id,question,target_date,leg,side,entry_side_price,
 2026-08-22T09:00:41.233132+00:00,HongKong,0x0c150b570f7fc9840b072548a9b9225f5a40e0ba23f94bfc5310e2afec0f1aa5,Will the lowest temperature in Hong Kong be 27°C on August 24?,2026-08-24,shoulder,No,0.72,0.28,core,1028.32
 2026-08-22T09:52:00.258770+00:00,London,0x87c205dbc86e947a766e466f6058987915c377d2d983f81796a6a61a6963fce2,Will the highest temperature in London be 24°C on August 24?,2026-08-24,shoulder,No,0.95,0.05,outer,1007.92
 2026-08-22T09:52:00.258770+00:00,London,0xc7561fba9996da2490f1728c655b86eed6b3d3f8c8c35c106435b6cc3c47d4d6,Will the highest temperature in London be 20°C on August 24?,2026-08-24,shoulder,No,0.88,0.12,outer,1394.32
+2026-08-22T10:50:51.061344+00:00,London,0x575982185f12faa0c0417a02aed9d04c82bb960c9c32a55f3d4078ce86021cdc,Will the lowest temperature in London be 13°C on August 24?,2026-08-24,shoulder,No,0.755,0.245,core,1035.81
+2026-08-22T10:50:51.061344+00:00,Seoul,0x3a9d2eda4feaf45b5df019c6214b04c3eb619aa89b965516331f1d714c029b69,Will the lowest temperature in Seoul (Incheon) be 22°C on August 24?,2026-08-24,shoulder,No,0.95,0.05,outer,1049.66
