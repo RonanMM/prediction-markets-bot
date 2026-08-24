@@ -1378,3 +1378,4 @@ entered_at_utc,city,condition_id,question,target_date,leg,side,entry_side_price,
 2026-08-24T16:08:22.901219+00:00,London,0x284cc2b78b78efc72dc2a59c400daab3150d68460b321721935b9d4b136bbc45,Will the lowest temperature in London be 19°C on August 26?,2026-08-26,shoulder,No,0.835,0.165,outer,1261.82
 2026-08-24T16:08:22.901219+00:00,London,0xc683c9d480b5ea1bce623c9a5fcea037a01798495029e05dc7a09a2e11815e75,Will the lowest temperature in London be 15°C on August 26?,2026-08-26,shoulder,No,0.915,0.085,outer,1360.07
 2026-08-24T16:08:22.901219+00:00,Seoul,0x6bf94c274914df0d52ada656a7b415dbc4462241a8f0f15bd6093498f903b664,Will the lowest temperature in Seoul (Incheon) be 24°C on August 26?,2026-08-26,shoulder,No,0.93,0.07,outer,1009.78
+2026-08-24T17:05:36.018284+00:00,Seoul,0xdcdcf249c1ac84fadeceba410d07586d20b8a25ea8c3ddbaaae11dccdd3974b9,Will the lowest temperature in Seoul (Incheon) be 25°C on August 26?,2026-08-26,shoulder,No,0.655,0.345,core,1027.59
