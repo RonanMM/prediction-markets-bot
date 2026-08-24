@@ -2183,3 +2183,39 @@ Reading weather data
 Preliminary Weather Company data may be subject to rounding and conversion differences from the final reported value.
 Use caution when interpreting preliminary Weather Company readings.","The Last Trading Time will be 11:59 PM local time on August 24, 2026 regardless of any data releases or events occurring. Expiration will occur on the sooner of the first 7:00 or 8:00
 AM ET following the release of the data for August 24, 2026, or one week after August 24, 2026.","[{""end"":""1.0000"",""start"":""0.0000"",""step"":""0.0100""}]"
+KXHIGHTSEA-26AUG25-T90,"If the maximum temperature recorded at Seattle (CLISEA) for Aug 25, 2026, is greater than 90° fahrenheit according to The Weather Company, then the market resolves to Yes.","Not all weather data is the same. While checking a source like AccuWeather or Google Weather may help guide your decision, the official and final value used to determine this market is the maximum/minimum temperature as reported by the Weather Company.
+
+Reading weather data
+Preliminary Weather Company data may be subject to rounding and conversion differences from the final reported value.
+Use caution when interpreting preliminary Weather Company readings.","The Last Trading Time will be 11:59 PM local time on August 25, 2026 regardless of any data releases or events occurring. Expiration will occur on the sooner of the first 7:00 or 8:00
+AM ET following the release of the data for August 25, 2026, or one week after August 25, 2026.","[{""end"":""1.0000"",""start"":""0.0000"",""step"":""0.0100""}]"
+KXHIGHTSEA-26AUG25-T83,"If the maximum temperature recorded at Seattle (CLISEA) for Aug 25, 2026, is less than 83° fahrenheit according to The Weather Company, then the market resolves to Yes.","Not all weather data is the same. While checking a source like AccuWeather or Google Weather may help guide your decision, the official and final value used to determine this market is the maximum/minimum temperature as reported by the Weather Company.
+
+Reading weather data
+Preliminary Weather Company data may be subject to rounding and conversion differences from the final reported value.
+Use caution when interpreting preliminary Weather Company readings.","The Last Trading Time will be 11:59 PM local time on August 25, 2026 regardless of any data releases or events occurring. Expiration will occur on the sooner of the first 7:00 or 8:00
+AM ET following the release of the data for August 25, 2026, or one week after August 25, 2026.","[{""end"":""1.0000"",""start"":""0.0000"",""step"":""0.0100""}]"
+KXHIGHTSEA-26AUG25-B89.5,"If the maximum temperature recorded at Seattle (CLISEA) for Aug 25, 2026, is between 89-90° fahrenheit according to The Weather Company, then the market resolves to Yes.","Not all weather data is the same. While checking a source like AccuWeather or Google Weather may help guide your decision, the official and final value used to determine this market is the maximum/minimum temperature as reported by the Weather Company.
+
+Reading weather data
+Preliminary Weather Company data may be subject to rounding and conversion differences from the final reported value.
+Use caution when interpreting preliminary Weather Company readings.","The Last Trading Time will be 11:59 PM local time on August 25, 2026 regardless of any data releases or events occurring. Expiration will occur on the sooner of the first 7:00 or 8:00
+AM ET following the release of the data for August 25, 2026, or one week after August 25, 2026.","[{""end"":""1.0000"",""start"":""0.0000"",""step"":""0.0100""}]"
+KXHIGHTSEA-26AUG25-B87.5,"If the maximum temperature recorded at Seattle (CLISEA) for Aug 25, 2026, is between 87-88° fahrenheit according to The Weather Company, then the market resolves to Yes.","Not all weather data is the same. While checking a source like AccuWeather or Google Weather may help guide your decision, the official and final value used to determine this market is the maximum/minimum temperature as reported by the Weather Company.
+
+Reading weather data
+Preliminary Weather Company data may be subject to rounding and conversion differences from the final reported value.
+Use caution when interpreting preliminary Weather Company readings.","The Last Trading Time will be 11:59 PM local time on August 25, 2026 regardless of any data releases or events occurring. Expiration will occur on the sooner of the first 7:00 or 8:00
+AM ET following the release of the data for August 25, 2026, or one week after August 25, 2026.","[{""end"":""1.0000"",""start"":""0.0000"",""step"":""0.0100""}]"
+KXHIGHTSEA-26AUG25-B85.5,"If the maximum temperature recorded at Seattle (CLISEA) for Aug 25, 2026, is between 85-86° fahrenheit according to The Weather Company, then the market resolves to Yes.","Not all weather data is the same. While checking a source like AccuWeather or Google Weather may help guide your decision, the official and final value used to determine this market is the maximum/minimum temperature as reported by the Weather Company.
+
+Reading weather data
+Preliminary Weather Company data may be subject to rounding and conversion differences from the final reported value.
+Use caution when interpreting preliminary Weather Company readings.","The Last Trading Time will be 11:59 PM local time on August 25, 2026 regardless of any data releases or events occurring. Expiration will occur on the sooner of the first 7:00 or 8:00
+AM ET following the release of the data for August 25, 2026, or one week after August 25, 2026.","[{""end"":""1.0000"",""start"":""0.0000"",""step"":""0.0100""}]"
+KXHIGHTSEA-26AUG25-B83.5,"If the maximum temperature recorded at Seattle (CLISEA) for Aug 25, 2026, is between 83-84° fahrenheit according to The Weather Company, then the market resolves to Yes.","Not all weather data is the same. While checking a source like AccuWeather or Google Weather may help guide your decision, the official and final value used to determine this market is the maximum/minimum temperature as reported by the Weather Company.
+
+Reading weather data
+Preliminary Weather Company data may be subject to rounding and conversion differences from the final reported value.
+Use caution when interpreting preliminary Weather Company readings.","The Last Trading Time will be 11:59 PM local time on August 25, 2026 regardless of any data releases or events occurring. Expiration will occur on the sooner of the first 7:00 or 8:00
+AM ET following the release of the data for August 25, 2026, or one week after August 25, 2026.","[{""end"":""1.0000"",""start"":""0.0000"",""step"":""0.0100""}]"
