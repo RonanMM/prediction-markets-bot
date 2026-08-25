@@ -1414,3 +1414,4 @@ entered_at_utc,city,condition_id,question,target_date,leg,side,entry_side_price,
 2026-08-25T10:04:05.933069+00:00,London,0x589828ae23bf14d04f3e7043c8c57d0c80f1e105b5d5306dc95d21f561cbfec1,Will the highest temperature in London be 22°C on August 27?,2026-08-27,shoulder,No,0.95,0.05,outer,1100.66
 2026-08-25T10:04:05.933069+00:00,HongKong,0x751b5bb19309b8a8af0a486be9cfd6117544a00f03771c3e1d5052a21845687d,Will the lowest temperature in Hong Kong be 25°C on August 27?,2026-08-27,shoulder,No,0.84,0.16,outer,1013.0
 2026-08-25T11:01:23.048611+00:00,London,0x08aeee4ceb12f08a4bbdbd3ba7ab031196cd0a2faebf33ab6e0d3015d12c773b,Will the lowest temperature in London be 18°C on August 27?,2026-08-27,shoulder,No,0.665,0.335,core,1099.15
+2026-08-25T11:57:38.505486+00:00,HongKong,0x4247e00181e592f7d2827c93e7ebab13d105f9d87a5896310edfd0d4526dd8d0,Will the lowest temperature in Hong Kong be 32°C or higher on August 27?,2026-08-27,shoulder,No,0.945,0.055,outer,1067.28
