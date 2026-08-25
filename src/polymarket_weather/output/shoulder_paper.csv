@@ -1419,3 +1419,4 @@ entered_at_utc,city,condition_id,question,target_date,leg,side,entry_side_price,
 2026-08-25T14:18:09.327871+00:00,London,0x6e23e6ad9df30ff1667092eea749bf5a05c8207723c135a6eae8a7eb097c5309,Will the lowest temperature in London be 20°C on August 27?,2026-08-27,shoulder,No,0.9,0.1,outer,1307.29
 2026-08-25T14:18:09.327871+00:00,London,0x8abc049f234e5e977b6fd4d7db4563fc915ed418409d30a39e32949192f8a80d,Will the lowest temperature in London be 17°C on August 27?,2026-08-27,shoulder,No,0.95,0.05,outer,1083.91
 2026-08-25T15:17:30.253299+00:00,NYC,0x478ec60913da09037f42264edd1d14e152c53d897139c669315ab2479c849699,Will the lowest temperature in New York City be between 68-69°F on August 26?,2026-08-26,shoulder,No,0.655,0.345,core,1392.4
+2026-08-25T16:10:27.856185+00:00,HongKong,0x6ea1e41d770c2d596150c39ea8b8518e841a9074ffab10b58ce758d9564ce635,Will the lowest temperature in Hong Kong be 28°C on August 27?,2026-08-27,shoulder,No,0.805,0.195,outer,1054.83
