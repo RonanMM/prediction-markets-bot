@@ -1383,3 +1383,4 @@ entered_at_utc,city,condition_id,question,target_date,leg,side,entry_side_price,
 2026-08-24T21:02:45.359402+00:00,Seoul,0x9948ac20c2170842361e5cbc46fda4b4d509608c15a932a2cc06ede9cdec068e,Will the lowest temperature in Seoul (Incheon) be 27°C on August 26?,2026-08-26,shoulder,No,0.95,0.05,outer,1103.77
 2026-08-24T21:02:45.359402+00:00,HongKong,0x9499505ec0ea1e7da75c8f0ea4140dbfa7a612909a33676380b9b54e73fee83e,Will the lowest temperature in Hong Kong be 26°C on August 26?,2026-08-26,shoulder,No,0.87,0.13,outer,1068.58
 2026-08-24T21:02:45.359402+00:00,HongKong,0xa98eebcfba8a766ce26cacde5922f7475bf29a9161fa30a43a890f6935a1c25f,Will the lowest temperature in Hong Kong be 28°C on August 26?,2026-08-26,shoulder,No,0.715,0.285,core,1450.73
+2026-08-25T02:07:11.355486+00:00,NYC,0x668971115755e8f1054178edd54f70eb7e2f26b88720295cc882d53b25632afc,Will the highest temperature in New York City be between 78-79°F on August 26?,2026-08-26,shoulder,No,0.93,0.07,outer,1149.24
