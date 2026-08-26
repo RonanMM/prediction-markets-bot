@@ -1271,3 +1271,39 @@ Reading weather data
 Preliminary Weather Company data may be subject to rounding and conversion differences from the final reported value.
 Use caution when interpreting preliminary Weather Company readings.","The Last Trading Time will be 11:59 PM local time on August 26, 2026 regardless of any data releases or events occurring. Expiration will occur on the sooner of the first 7:00 or 8:00
 AM ET following the release of the data for August 26, 2026, or one week after August 26, 2026.","[{""end"":""1.0000"",""start"":""0.0000"",""step"":""0.0100""}]"
+KXHIGHAUS-26AUG27-T99,"If the maximum temperature recorded at Austin (CLIAUS) for Aug 27, 2026, is less than 99° fahrenheit according to The Weather Company, then the market resolves to Yes.","Not all weather data is the same. While checking a source like AccuWeather or Google Weather may help guide your decision, the official and final value used to determine this market is the maximum/minimum temperature as reported by the Weather Company.
+
+Reading weather data
+Preliminary Weather Company data may be subject to rounding and conversion differences from the final reported value.
+Use caution when interpreting preliminary Weather Company readings.","The Last Trading Time will be 11:59 PM local time on August 27, 2026 regardless of any data releases or events occurring. Expiration will occur on the sooner of the first 7:00 or 8:00
+AM ET following the release of the data for August 27, 2026, or one week after August 27, 2026.","[{""end"":""1.0000"",""start"":""0.0000"",""step"":""0.0100""}]"
+KXHIGHAUS-26AUG27-T106,"If the maximum temperature recorded at Austin (CLIAUS) for Aug 27, 2026, is greater than 106° fahrenheit according to The Weather Company, then the market resolves to Yes.","Not all weather data is the same. While checking a source like AccuWeather or Google Weather may help guide your decision, the official and final value used to determine this market is the maximum/minimum temperature as reported by the Weather Company.
+
+Reading weather data
+Preliminary Weather Company data may be subject to rounding and conversion differences from the final reported value.
+Use caution when interpreting preliminary Weather Company readings.","The Last Trading Time will be 11:59 PM local time on August 27, 2026 regardless of any data releases or events occurring. Expiration will occur on the sooner of the first 7:00 or 8:00
+AM ET following the release of the data for August 27, 2026, or one week after August 27, 2026.","[{""end"":""1.0000"",""start"":""0.0000"",""step"":""0.0100""}]"
+KXHIGHAUS-26AUG27-B99.5,"If the maximum temperature recorded at Austin (CLIAUS) for Aug 27, 2026, is between 99-100° fahrenheit according to The Weather Company, then the market resolves to Yes.","Not all weather data is the same. While checking a source like AccuWeather or Google Weather may help guide your decision, the official and final value used to determine this market is the maximum/minimum temperature as reported by the Weather Company.
+
+Reading weather data
+Preliminary Weather Company data may be subject to rounding and conversion differences from the final reported value.
+Use caution when interpreting preliminary Weather Company readings.","The Last Trading Time will be 11:59 PM local time on August 27, 2026 regardless of any data releases or events occurring. Expiration will occur on the sooner of the first 7:00 or 8:00
+AM ET following the release of the data for August 27, 2026, or one week after August 27, 2026.","[{""end"":""1.0000"",""start"":""0.0000"",""step"":""0.0100""}]"
+KXHIGHAUS-26AUG27-B105.5,"If the maximum temperature recorded at Austin (CLIAUS) for Aug 27, 2026, is between 105-106° fahrenheit according to The Weather Company, then the market resolves to Yes.","Not all weather data is the same. While checking a source like AccuWeather or Google Weather may help guide your decision, the official and final value used to determine this market is the maximum/minimum temperature as reported by the Weather Company.
+
+Reading weather data
+Preliminary Weather Company data may be subject to rounding and conversion differences from the final reported value.
+Use caution when interpreting preliminary Weather Company readings.","The Last Trading Time will be 11:59 PM local time on August 27, 2026 regardless of any data releases or events occurring. Expiration will occur on the sooner of the first 7:00 or 8:00
+AM ET following the release of the data for August 27, 2026, or one week after August 27, 2026.","[{""end"":""1.0000"",""start"":""0.0000"",""step"":""0.0100""}]"
+KXHIGHAUS-26AUG27-B103.5,"If the maximum temperature recorded at Austin (CLIAUS) for Aug 27, 2026, is between 103-104° fahrenheit according to The Weather Company, then the market resolves to Yes.","Not all weather data is the same. While checking a source like AccuWeather or Google Weather may help guide your decision, the official and final value used to determine this market is the maximum/minimum temperature as reported by the Weather Company.
+
+Reading weather data
+Preliminary Weather Company data may be subject to rounding and conversion differences from the final reported value.
+Use caution when interpreting preliminary Weather Company readings.","The Last Trading Time will be 11:59 PM local time on August 27, 2026 regardless of any data releases or events occurring. Expiration will occur on the sooner of the first 7:00 or 8:00
+AM ET following the release of the data for August 27, 2026, or one week after August 27, 2026.","[{""end"":""1.0000"",""start"":""0.0000"",""step"":""0.0100""}]"
+KXHIGHAUS-26AUG27-B101.5,"If the maximum temperature recorded at Austin (CLIAUS) for Aug 27, 2026, is between 101-102° fahrenheit according to The Weather Company, then the market resolves to Yes.","Not all weather data is the same. While checking a source like AccuWeather or Google Weather may help guide your decision, the official and final value used to determine this market is the maximum/minimum temperature as reported by the Weather Company.
+
+Reading weather data
+Preliminary Weather Company data may be subject to rounding and conversion differences from the final reported value.
+Use caution when interpreting preliminary Weather Company readings.","The Last Trading Time will be 11:59 PM local time on August 27, 2026 regardless of any data releases or events occurring. Expiration will occur on the sooner of the first 7:00 or 8:00
+AM ET following the release of the data for August 27, 2026, or one week after August 27, 2026.","[{""end"":""1.0000"",""start"":""0.0000"",""step"":""0.0100""}]"
