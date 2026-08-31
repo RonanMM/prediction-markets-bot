@@ -2435,3 +2435,39 @@ Reading weather data
 Preliminary Weather Company data may be subject to rounding and conversion differences from the final reported value.
 Use caution when interpreting preliminary Weather Company readings.","The Last Trading Time will be 11:59 PM local time on August 31, 2026 regardless of any data releases or events occurring. Expiration will occur on the sooner of the first 7:00 or 8:00
 AM ET following the release of the data for August 31, 2026, or one week after August 31, 2026.","[{""end"":""1.0000"",""start"":""0.0000"",""step"":""0.0100""}]"
+KXHIGHTHOU-26SEP01-T96,"If the maximum temperature recorded at Houston (CLIHOU) for Sep 1, 2026, is greater than 96° fahrenheit according to The Weather Company, then the market resolves to Yes.","Not all weather data is the same. While checking a source like AccuWeather or Google Weather may help guide your decision, the official and final value used to determine this market is the maximum/minimum temperature as reported by the Weather Company.
+
+Reading weather data
+Preliminary Weather Company data may be subject to rounding and conversion differences from the final reported value.
+Use caution when interpreting preliminary Weather Company readings.","The Last Trading Time will be 11:59 PM local time on September 01, 2026 regardless of any data releases or events occurring. Expiration will occur on the sooner of the first 7:00 or 8:00
+AM ET following the release of the data for September 01, 2026, or one week after September 01, 2026.","[{""end"":""1.0000"",""start"":""0.0000"",""step"":""0.0100""}]"
+KXHIGHTHOU-26SEP01-T89,"If the maximum temperature recorded at Houston (CLIHOU) for Sep 1, 2026, is less than 89° fahrenheit according to The Weather Company, then the market resolves to Yes.","Not all weather data is the same. While checking a source like AccuWeather or Google Weather may help guide your decision, the official and final value used to determine this market is the maximum/minimum temperature as reported by the Weather Company.
+
+Reading weather data
+Preliminary Weather Company data may be subject to rounding and conversion differences from the final reported value.
+Use caution when interpreting preliminary Weather Company readings.","The Last Trading Time will be 11:59 PM local time on September 01, 2026 regardless of any data releases or events occurring. Expiration will occur on the sooner of the first 7:00 or 8:00
+AM ET following the release of the data for September 01, 2026, or one week after September 01, 2026.","[{""end"":""1.0000"",""start"":""0.0000"",""step"":""0.0100""}]"
+KXHIGHTHOU-26SEP01-B95.5,"If the maximum temperature recorded at Houston (CLIHOU) for Sep 1, 2026, is between 95-96° fahrenheit according to The Weather Company, then the market resolves to Yes.","Not all weather data is the same. While checking a source like AccuWeather or Google Weather may help guide your decision, the official and final value used to determine this market is the maximum/minimum temperature as reported by the Weather Company.
+
+Reading weather data
+Preliminary Weather Company data may be subject to rounding and conversion differences from the final reported value.
+Use caution when interpreting preliminary Weather Company readings.","The Last Trading Time will be 11:59 PM local time on September 01, 2026 regardless of any data releases or events occurring. Expiration will occur on the sooner of the first 7:00 or 8:00
+AM ET following the release of the data for September 01, 2026, or one week after September 01, 2026.","[{""end"":""1.0000"",""start"":""0.0000"",""step"":""0.0100""}]"
+KXHIGHTHOU-26SEP01-B93.5,"If the maximum temperature recorded at Houston (CLIHOU) for Sep 1, 2026, is between 93-94° fahrenheit according to The Weather Company, then the market resolves to Yes.","Not all weather data is the same. While checking a source like AccuWeather or Google Weather may help guide your decision, the official and final value used to determine this market is the maximum/minimum temperature as reported by the Weather Company.
+
+Reading weather data
+Preliminary Weather Company data may be subject to rounding and conversion differences from the final reported value.
+Use caution when interpreting preliminary Weather Company readings.","The Last Trading Time will be 11:59 PM local time on September 01, 2026 regardless of any data releases or events occurring. Expiration will occur on the sooner of the first 7:00 or 8:00
+AM ET following the release of the data for September 01, 2026, or one week after September 01, 2026.","[{""end"":""1.0000"",""start"":""0.0000"",""step"":""0.0100""}]"
+KXHIGHTHOU-26SEP01-B91.5,"If the maximum temperature recorded at Houston (CLIHOU) for Sep 1, 2026, is between 91-92° fahrenheit according to The Weather Company, then the market resolves to Yes.","Not all weather data is the same. While checking a source like AccuWeather or Google Weather may help guide your decision, the official and final value used to determine this market is the maximum/minimum temperature as reported by the Weather Company.
+
+Reading weather data
+Preliminary Weather Company data may be subject to rounding and conversion differences from the final reported value.
+Use caution when interpreting preliminary Weather Company readings.","The Last Trading Time will be 11:59 PM local time on September 01, 2026 regardless of any data releases or events occurring. Expiration will occur on the sooner of the first 7:00 or 8:00
+AM ET following the release of the data for September 01, 2026, or one week after September 01, 2026.","[{""end"":""1.0000"",""start"":""0.0000"",""step"":""0.0100""}]"
+KXHIGHTHOU-26SEP01-B89.5,"If the maximum temperature recorded at Houston (CLIHOU) for Sep 1, 2026, is between 89-90° fahrenheit according to The Weather Company, then the market resolves to Yes.","Not all weather data is the same. While checking a source like AccuWeather or Google Weather may help guide your decision, the official and final value used to determine this market is the maximum/minimum temperature as reported by the Weather Company.
+
+Reading weather data
+Preliminary Weather Company data may be subject to rounding and conversion differences from the final reported value.
+Use caution when interpreting preliminary Weather Company readings.","The Last Trading Time will be 11:59 PM local time on September 01, 2026 regardless of any data releases or events occurring. Expiration will occur on the sooner of the first 7:00 or 8:00
+AM ET following the release of the data for September 01, 2026, or one week after September 01, 2026.","[{""end"":""1.0000"",""start"":""0.0000"",""step"":""0.0100""}]"
