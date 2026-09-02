@@ -2507,3 +2507,51 @@ Reading weather data
 Preliminary Weather Company data may be subject to rounding and conversion differences from the final reported value.
 Use caution when interpreting preliminary Weather Company readings.","The Last Trading Time will be 11:59 PM local time on September 02, 2026 regardless of any data releases or events occurring. Expiration will occur on the sooner of the first 7:00 or 8:00
 AM ET following the release of the data for September 02, 2026, or one week after September 02, 2026.","[{""end"":""1.0000"",""start"":""0.0000"",""step"":""0.0100""}]"
+KXHIGHTSEA-26SEP03-T70,"If the maximum temperature recorded at Seattle (CLISEA) for Sep 3, 2026, is greater than 70° fahrenheit according to The Weather Company, then the market resolves to Yes.","Not all weather data is the same. While checking a source like AccuWeather or Google Weather may help guide your decision, the official and final value used to determine this market is the maximum/minimum temperature as reported by the Weather Company.
+
+Reading weather data
+Preliminary Weather Company data may be subject to rounding and conversion differences from the final reported value.
+Use caution when interpreting preliminary Weather Company readings.
+
+If it is determined in the sole discretion of the Exchange that there is a material error in the initial non-preliminary publication, Expiration may be held until the publication of a non-materially-erroneous data revision or until the Expiration Date, whichever comes first. If no data is available at the end of this period, all markets will resolve to the last fair price determined by Kalshi. Please note, a status of ""Final"" on weather.com/kalshi is provided for convenience only, and does not guarantee data to be error-free and thus exempt from the above.","The Last Trading Time will be 11:59 PM local time on September 03, 2026 regardless of any data releases or events occurring. Expiration will occur on the sooner of the first 7:00 or 8:00
+AM ET following the release of the data for September 03, 2026, or one week after September 03, 2026.","[{""end"":""1.0000"",""start"":""0.0000"",""step"":""0.0100""}]"
+KXHIGHTSEA-26SEP03-T63,"If the maximum temperature recorded at Seattle (CLISEA) for Sep 3, 2026, is less than 63° fahrenheit according to The Weather Company, then the market resolves to Yes.","Not all weather data is the same. While checking a source like AccuWeather or Google Weather may help guide your decision, the official and final value used to determine this market is the maximum/minimum temperature as reported by the Weather Company.
+
+Reading weather data
+Preliminary Weather Company data may be subject to rounding and conversion differences from the final reported value.
+Use caution when interpreting preliminary Weather Company readings.
+
+If it is determined in the sole discretion of the Exchange that there is a material error in the initial non-preliminary publication, Expiration may be held until the publication of a non-materially-erroneous data revision or until the Expiration Date, whichever comes first. If no data is available at the end of this period, all markets will resolve to the last fair price determined by Kalshi. Please note, a status of ""Final"" on weather.com/kalshi is provided for convenience only, and does not guarantee data to be error-free and thus exempt from the above.","The Last Trading Time will be 11:59 PM local time on September 03, 2026 regardless of any data releases or events occurring. Expiration will occur on the sooner of the first 7:00 or 8:00
+AM ET following the release of the data for September 03, 2026, or one week after September 03, 2026.","[{""end"":""1.0000"",""start"":""0.0000"",""step"":""0.0100""}]"
+KXHIGHTSEA-26SEP03-B69.5,"If the maximum temperature recorded at Seattle (CLISEA) for Sep 3, 2026, is between 69-70° fahrenheit according to The Weather Company, then the market resolves to Yes.","Not all weather data is the same. While checking a source like AccuWeather or Google Weather may help guide your decision, the official and final value used to determine this market is the maximum/minimum temperature as reported by the Weather Company.
+
+Reading weather data
+Preliminary Weather Company data may be subject to rounding and conversion differences from the final reported value.
+Use caution when interpreting preliminary Weather Company readings.
+
+If it is determined in the sole discretion of the Exchange that there is a material error in the initial non-preliminary publication, Expiration may be held until the publication of a non-materially-erroneous data revision or until the Expiration Date, whichever comes first. If no data is available at the end of this period, all markets will resolve to the last fair price determined by Kalshi. Please note, a status of ""Final"" on weather.com/kalshi is provided for convenience only, and does not guarantee data to be error-free and thus exempt from the above.","The Last Trading Time will be 11:59 PM local time on September 03, 2026 regardless of any data releases or events occurring. Expiration will occur on the sooner of the first 7:00 or 8:00
+AM ET following the release of the data for September 03, 2026, or one week after September 03, 2026.","[{""end"":""1.0000"",""start"":""0.0000"",""step"":""0.0100""}]"
+KXHIGHTSEA-26SEP03-B67.5,"If the maximum temperature recorded at Seattle (CLISEA) for Sep 3, 2026, is between 67-68° fahrenheit according to The Weather Company, then the market resolves to Yes.","Not all weather data is the same. While checking a source like AccuWeather or Google Weather may help guide your decision, the official and final value used to determine this market is the maximum/minimum temperature as reported by the Weather Company.
+
+Reading weather data
+Preliminary Weather Company data may be subject to rounding and conversion differences from the final reported value.
+Use caution when interpreting preliminary Weather Company readings.
+
+If it is determined in the sole discretion of the Exchange that there is a material error in the initial non-preliminary publication, Expiration may be held until the publication of a non-materially-erroneous data revision or until the Expiration Date, whichever comes first. If no data is available at the end of this period, all markets will resolve to the last fair price determined by Kalshi. Please note, a status of ""Final"" on weather.com/kalshi is provided for convenience only, and does not guarantee data to be error-free and thus exempt from the above.","The Last Trading Time will be 11:59 PM local time on September 03, 2026 regardless of any data releases or events occurring. Expiration will occur on the sooner of the first 7:00 or 8:00
+AM ET following the release of the data for September 03, 2026, or one week after September 03, 2026.","[{""end"":""1.0000"",""start"":""0.0000"",""step"":""0.0100""}]"
+KXHIGHTSEA-26SEP03-B65.5,"If the maximum temperature recorded at Seattle (CLISEA) for Sep 3, 2026, is between 65-66° fahrenheit according to The Weather Company, then the market resolves to Yes.","Not all weather data is the same. While checking a source like AccuWeather or Google Weather may help guide your decision, the official and final value used to determine this market is the maximum/minimum temperature as reported by the Weather Company.
+
+Reading weather data
+Preliminary Weather Company data may be subject to rounding and conversion differences from the final reported value.
+Use caution when interpreting preliminary Weather Company readings.
+
+If it is determined in the sole discretion of the Exchange that there is a material error in the initial non-preliminary publication, Expiration may be held until the publication of a non-materially-erroneous data revision or until the Expiration Date, whichever comes first. If no data is available at the end of this period, all markets will resolve to the last fair price determined by Kalshi. Please note, a status of ""Final"" on weather.com/kalshi is provided for convenience only, and does not guarantee data to be error-free and thus exempt from the above.","The Last Trading Time will be 11:59 PM local time on September 03, 2026 regardless of any data releases or events occurring. Expiration will occur on the sooner of the first 7:00 or 8:00
+AM ET following the release of the data for September 03, 2026, or one week after September 03, 2026.","[{""end"":""1.0000"",""start"":""0.0000"",""step"":""0.0100""}]"
+KXHIGHTSEA-26SEP03-B63.5,"If the maximum temperature recorded at Seattle (CLISEA) for Sep 3, 2026, is between 63-64° fahrenheit according to The Weather Company, then the market resolves to Yes.","Not all weather data is the same. While checking a source like AccuWeather or Google Weather may help guide your decision, the official and final value used to determine this market is the maximum/minimum temperature as reported by the Weather Company.
+
+Reading weather data
+Preliminary Weather Company data may be subject to rounding and conversion differences from the final reported value.
+Use caution when interpreting preliminary Weather Company readings.
+
+If it is determined in the sole discretion of the Exchange that there is a material error in the initial non-preliminary publication, Expiration may be held until the publication of a non-materially-erroneous data revision or until the Expiration Date, whichever comes first. If no data is available at the end of this period, all markets will resolve to the last fair price determined by Kalshi. Please note, a status of ""Final"" on weather.com/kalshi is provided for convenience only, and does not guarantee data to be error-free and thus exempt from the above.","The Last Trading Time will be 11:59 PM local time on September 03, 2026 regardless of any data releases or events occurring. Expiration will occur on the sooner of the first 7:00 or 8:00
+AM ET following the release of the data for September 03, 2026, or one week after September 03, 2026.","[{""end"":""1.0000"",""start"":""0.0000"",""step"":""0.0100""}]"
