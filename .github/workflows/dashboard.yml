@@ -16,11 +16,20 @@ name: dashboard
 
 on:
   schedule:
-    # Every 2h, targeting ~3h effective: GitHub delayed these runs ~2h45-3h05 and dropped slots
-    # outright (measured 2026-07-27 — the 10:27 run was the 07:40 slot). A late rebuild is not
-    # cosmetic: the page's freshness pill is computed from the payload, so a dropped slot used to
-    # read as "collector stale" even while the collector was fine.
-    - cron: "40 */2 * * *"
+    # Every 4h, NOT every 2h. Since 2026-08-27 GitHub has rate-limited this repo's scheduled
+    # dispatch to roughly one run per workflow per 4-5h, and a pending fire is DISCARDED when the
+    # next one comes due — so the 2-hourly cron was delivering 2-5 builds/day, the same as the
+    # hourly `collect` cron was managing. Frequency had stopped buying anything; see the long
+    # note at the top of collect.yml for the evidence and the mechanism.
+    #
+    # Lengthening is low-risk HERE specifically because the `workflow_run` trigger below is what
+    # actually matters: the structure-book curves only advance when truth-eval freezes
+    # settlements, once a day, and that chains a rebuild immediately. The cron is the fallback
+    # for collector-freshness, not the path that carries new grades.
+    #
+    # (A late rebuild is not purely cosmetic: the page's freshness pill is computed from the
+    # payload, so a dropped slot reads as "collector stale" even while the collector is fine.)
+    - cron: "40 */4 * * *"
   # Rebuild as soon as truth-eval lands new grades, instead of waiting for the next cron slot.
   # truth-eval is the ONLY job that freezes settlements (this one is deliberately offline and
   # only reads what someone else froze), so the structure-book curves advance exactly once a day,

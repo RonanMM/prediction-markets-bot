@@ -348,16 +348,45 @@ Four workflows in `.github/workflows/`. All commit as `raincheck-collector`
 
 | workflow | trigger | runs | commits |
 |---|---|---|---|
-| `collect.yml` | hourly (`13 * * * *`) | `main.py --collect-only` | `data/polymarket`, `data/weather`, `shoulder_paper.csv` |
+| `collect.yml` | every 3h (`13 */3 * * *`) | `main.py --collect-only` | `data/polymarket`, `data/weather`, `shoulder_paper.csv` |
 | `truth-eval.yml` | daily 09:00 UTC | truth + obs refresh → regenerate tracker → **audit** → gate | `output/` trackers |
-| `dashboard.yml` | every 2h (`40 */2 * * *`) | truth + obs refresh → `build_dashboard.py` | **separate public repo** (below) |
+| `dashboard.yml` | every 4h (`40 */4 * * *`) + on truth-eval success | truth + obs refresh → `build_dashboard.py` | **separate public repo** (below) |
 | `retrain.yml` | weekly (`20 4 * * 0`) + `workflow_dispatch` | full fetch → rebuild targets → `train_calibrator.py` → both trackers → arbiter | `models/`, `output/` |
 
-⚠️ **Those crons are deliberately ~2× the cadence we want.** GitHub schedules are best-effort:
-measured 2026-07-27, the old every-2h collect cron delivered **3h49 gaps** (roughly every other
-slot, each 1-2h late) and dashboard runs fired **~3h after** their slot with some dropped. Runs
-are idempotent (append-only + dedupe on read) and the repo is public (free minutes), so
-over-scheduling is the fix. Judge health by the gap between *data* timestamps, never by the cron.
+⚠️ **Over-scheduling is NOT the fix, and shortening a cron makes delivery WORSE. This reverses
+the guidance that stood here until 2026-09-03 — do not restore it.**
+
+GitHub schedules are best-effort, and since **2026-08-27** this repo's scheduled dispatch has been
+rate-limited to roughly **one run per workflow per 4-5 hours**:
+
+| workflow | cron | before 08-27 | after |
+|---|---|---|---|
+| `collect` | hourly | 23/day | 2-6/day |
+| `dashboard` | every 2h | 12/day | 2-5/day |
+| `truth-eval` | **daily** | 1/day | **1/day — never missed** |
+
+Two different cron frequencies collapsing to the *same* absolute rate is the tell: frequency
+stopped mattering. The daily job is untouched because 24 h exceeds the throttle interval. The
+missing runs are **never created** — no `cancelled`, no `skipped`, no error, and the runs that do
+land still start within ~2 min of their slot. Nothing had changed in the repo (zero human commits
+on 08-26/27, all workflows `state: active`); it followed two days at ~490 runner-min/day (35-37
+jobs), so Actions consumption is the most plausible trigger and the only lever we control.
+
+**Mechanism:** scheduled workflows share one global queue with every push and PR on the platform,
+with no reserved capacity, and **a pending fire is discarded when the next fire for that workflow
+comes due**. A shorter interval therefore gives each fire a *shorter window* to be dispatched
+before it is thrown away. An hourly cron under a ~4 h delay loses nearly every slot; a 3-hourly
+cron loses far fewer. That is why `collect` moved to 3-hourly and `dashboard` to 4-hourly on
+2026-09-03 — fewer fires, each far likelier to actually run.
+
+⚠️ **This is an experiment; measure it rather than assuming.** Compare delivered runs/day
+(`gh api repos/.../actions/workflows/collect.yml/runs --jq '.workflow_runs[].created_at'` grouped
+by date) against the 2-6/day the hourly cron was getting. If delivery does not improve, the
+drop-on-next-fire model is wrong for this account — revert rather than lengthening further. If
+GitHub lifts the throttle, revisit: 8 snapshots/day is a real cut from the 23 hourly once
+delivered, and sample accrual is the point.
+
+Judge health by the gap between *data* timestamps, never by the cron.
 
 `retrain.yml` runs **weekly (Sun 04:20 UTC)** as of 2026-07-28, plus manual dispatch. Weekly is
 cheaper than monthly, not dearer: the per-fetch archive cache is evicted after 7 days unused, so

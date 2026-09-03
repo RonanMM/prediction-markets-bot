@@ -6,16 +6,44 @@
 # this runs in CI rather than depending on a laptop being awake (see scripts/README.md
 # for the launchd agents, which remain as a local complement).
 #
-# ⚠️ The cron is deliberately 2× the cadence we actually want (~2h). GitHub schedules are
-# BEST-EFFORT: they are delayed under load and dropped outright. Measured 2026-07-27 on the
-# old "every 2h" cron: actual gaps of 3h49 (03:57 → 07:46 → 11:35), i.e. roughly every other
-# slot fired, each 1-2h late. Over-scheduling is the standard workaround — the extra runs are
-# cheap and idempotent (append-only + dedupe on read), so a slot that DOES fire costs little
-# and a slot that doesn't is covered by the next one. This matters because the whole current
-# plan is sample accrual for the structure book: half the cycles = half the accrual rate.
+# ⚠️ DO NOT "fix" this by making the cron more frequent. Over-scheduling BACKFIRES here, and
+# the hourly cron this replaced is what proved it.
 #
-# Cost: ~5-6 min/run × up to 24 runs/day. The repo is PUBLIC, so Actions minutes are free
-# and unlimited; the only real cost is commit noise in the data history.
+# The old comment said the cron was deliberately 2x the cadence we wanted, on the theory that a
+# slot which fails to fire is "covered by the next one". That theory was measured in July and
+# was wrong by 2026-08-27, when GitHub began rate-limiting this repo's scheduled dispatch to
+# roughly ONE RUN PER WORKFLOW PER 4-5 HOURS:
+#
+#     workflow    cron        before 08-27   after
+#     collect     hourly        23/day       2-6/day
+#     dashboard   every 2h      12/day       2-5/day
+#     truth-eval  DAILY          1/day       1/day  (never missed)
+#
+# Two different cron frequencies collapsing to the SAME absolute delivery rate is the tell: cron
+# frequency stopped mattering entirely. The daily job is untouched because 24h is longer than
+# the throttle interval. The dropped runs are not delayed — they are never created at all (no
+# `cancelled`, no `skipped`, no error; delivered runs still start within ~2 min of their slot).
+#
+# The mechanism: scheduled workflows share one global queue with every push and PR on the
+# platform, with no reserved capacity, and a PENDING FIRE IS DISCARDED WHEN THE NEXT FIRE FOR
+# THAT WORKFLOW COMES DUE. So a shorter interval gives each fire a shorter window to be
+# dispatched before it is thrown away — a 1h cron under a 4h delay loses nearly everything,
+# where a 3h cron loses much less. Frequency buys nothing and costs priority.
+#
+# Hence 3-hourly (8 fires/day, each with a 3h dispatch window) rather than hourly. This also cuts
+# the repo's Actions footprint from ~5.75 h/day to ~2 h/day; the throttle engaged immediately
+# after two days at ~490 runner-min/day (35-37 jobs), so consumption is the most plausible
+# trigger and the one lever we control.
+#
+# ⚠️ THIS IS AN EXPERIMENT — measure it, do not assume it worked. Compare delivered runs/day
+# (`gh api .../actions/workflows/collect.yml/runs` grouped by date) against the 2-6/day it was
+# getting on the hourly cron. If delivery does NOT improve, the drop-on-next-fire model is wrong
+# for this account and the honest move is to revert rather than keep lengthening the interval.
+# If GitHub later lifts the throttle, revisit: 8 snapshots/day is a real reduction on the 23 the
+# hourly cron once delivered, and sample accrual for the structure book is the whole point.
+#
+# Cost: ~15-20 min/run x 8 runs/day. The repo is PUBLIC so Actions minutes are nominally free,
+# but "free" is not "unmetered" — the throttle is the bill.
 #
 # All data files are append-only and deduped on read, so re-runs and overlaps with the
 # laptop collector are safe; the rebase-with-retry push handles concurrent commits.
@@ -24,7 +52,7 @@ name: collect
 
 on:
   schedule:
-    - cron: "13 * * * *"   # hourly, targeting ~2h effective after GitHub's delays/drops (see above)
+    - cron: "13 */3 * * *"   # every 3h — a longer dispatch window beats a shorter interval (see above)
   workflow_dispatch: {}
 
 concurrency:
