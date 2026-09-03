@@ -30,7 +30,28 @@ permissions:
 jobs:
   truth-eval:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Raised 30 -> 90 on 2026-09-03. The job had been killed at the 30-minute wall on EVERY run
+    # since 2026-08-25 (last success 2026-08-24, at 26m31s — already inside the noise band), so
+    # the daily tracker commit, the gate report and the breadth-book grading silently stopped
+    # happening for nine days. A timeout kill reports as "cancelled", not "failure", which is
+    # why it never looked like something to fix.
+    #
+    # Measured on run 33634847352, the last kill:
+    #   checkout + setup + pip           3.4 min
+    #   truth + obs refresh              4.5 min
+    #   tracker: calibrated              4.9 min
+    #   tracker: ensemble                3.0 min
+    #   tracker: qrf                    15.4 min   <- the long pole
+    # i.e. ~31 min BEFORE the settlement audit, data_status, breadth grading and the commit run
+    # at all. The budget was not marginally short, it was short of the steps alone.
+    #
+    # 90 rather than 45: the three regens scale with the archive, which grows every day, and the
+    # failure mode is not a harmless retry — a killed run commits nothing, so the trackers just
+    # go stale while every workflow stays green. An idle runner minute is far cheaper than
+    # another silent nine-day gap. This job shares the `git-push` concurrency group, which
+    # retrain already holds for up to 6h, so a longer ceiling here queues nothing new; `collect`
+    # is deliberately outside that group.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
 
