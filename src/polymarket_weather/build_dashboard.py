@@ -455,7 +455,10 @@ def compute_series() -> dict:
     try:
         import pandas as pd
         allts = []
-        for f in glob.glob(str(PKG / "data" / "polymarket" / "*_snapshots.csv")):
+        # `*_snapshots*.csv`, not `*_snapshots.csv`: snapshots are one file per UTC day since
+        # 2026-09-03, and the legacy name is gone. The old glob would report a dead collector
+        # while it ran normally.
+        for f in glob.glob(str(PKG / "data" / "polymarket" / "*_snapshots*.csv")):
             try:
                 allts.append(pd.read_csv(f, usecols=["fetched_at_utc"])["fetched_at_utc"])
             except Exception:

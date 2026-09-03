@@ -588,6 +588,45 @@ left untouched. The one accepted lossy edge is the vendor's ~0.9% per-snapshot o
 static field, which is backfilled from the ticker's own value on read (measured on the real SF
 archive: 3,942 cells of 8.2M, **0 recorded values altered**).
 
+### Daily partitioning — every append-only archive, not just Kalshi
+
+**All four perishable archives are written ONE FILE PER UTC DAY** (`{stem}_{YYYY-MM-DD}.csv`):
+
+| archive | day column | was |
+|---|---|---|
+| `data/kalshi/{slug}_markets` | `fetched_at_utc` | 6.6 GB of pack |
+| `data/weather/{slug}_hourly` | `fetched_at_utc` | 1,540 MB / 3,127 versions |
+| `data/polymarket/{slug}_price_history` | **`timestamp_utc`** (the venue's own clock — these rows carry no fetch time) | 1,318 MB / 6,114 versions |
+| `data/polymarket/{slug}_snapshots` | `fetched_at_utc` | 741 MB / 6,195 versions |
+
+⚠️ **Read them with `processing.load_partitioned()` and test with `partitioned_available()` —
+never `pd.read_csv` and never `path.exists()` on the legacy name, which no longer exists.**
+(`fetch_kalshi.load_markets()` is the Kalshi wrapper that also re-joins the dimension.) An
+`exists()` guard returns empty *forever*, silently: that is exactly how both cross-venue consumers
+went to zero matched bins on a complete archive during the Kalshi migration, on a green run.
+
+Globs need the same care. `*_snapshots.csv` matches no partition, and four separate call sites
+depended on it — `data_loader.discover_cities` (which decides which cities the **entire** analysis
+runs on; an empty list means the pipeline does nothing, successfully), the dashboard's collection
+heartbeat, and two test audits that began silently *skipping*. Use `*_snapshots*.csv`. The
+partition glob itself matches the date SHAPE (`20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]`), not
+`{stem}_*.csv`, so siblings like `_meta`, `_min`, `_mm` and `_cand` are excluded by construction
+rather than by a hand-maintained list.
+
+*Why it matters.* Git stores a whole new blob per file VERSION and the cost scales with the file's
+SIZE, not with how little changed — the same commit cost 1.5% of logical for one city and 10.5%
+for another on identical data, which is delta-chain luck we do not control. The repo hit
+**12.12 GB, 10.36 GB of it in 30 days**, and GitHub then throttled its scheduled dispatch (above).
+A finished day is never rewritten again, so history stops growing with the square of the archive.
+It also retires the 100 MB per-file wall permanently.
+
+`migrate_partitions.py` does the conversion (`--dataset`, `--apply`), verified as a multiset over
+every column before the source is deleted, and refusing any file whose rows cannot all be dated —
+guessing a day misdates a snapshot, dropping the row loses perishable data. **Deliberately not
+partitioned:** `*_daily`, `*_ensemble`, `*_daily_mm` (129 MB of pack between them — not worth the
+file count) and everything gitignored/refetchable (`*_historical_*`, `*_obs_*`, `*_nbm`), which
+costs the repo nothing.
+
 ### Working from a fresh clone
 A new machine has the committed (perishable) data but **none** of the refetchable archives, so
 `data_status.py` reports `0 gradable` and `evaluate_oos.py` refuses to run. That is expected, not

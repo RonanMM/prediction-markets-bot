@@ -5,9 +5,22 @@ from typing import Optional
 import json
 
 def discover_cities(data_dir: Path) -> list[str]:
+    """Cities that have any market snapshots — legacy file OR daily partitions.
+
+    This decides which cities the ENTIRE analysis runs on. Globbing only `*_snapshots.csv` after
+    the 2026-09-03 daily-partition migration returns nothing, and the run prints "No *_snapshots
+    .csv files found" and exits 0 — the whole pipeline doing nothing, successfully.
+    """
+    import re
     data_dir = data_dir / "polymarket"
-    return sorted(f.stem.replace("_snapshots", "")
-                  for f in data_dir.glob("*_snapshots.csv"))
+    names = set()
+    for f in data_dir.glob("*_snapshots*.csv"):
+        stem = f.stem
+        # `{city}_snapshots` or `{city}_snapshots_YYYY-MM-DD`
+        m = re.match(r"^(.+)_snapshots(?:_\d{4}-\d{2}-\d{2})?$", stem)
+        if m:
+            names.add(m.group(1))
+    return sorted(names)
 
 
 def _parse_yes(val) -> float:
@@ -41,9 +54,12 @@ def load_daily(data_dir: Path, city: str) -> pd.DataFrame:
 
 def load_hourly(data_dir: Path, city: str) -> Optional[pd.DataFrame]:
     p = data_dir / "weather" / f"{city}_hourly.csv"
-    if not p.exists():
+    # load_partitioned, NOT read_csv — the hourly forecast is one file per UTC day and the
+    # legacy name no longer exists, so `p.exists()` would return None forever, silently.
+    from processing import load_partitioned, partitioned_available
+    if not partitioned_available(p):
         return None
-    df = pd.read_csv(p)
+    df = load_partitioned(p)
     df["fetched_at_utc"] = pd.to_datetime(df["fetched_at_utc"], utc=True)
     df["datetime_utc"]   = pd.to_datetime(df["datetime_utc"],   utc=True, errors="coerce")
     return df

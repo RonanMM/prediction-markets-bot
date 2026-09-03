@@ -37,6 +37,7 @@ import numpy as np
 import pandas as pd
 
 from fetch_kalshi import load_markets, markets_available
+from processing import load_partitioned, partitioned_available
 
 import wu_truth
 from resolution_anchors import RESOLUTION_ANCHORS, slug as _slug
@@ -117,7 +118,7 @@ def matched_bins(slug: str) -> pd.DataFrame:
     # markets_available, NOT kf.exists(): the fact table is daily partitions now and the
     # legacy file is gone, so an exists() guard here returns an empty frame forever — the
     # silent failure this module's own findings were once quarantined for.
-    if not (markets_available(kf) and pf.exists()):
+    if not (markets_available(kf) and partitioned_available(pf)):
         return pd.DataFrame()
     # load_markets, not read_csv — `title` and `strike_type` live in the dimension table
     # and a bare read would make both filters below match nothing, silently.
@@ -135,7 +136,7 @@ def matched_bins(slug: str) -> pd.DataFrame:
         return pd.DataFrame()
     k["kal"] = (k["yes_bid"] + k["yes_ask"]) / 2
 
-    p = pd.read_csv(pf)
+    p = load_partitioned(pf)
     p["ts"] = pd.to_datetime(p["fetched_at_utc"], utc=True, errors="coerce")
     p = p.sort_values("ts").groupby("condition_id").last().reset_index()
     ex = p["question"].astype(str).str.extract(_PM_BIN)

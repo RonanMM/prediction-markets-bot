@@ -742,8 +742,11 @@ def test_all_tracker_questions_parse():
     parse-based path applies and never silently falls back to exact==. Skips if no snapshots."""
     import glob
     from pmf import parse_question
+    # `*_snapshots*.csv`: snapshots are one file per UTC day since 2026-09-03 and the legacy name
+    # is gone, so the old glob matched nothing and BOTH of these audits silently skipped — a test
+    # that skips has stopped protecting anything, and it reports as a pass.
     files = glob.glob(str(Path(__file__).resolve().parents[1] /
-                          "src/polymarket_weather/data/polymarket/*_snapshots.csv"))
+                          "src/polymarket_weather/data/polymarket/*_snapshots*.csv"))
     if not files:
         pytest.skip("no snapshot CSVs present")
     unparsed = 0
@@ -890,8 +893,11 @@ def test_question_date_is_noop_outside_hong_kong():
     every city EXCEPT Hong Kong (whose endDateIso is a day off). Skips if no snapshots present."""
     import glob
     from pmf import parse_question_date
+    # `*_snapshots*.csv`: snapshots are one file per UTC day since 2026-09-03 and the legacy name
+    # is gone, so the old glob matched nothing and BOTH of these audits silently skipped — a test
+    # that skips has stopped protecting anything, and it reports as a pass.
     files = glob.glob(str(Path(__file__).resolve().parents[1] /
-                          "src/polymarket_weather/data/polymarket/*_snapshots.csv"))
+                          "src/polymarket_weather/data/polymarket/*_snapshots*.csv"))
     if not files:
         pytest.skip("no snapshot CSVs present")
     for f in files:
@@ -4814,6 +4820,111 @@ def test_load_markets_rejoins_the_dimension_into_the_full_snapshot_schema(tmp_pa
     assert list(df["floor_strike"]) == [70.0, 70.0, 72.0]
 
 
+def test_discover_cities_finds_cities_from_daily_partitions(tmp_path):
+    """`discover_cities` decides which cities the ENTIRE analysis runs on.
+
+    It globbed `*_snapshots.csv`, which matches no daily partition. After the migration that
+    returns an empty list, `polymarket_weather_analysis` prints "No *_snapshots.csv files found"
+    and exits 0 — the whole pipeline doing nothing, successfully. The single worst silent failure
+    available in this repo, so it gets its own test.
+    """
+    from data_loader import discover_cities
+
+    pm = tmp_path / "polymarket"
+    pm.mkdir()
+    (pm / "seoul_snapshots_2026-09-01.csv").write_text("fetched_at_utc\n2026-09-01T00:00:00Z\n")
+    (pm / "seoul_snapshots_2026-09-02.csv").write_text("fetched_at_utc\n2026-09-02T00:00:00Z\n")
+    (pm / "london_snapshots.csv").write_text("fetched_at_utc\n2026-08-01T00:00:00Z\n")  # legacy
+    (pm / "seoul_price_history_2026-09-01.csv").write_text("x\n1\n")  # must not become a city
+
+    assert discover_cities(tmp_path) == ["london", "seoul"], \
+        "a city must be discovered from its partitions, once, and only from snapshots"
+
+
+def test_dashboard_heartbeat_glob_matches_snapshot_partitions():
+    """The collection heartbeat reads `*_snapshots.csv` to compute distinct collection hours.
+
+    Globbing the legacy name after migration yields no files, so the dashboard would report the
+    collector as silent while it was running normally — on the public page, with no error.
+    """
+    import fnmatch
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    src = (root / "src" / "polymarket_weather" / "build_dashboard.py").read_text()
+    m = re.search(r'"polymarket"\s*/\s*"([^"]*snapshots[^"]*)"', src)
+    assert m, "the collection-heartbeat glob is no longer a literal — re-check build_dashboard"
+    pattern = m.group(1)
+
+    assert fnmatch.fnmatch("seoul_snapshots_2026-09-03.csv", pattern), \
+        f"glob {pattern!r} misses daily partitions — the heartbeat reads as a dead collector"
+    assert not fnmatch.fnmatch("seoul_price_history_2026-09-03.csv", pattern), \
+        f"glob {pattern!r} also matches price history, which is a different dataset"
+
+
+def test_partition_helpers_use_a_strict_date_glob(tmp_path):
+    """A partition is `{stem}_YYYY-MM-DD.csv` and NOTHING else may be swept up by the glob.
+
+    The Kalshi split learned this the hard way: `{slug}_markets_meta.csv` matches a loose
+    `{stem}_*.csv` and concatenating the dimension into the fact frame injects rows that are not
+    snapshots. Matching the date SHAPE excludes every such sibling by construction rather than by
+    a hand-maintained exclusion list — `_meta`, `_min`, `_mm`, `_cand` and anything added later.
+    """
+    import pandas as pd
+    from processing import partition_files, load_partitioned, partitioned_available
+
+    d = tmp_path
+    legacy = d / "seoul_hourly.csv"
+    pd.DataFrame([{"city": "Seoul", "fetched_at_utc": "2026-08-30T10:00:00Z", "temp_c": 20.0}]
+                 ).to_csv(legacy, index=False)
+    pd.DataFrame([{"city": "Seoul", "fetched_at_utc": "2026-09-01T10:00:00Z", "temp_c": 21.0}]
+                 ).to_csv(d / "seoul_hourly_2026-09-01.csv", index=False)
+    # siblings that must NEVER be read as partitions
+    pd.DataFrame([{"junk": 1}]).to_csv(d / "seoul_hourly_meta.csv", index=False)
+    pd.DataFrame([{"junk": 2}]).to_csv(d / "seoul_hourly_min.csv", index=False)
+    pd.DataFrame([{"junk": 3}]).to_csv(d / "seoul_hourly_backup.csv", index=False)
+
+    names = [f.name for f in partition_files(legacy)]
+    assert names == ["seoul_hourly.csv", "seoul_hourly_2026-09-01.csv"], names
+
+    df = load_partitioned(legacy)
+    assert len(df) == 2, f"expected legacy + 1 partition, got {len(df)}"
+    assert "junk" not in df.columns, "a non-partition sibling was concatenated in"
+    assert sorted(df["temp_c"]) == [20.0, 21.0]
+
+    assert partitioned_available(legacy)
+    assert not partitioned_available(d / "nothing_here.csv")
+
+
+def test_append_partitioned_files_rows_by_their_own_timestamp(tmp_path):
+    """Rows go to the partition for THEIR timestamp, not for "today".
+
+    A cycle that starts at 23:59 and writes at 00:01 would otherwise misfile a whole snapshot,
+    and price history — whose rows carry `timestamp_utc` from the venue, not a fetch time —
+    would be scattered into the day it happened to be downloaded.
+    """
+    import pandas as pd
+    from processing import _append_partitioned, load_partitioned
+
+    legacy = tmp_path / "seoul_snapshots.csv"
+    rows = [
+        {"condition_id": "c1", "fetched_at_utc": "2026-09-01T23:59:00+00:00", "v": 1},
+        {"condition_id": "c2", "fetched_at_utc": "2026-09-02T00:01:00+00:00", "v": 2},
+        {"condition_id": "c3", "fetched_at_utc": "2026-09-02T10:00:00+00:00", "v": 3},
+    ]
+    _append_partitioned(legacy, rows, ["condition_id", "fetched_at_utc"], "fetched_at_utc")
+
+    assert (tmp_path / "seoul_snapshots_2026-09-01.csv").exists()
+    assert (tmp_path / "seoul_snapshots_2026-09-02.csv").exists()
+    assert not legacy.exists(), "nothing may be written to the un-partitioned name"
+    assert len(pd.read_csv(tmp_path / "seoul_snapshots_2026-09-02.csv")) == 2
+
+    # re-appending the same rows must not duplicate them (dedupe is per partition)
+    _append_partitioned(legacy, rows, ["condition_id", "fetched_at_utc"], "fetched_at_utc")
+    assert len(load_partitioned(legacy)) == 3, "dedupe failed across a re-append"
+
+
 def test_consumers_do_not_gate_on_the_deleted_legacy_markets_file(tmp_path):
     """`{slug}_markets.csv` no longer exists — guarding on it silently returns NOTHING.
 
@@ -4857,7 +4968,7 @@ def test_partition_migration_round_trips_before_deleting_the_source(tmp_path):
     snapshots — no vendor re-serves a price from three weeks ago at any price.
     """
     import pandas as pd
-    from migrate_kalshi_partitions import migrate
+    from migrate_partitions import migrate
 
     d = tmp_path / "kalshi"
     d.mkdir()
@@ -4892,7 +5003,7 @@ def test_partition_migration_refuses_when_a_row_has_no_usable_timestamp(tmp_path
     and the archive is intact.
     """
     import pandas as pd
-    from migrate_kalshi_partitions import migrate
+    from migrate_partitions import migrate
 
     d = tmp_path / "kalshi"
     d.mkdir()

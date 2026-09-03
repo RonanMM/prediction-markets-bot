@@ -59,6 +59,9 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+from processing import (load_partitioned as _load_partitioned,
+                        partitioned_available as _partitioned_available)
+
 import config
 from grading import resolves_yes
 from pmf import parse_question, parse_question_date
@@ -260,9 +263,9 @@ def scan_and_record() -> int:
     now_utc = datetime.now(timezone.utc)
     for slug, city in _SLUGS.items():
         path = _SNAP_DIR / f"{slug}_snapshots.csv"
-        if not path.exists():
+        if not _partitioned_available(path):
             continue
-        s = pd.read_csv(path)
+        s = _load_partitioned(path)
         s["t"] = pd.to_datetime(s["fetched_at_utc"], utc=True, format="mixed")
         latest = s["t"].max()
         run = s[s["t"] >= latest - pd.Timedelta(minutes=_SNAP_WINDOW_MIN)].copy()
@@ -316,9 +319,9 @@ def _load_price_history() -> pd.DataFrame:
     frames = []
     for slug in _SLUGS:
         p = _SNAP_DIR / f"{slug}_price_history.csv"
-        if not p.exists():
+        if not _partitioned_available(p):
             continue
-        h = pd.read_csv(p)
+        h = _load_partitioned(p)
         h = h[h["outcome"].astype(str).str.lower() == "yes"].copy()
         h["t"] = pd.to_datetime(h["timestamp_utc"], utc=True, format="mixed")
         h["yes"] = pd.to_numeric(h["price"], errors="coerce")
@@ -622,9 +625,9 @@ def _all_snapshots() -> pd.DataFrame:
     frames = []
     for slug, city in _SLUGS.items():
         p = _SNAP_DIR / f"{slug}_snapshots.csv"
-        if not p.exists():
+        if not _partitioned_available(p):
             continue
-        s = pd.read_csv(p)
+        s = _load_partitioned(p)
         s["t"] = pd.to_datetime(s["fetched_at_utc"], utc=True, format="mixed")
         s["yes"] = s["outcome_probs_json"].map(_yes_prob)
         s["end"] = pd.to_datetime(s["end_date_iso"], errors="coerce", utc=True).dt.tz_localize(None)

@@ -1,0 +1,2 @@
+fetched_at_utc,city,condition_id,question,active,closed,end_date_iso,start_date_iso,volume_usdc,volume_24h_usdc,liquidity_usdc,market_slug,outcome_probs_json,clob_token_ids_json,book_ts,yes_best_bid,no_best_bid,yes_best_ask,no_best_ask,yes_ask_depth_usdc,no_ask_depth_usdc,yes_vwap_buy_100,no_vwap_buy_100
+2026-05-22T13:53:13.683748+00:00,Hong Kong,0xda38210553f95176dfa555785d83de428724f6fcd122d1aef08549d79be31ef7,Will the lowest temperature in Hong Kong be 28°C on May 24?,True,False,2026-05-24,2026-05-20,9.83,1.0,257.0624,,"{""Yes"": 0.2, ""No"": 0.8}",[],,,,,,,,,

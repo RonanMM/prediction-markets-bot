@@ -55,6 +55,96 @@ def _slug(city: str) -> str:
 
 # ── Generic CSV append-with-dedup ────────────────────────────────────────────
 
+# ── Daily partitioning ────────────────────────────────────────────────────────
+#
+# THE REPO-SIZE FIX (2026-09-03, extended from data/kalshi the same day). Git stores a whole new
+# blob for every VERSION of a file, and that cost scales with the file's SIZE rather than with
+# how little changed. Measured over this repo's own history:
+#
+#     weather/*_hourly          1,540 MB across 3,127 versions   (0.49 MB per rewrite)
+#     polymarket/*_price_history 1,318 MB across 6,114 versions   (0.22 MB per rewrite)
+#     polymarket/*_snapshots       741 MB across 6,195 versions   (0.12 MB per rewrite)
+#
+# ~3.6 GB of pack for a few hundred MB of live data, and ~80 MB/day of ongoing growth — which
+# after the Kalshi fix was the DOMINANT remaining source. Writing one file per UTC day caps the
+# rewritten unit and, decisively, means a finished day is never rewritten again, so history stops
+# growing with the square of the archive.
+#
+# A partition is `{stem}_YYYY-MM-DD.csv`. The glob matches that SHAPE, not `{stem}_*.csv`: the
+# Kalshi split had to hand-exclude `{slug}_markets_meta.csv`, and a loose glob would equally sweep
+# up `_min`, `_mm`, `_cand` or anything added later. Matching the date shape excludes every
+# sibling by construction.
+
+_PARTITION_GLOB = "20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]"
+
+
+def partition_files(path: Path) -> list[Path]:
+    """Every file holding rows for this dataset: the legacy file (if still present) + partitions.
+
+    `path` is the LEGACY un-partitioned name; it need not exist, it names the directory and stem.
+    Reading both layouts means a half-migrated dataset still reads whole.
+    """
+    path = Path(path)
+    stem = path.name[: -len(".csv")]
+    parts = sorted(path.parent.glob(f"{stem}_{_PARTITION_GLOB}.csv"))
+    return ([path] if path.exists() else []) + parts
+
+
+def partitioned_available(path: Path) -> bool:
+    """Is there ANY data to read? Use this instead of `path.exists()`.
+
+    Migration DELETES the legacy file, so a reader gating on `path.exists()` returns empty
+    forever — silently. That exact bug hit both cross-venue consumers during the Kalshi
+    migration: zero matched bins on a complete archive, no error, a green run.
+    """
+    return bool(partition_files(path))
+
+
+def load_partitioned(path: Path, **read_csv_kwargs) -> "pd.DataFrame":
+    """Read a partitioned dataset back as ONE frame. Use instead of `pd.read_csv(path)`."""
+    parts = partition_files(path)
+    if not parts:
+        return pd.DataFrame()
+    frames = [pd.read_csv(q, low_memory=False, **read_csv_kwargs) for q in parts]
+    return pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
+
+
+def _partition_day(value) -> str | None:
+    """UTC calendar day for a row, from the ROW's own timestamp — never `datetime.now()`.
+
+    A cycle starting at 23:59 and writing at 00:01 would otherwise misfile a whole snapshot, and
+    price-history rows carry the VENUE's `timestamp_utc`, not a fetch time.
+    """
+    ts = pd.to_datetime(value, utc=True, errors="coerce")
+    return None if pd.isna(ts) else ts.strftime("%Y-%m-%d")
+
+
+def _append_partitioned(path: Path, records: list[dict], dedup_cols: list[str],
+                        day_col: str) -> int:
+    """Append `records` to the daily partitions of `path`, deduped within each partition.
+
+    Rows whose `day_col` will not parse are written to the LEGACY un-partitioned file rather than
+    dropped: an undated row still has to be kept (these archives are perishable and a price not
+    recorded is gone forever), and it must not be silently filed under an invented day.
+    """
+    path = Path(path)
+    if not records:
+        return 0
+    buckets: dict[str | None, list[dict]] = {}
+    for r in records:
+        buckets.setdefault(_partition_day(r.get(day_col)), []).append(r)
+
+    written = 0
+    stem = path.name[: -len(".csv")]
+    for day, rows in sorted(buckets.items(), key=lambda kv: (kv[0] is None, kv[0])):
+        target = path if day is None else path.with_name(f"{stem}_{day}.csv")
+        if day is None:
+            logger.warning("%s: %d row(s) have an unparseable %s — kept in the un-partitioned "
+                           "file rather than dropped or misdated", path.name, len(rows), day_col)
+        written += _append_csv(target, rows, dedup_cols=dedup_cols)
+    return written
+
+
 def _append_csv(path: Path, records: list[dict], dedup_cols: list[str]) -> int:
     """
     Append *records* to *path*.csv, skipping rows that already exist
@@ -151,10 +241,11 @@ def save_market_snapshots(snapshots: list[dict]) -> None:
         by_city.setdefault(snap["city"], []).append(flat)
 
     for city, rows in by_city.items():
-        _append_csv(
+        _append_partitioned(
             _mkt_snapshot_path(city),
             rows,
             dedup_cols=["condition_id", "fetched_at_utc"],
+            day_col="fetched_at_utc",
         )
 
 
@@ -165,10 +256,13 @@ def save_price_history(records: list[dict]) -> None:
         by_city.setdefault(r["city"], []).append(r)
 
     for city, rows in by_city.items():
-        _append_csv(
+        _append_partitioned(
             _mkt_history_path(city),
             rows,
             dedup_cols=["token_id", "timestamp_utc"],
+            # The venue's own observation time — these rows carry no fetch timestamp at all.
+            # `fetch_price_history` uses interval="1d", so a cycle touches ~2 partitions.
+            day_col="timestamp_utc",
         )
 
 
@@ -183,10 +277,14 @@ def save_weather_forecast(forecast: dict) -> None:
         forecast.get("daily", []),
         dedup_cols=["city", "date_local", "fetched_at_utc"],
     )
-    _append_csv(
+    # Hourly is the single biggest line item in the repo's history (1,540 MB across 3,127
+    # versions). One 16-day forecast is thousands of rows sharing ONE fetched_at_utc, so a cycle
+    # only ever touches the current day's partition.
+    _append_partitioned(
         _weather_hourly_path(city),
         forecast.get("hourly", []),
         dedup_cols=["city", "datetime_local", "fetched_at_utc"],
+        day_col="fetched_at_utc",
     )
 
 
