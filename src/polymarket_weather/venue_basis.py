@@ -36,7 +36,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from fetch_kalshi import load_markets
+from fetch_kalshi import load_markets, markets_available
 
 import wu_truth
 from resolution_anchors import RESOLUTION_ANCHORS, slug as _slug
@@ -114,7 +114,10 @@ def _two_sided(bid, ask) -> pd.Series:
 def matched_bins(slug: str) -> pd.DataFrame:
     """One row per (city, target date, bin) quoted two-sided on BOTH venues within MAX_QUOTE_LAG_H."""
     kf, pf = _DATA / "kalshi" / f"{slug}_markets.csv", _DATA / "polymarket" / f"{slug}_snapshots.csv"
-    if not (kf.exists() and pf.exists()):
+    # markets_available, NOT kf.exists(): the fact table is daily partitions now and the
+    # legacy file is gone, so an exists() guard here returns an empty frame forever — the
+    # silent failure this module's own findings were once quarantined for.
+    if not (markets_available(kf) and pf.exists()):
         return pd.DataFrame()
     # load_markets, not read_csv — `title` and `strike_type` live in the dimension table
     # and a bare read would make both filters below match nothing, silently.

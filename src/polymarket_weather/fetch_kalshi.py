@@ -237,6 +237,61 @@ def split_market_rows(rows: list[dict]) -> tuple[list[dict], list[dict]]:
     return facts, meta
 
 
+def markets_kind(fetched_at_utc: str) -> str:
+    """`save_kalshi_rows` kind for one snapshot's UTC day -> `{slug}_markets_{YYYY-MM-DD}.csv`.
+
+    THE REPO-SIZE FIX (2026-09-03). Git stores a whole new blob for every VERSION of a file, and
+    the measured on-disk cost of one snapshot commit was 1.3-8.9 MB per city — scaling with the
+    file's SIZE, not with the ~98 KB actually appended (LA packed to 1.5% of logical, SF to 10.5%
+    on identical data; that spread is packing luck we do not control). At 56 commits/day the repo
+    grew 205-354 MB/day and reached 12.12 GB, 10.36 GB of it in the preceding 30 days.
+
+    Partitioning by day caps the rewritten unit at ~0.4 MB average instead of ~40 MB and growing,
+    so the same data costs roughly two orders of magnitude less history — and a finished day is
+    never rewritten again. It also retires GitHub's 100 MB per-file wall permanently: a daily
+    partition cannot get near it, whatever the column set.
+
+    The day comes from the ROW's own timestamp, never `datetime.now()`: a cycle that starts at
+    23:59 and writes at 00:01 would otherwise file its rows under the wrong day, and any backfill
+    would scatter historical rows into today.
+    """
+    return "markets_" + (_dt.datetime.fromisoformat(fetched_at_utc.replace("Z", "+00:00"))
+                         .astimezone(_dt.timezone.utc).strftime("%Y-%m-%d"))
+
+
+def markets_files(path) -> list:
+    """Every file holding snapshots for this archive: daily partitions + the legacy file.
+
+    `path` is the LEGACY un-partitioned name, `{dir}/{slug}_markets.csv`. It need not exist — it
+    names the directory and the slug. Reading both layouts means a half-migrated archive is still
+    whole.
+
+    `{slug}_markets_meta.csv` matches the same glob and is excluded BY NAME: it is the dimension,
+    not snapshots, and concatenating it would inject rows with no `fetched_at_utc` and no prices.
+    """
+    from pathlib import Path
+
+    path = Path(path)
+    meta_path = path.with_name(path.name.replace("_markets.csv", "_markets_meta.csv"))
+    stem = path.name[: -len("_markets.csv")]
+    parts = sorted(q for q in path.parent.glob(f"{stem}_markets_*.csv") if q != meta_path)
+    if path.exists():
+        parts.insert(0, path)
+    return parts
+
+
+def markets_available(path) -> bool:
+    """Is there ANY snapshot archive to read? Use this instead of `path.exists()`.
+
+    The daily-partition migration DELETES `{slug}_markets.csv`, so a reader that gates on it
+    returns empty forever. That failure is silent by construction: `matched_bins` opened with
+    `if not (kf.exists() and pf.exists()): return pd.DataFrame()`, so both cross-venue consumers
+    quietly produced zero matched bins on a complete archive — an empty result that reads as
+    "nothing quoted on both venues today" rather than "the reader is broken".
+    """
+    return bool(markets_files(path))
+
+
 def load_markets(path, **read_csv_kwargs):
     """Read a Kalshi markets archive back as WHOLE snapshot rows — fact table joined to its
     dimension. Use this instead of `pd.read_csv` for `{slug}_markets.csv`.
@@ -258,8 +313,21 @@ def load_markets(path, **read_csv_kwargs):
     from pathlib import Path
 
     path = Path(path)
-    df = pd.read_csv(path, low_memory=False, **read_csv_kwargs)
     meta_path = path.with_name(path.name.replace("_markets.csv", "_markets_meta.csv"))
+
+    # The fact table is written one file per DAY (see `markets_partition_path`). `path` is the
+    # LEGACY un-partitioned name and need not exist any more; it defines the directory and slug.
+    # Reading both means the migration is not all-or-nothing and a half-migrated archive is whole.
+    #
+    # `{slug}_markets_meta.csv` matches this glob and must be excluded BY NAME: concatenating the
+    # dimension into the fact frame would add rows that are not snapshots — no `fetched_at_utc`,
+    # no prices — inflating every count built on the archive with NaN quotes in the middle of it.
+    parts = markets_files(path)
+    if not parts:
+        return pd.DataFrame()
+
+    frames = [pd.read_csv(q, low_memory=False, **read_csv_kwargs) for q in parts]
+    df = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
     if "ticker" not in df.columns or not meta_path.exists():
         return df
 

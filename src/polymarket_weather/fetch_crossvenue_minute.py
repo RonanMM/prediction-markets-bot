@@ -38,7 +38,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from fetch_kalshi import kalshi_get, load_markets
+from fetch_kalshi import kalshi_get, load_markets, markets_available
 from fetch_polymarket import fetch_price_history
 from processing import _append_csv
 
@@ -89,7 +89,8 @@ def _near_dates(today: datetime | None = None) -> set[str]:
 def matched_bins(slug: str, today=None) -> pd.DataFrame:
     """Bins quoted on both venues for a near-dated target: (target_date, floor_strike, ...)."""
     kf, sf = DATA / "kalshi" / f"{slug}_markets.csv", DATA / "polymarket" / f"{slug}_snapshots.csv"
-    if not (kf.exists() and sf.exists()):
+    # markets_available, NOT kf.exists() — see venue_basis; the legacy file no longer exists.
+    if not (markets_available(kf) and sf.exists()):
         return pd.DataFrame()
     near = _near_dates(today)
 

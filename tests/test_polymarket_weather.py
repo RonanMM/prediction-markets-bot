@@ -4814,6 +4814,207 @@ def test_load_markets_rejoins_the_dimension_into_the_full_snapshot_schema(tmp_pa
     assert list(df["floor_strike"]) == [70.0, 70.0, 72.0]
 
 
+def test_consumers_do_not_gate_on_the_deleted_legacy_markets_file(tmp_path):
+    """`{slug}_markets.csv` no longer exists — guarding on it silently returns NOTHING.
+
+    Caught by A/B-ing the consumers against identical data, partitioned vs not: both dropped to
+    zero matched bins (miami 4 -> 0, san_francisco 10 -> 0) while every stage of the Kalshi
+    pipeline was byte-identical. The cause was not the data at all — `matched_bins` opens with
+    `if not (kf.exists() and pf.exists()): return pd.DataFrame()`, and the daily-partition
+    migration deletes `kf`. The guard fired before `load_markets` was ever called.
+
+    This is the project's signature failure: no error, a green run, an empty result that reads as
+    "no matched bins today" rather than "the reader is broken". `markets_available` answers the
+    question the guard is actually asking — is there any archive to read — for both layouts.
+    """
+    import pandas as pd
+    from fetch_kalshi import markets_available
+
+    d = tmp_path / "kalshi"
+    d.mkdir()
+    legacy = d / "sf_markets.csv"
+
+    assert not markets_available(legacy), "empty directory: nothing to read"
+
+    pd.DataFrame([{"ticker": "T1", "title": "x"}]).to_csv(d / "sf_markets_meta.csv", index=False)
+    assert not markets_available(legacy), \
+        "the dimension file alone is not an archive — it holds no snapshots"
+
+    pd.DataFrame([{"ticker": "T1", "fetched_at_utc": "2026-09-01T10:00:00Z"}]
+                 ).to_csv(d / "sf_markets_2026-09-01.csv", index=False)
+    assert markets_available(legacy), "a daily partition IS the archive now"
+
+    pd.DataFrame([{"ticker": "T1", "fetched_at_utc": "2026-08-01T10:00:00Z"}]
+                 ).to_csv(legacy, index=False)
+    assert markets_available(legacy), "the legacy layout must keep working"
+
+
+def test_partition_migration_round_trips_before_deleting_the_source(tmp_path):
+    """Splitting the fact table into daily files must be verified, then the source removed.
+
+    Same discipline as the meta split: a migration that silently dropped rows is
+    indistinguishable from a successful one by file size alone, and these are PERISHABLE market
+    snapshots — no vendor re-serves a price from three weeks ago at any price.
+    """
+    import pandas as pd
+    from migrate_kalshi_partitions import migrate
+
+    d = tmp_path / "kalshi"
+    d.mkdir()
+    src = d / "sf_markets.csv"
+    pd.DataFrame([
+        {"ticker": "T1", "fetched_at_utc": "2026-09-01T10:00:00+00:00", "yes_bid": 0.40},
+        {"ticker": "T2", "fetched_at_utc": "2026-09-01T10:00:00+00:00", "yes_bid": 0.20},
+        {"ticker": "T1", "fetched_at_utc": "2026-09-02T10:00:00+00:00", "yes_bid": 0.41},
+        {"ticker": "T1", "fetched_at_utc": "2026-09-02T23:59:59+00:00", "yes_bid": 0.42},
+    ]).to_csv(src, index=False)
+
+    r = migrate(src, apply=True)
+    assert "FAILED" not in r, r
+
+    assert (d / "sf_markets_2026-09-01.csv").exists()
+    assert (d / "sf_markets_2026-09-02.csv").exists()
+    assert not src.exists(), "the legacy file must be removed once the split is verified"
+    assert len(pd.read_csv(d / "sf_markets_2026-09-01.csv")) == 2
+    assert len(pd.read_csv(d / "sf_markets_2026-09-02.csv")) == 2
+
+    from fetch_kalshi import load_markets
+    back = load_markets(src)          # legacy path is gone; it only names dir + slug now
+    assert len(back) == 4, f"round-trip lost rows: {len(back)}"
+    assert sorted(back["yes_bid"]) == [0.20, 0.40, 0.41, 0.42]
+
+
+def test_partition_migration_refuses_when_a_row_has_no_usable_timestamp(tmp_path):
+    """A row with an unparseable `fetched_at_utc` has no day to be filed under.
+
+    Guessing one would silently misdate a snapshot; dropping it would silently lose perishable
+    data. The migration must refuse the file and leave it untouched, so the problem is visible
+    and the archive is intact.
+    """
+    import pandas as pd
+    from migrate_kalshi_partitions import migrate
+
+    d = tmp_path / "kalshi"
+    d.mkdir()
+    src = d / "sf_markets.csv"
+    pd.DataFrame([
+        {"ticker": "T1", "fetched_at_utc": "2026-09-01T10:00:00+00:00", "yes_bid": 0.40},
+        {"ticker": "T2", "fetched_at_utc": "", "yes_bid": 0.20},
+    ]).to_csv(src, index=False)
+
+    r = migrate(src, apply=True)
+
+    assert "FAILED" in r, f"expected refusal, got {r}"
+    assert src.exists(), "the source must be left untouched when the migration refuses"
+    assert not list(d.glob("sf_markets_20*.csv")), "no partitions should have been written"
+
+
+def test_dashboard_freshness_glob_matches_partitions_but_not_the_dimension():
+    """The dashboard's "Kalshi markets" freshness pill must still find the archive after the
+    2026-09-03 daily-partitioning change.
+
+    It globbed `*_markets.csv`, which matches NO partition (`{slug}_markets_2026-09-03.csv`).
+    The pill would have gone permanently stale — and `newest()` swallows per-file errors, so it
+    would have read as "collector stale" with the collector working perfectly, on the public
+    page, silently. The glob must also not match `{slug}_markets_meta.csv`, which has no
+    `fetched_at_utc` at all.
+    """
+    import fnmatch
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    src = (root / "src" / "polymarket_weather" / "build_dashboard.py").read_text()
+    m = re.search(r'newest\("data/kalshi/([^"]+)"', src)
+    assert m, "the Kalshi freshness row no longer calls newest() with a glob — re-check"
+    pattern = m.group(1)
+
+    assert fnmatch.fnmatch("san_francisco_markets_2026-09-03.csv", pattern), \
+        f"glob {pattern!r} does not match a daily partition — the pill goes permanently stale"
+    assert not fnmatch.fnmatch("san_francisco_markets_meta.csv", pattern), \
+        f"glob {pattern!r} matches the dimension file, which carries no fetched_at_utc"
+
+
+def test_markets_kind_partitions_by_utc_day():
+    """The fact table's file name carries the UTC day, so a day's file stops changing at midnight.
+
+    That is the whole repo-size fix: git stores a new blob per file VERSION, and the cost scales
+    with the file's size, so the rewritten unit must stay small. A finished day is never rewritten
+    again.
+
+    The day must come from the row's own `fetched_at_utc`, never from `datetime.now()` — a cycle
+    that starts at 23:59 and writes at 00:01 would otherwise file its rows under the wrong day,
+    and a backfill would scatter historical rows into today.
+    """
+    from fetch_kalshi import markets_kind
+
+    assert markets_kind("2026-09-03T11:12:43.884210+00:00") == "markets_2026-09-03"
+    assert markets_kind("2026-09-03T23:59:59Z") == "markets_2026-09-03"
+    assert markets_kind("2026-01-05T00:00:00+00:00") == "markets_2026-01-05"
+    # A non-UTC stamp must be converted, not truncated: 2026-09-04T01:00+09:00 is Sep 3 in UTC.
+    assert markets_kind("2026-09-04T01:00:00+09:00") == "markets_2026-09-03"
+
+
+def test_load_markets_reads_daily_partitions_and_the_legacy_file_together(tmp_path):
+    """The archive is written one file per DAY; a reader must see the whole history as one frame.
+
+    Repo-size fix (2026-09-03). Git stores a new blob for every version of a file, and the
+    measured on-disk cost of one snapshot commit was 1.3-8.9 MB per city — scaling with FILE
+    SIZE, not with the ~98 KB actually appended (LA compressed to 1.5% of logical, SF to 10.5%,
+    same data, packing luck). At 56 commits/day that was 205-354 MB/day: the repo reached
+    12.12 GB, of which 10.36 GB was the preceding 30 days alone.
+
+    Capping the rewritten unit at one day takes the average rewritten file from ~40 MB to
+    ~0.4 MB, so the same data costs ~100x less history. It also retires the 100 MB per-file wall
+    permanently — a daily partition cannot approach it.
+
+    The legacy un-partitioned file must still be read, so the migration is not all-or-nothing.
+    """
+    import pandas as pd
+    from fetch_kalshi import load_markets
+
+    d = tmp_path / "kalshi"
+    d.mkdir()
+    pd.DataFrame([{"ticker": "T1", "fetched_at_utc": "2026-08-30T10:00:00Z", "yes_bid": 0.30}]
+                 ).to_csv(d / "sf_markets.csv", index=False)              # legacy
+    pd.DataFrame([{"ticker": "T1", "fetched_at_utc": "2026-09-01T10:00:00Z", "yes_bid": 0.40}]
+                 ).to_csv(d / "sf_markets_2026-09-01.csv", index=False)   # partitions
+    pd.DataFrame([{"ticker": "T1", "fetched_at_utc": "2026-09-02T10:00:00Z", "yes_bid": 0.41}]
+                 ).to_csv(d / "sf_markets_2026-09-02.csv", index=False)
+    pd.DataFrame([{"ticker": "T1", "title": "High temp in SF"}]
+                 ).to_csv(d / "sf_markets_meta.csv", index=False)         # the DIMENSION
+
+    df = load_markets(d / "sf_markets.csv")
+
+    assert len(df) == 3, f"expected legacy + 2 partitions = 3 snapshots, got {len(df)}"
+    assert sorted(df["yes_bid"]) == [0.30, 0.40, 0.41]
+    assert list(df["title"]) == ["High temp in SF"] * 3, "dimension must still be joined on"
+    assert "2026-09-01" not in str(df.columns), "partition date is not a column"
+
+
+def test_load_markets_never_mistakes_the_dimension_file_for_a_partition(tmp_path):
+    """`{slug}_markets_meta.csv` matches the glob `{slug}_markets_*.csv`.
+
+    Concatenating the dimension INTO the fact frame would add rows that are not snapshots —
+    they have no `fetched_at_utc` and no prices — silently inflating every count built on the
+    archive and putting NaN quotes into the middle of it. It must be excluded by name.
+    """
+    import pandas as pd
+    from fetch_kalshi import load_markets
+
+    d = tmp_path / "kalshi"
+    d.mkdir()
+    pd.DataFrame([{"ticker": "T1", "fetched_at_utc": "2026-09-01T10:00:00Z", "yes_bid": 0.40}]
+                 ).to_csv(d / "sf_markets_2026-09-01.csv", index=False)
+    pd.DataFrame([{"ticker": "T1", "title": "High temp in SF"}]
+                 ).to_csv(d / "sf_markets_meta.csv", index=False)
+
+    df = load_markets(d / "sf_markets.csv")     # legacy file absent — partitions only
+
+    assert len(df) == 1, f"the dimension file was concatenated as a snapshot: {len(df)} rows"
+    assert df["yes_bid"].notna().all()
+
+
 def test_load_markets_applies_dtype_to_the_dimension_columns_too(tmp_path):
     """`dtype=str` must reach BOTH sides of the join, or the frame is half-typed.
 
@@ -6398,8 +6599,15 @@ def test_one_citys_failure_still_writes_the_whole_cycles_manifest(tmp_path, monk
     manifest = pd.read_csv(processing.kalshi_manifest_path())
     assert set(manifest["series_ticker"]) == {"KXHIGHLAX", "KXHIGHMIA"}, \
         "the surviving cities must still have a health record"
-    assert (tmp_path / "miami_markets.csv").exists(), \
+    # The fact table is one file per UTC day since 2026-09-03, so assert via markets_available
+    # rather than a hardcoded name — that is the check every reader should be making, and a
+    # collector writing to a name no reader globs would otherwise pass this test silently.
+    from fetch_kalshi import markets_available, markets_files
+    assert markets_available(tmp_path / "miami_markets.csv"), \
         "the city AFTER the failure must still have been collected"
+    written = [f.name for f in markets_files(tmp_path / "miami_markets.csv")]
+    assert any(f.startswith("miami_markets_20") for f in written), \
+        f"expected a dated partition, got {written}"
     assert any("FAILED mid-city" in r.message for r in caplog.records), \
         "the isolated failure must be logged loudly, not swallowed silently"
 

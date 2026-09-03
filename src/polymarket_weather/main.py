@@ -246,7 +246,7 @@ def _kalshi_one_city(city: str, series: str, now: str, manifest: list) -> None:
     from kalshi_series import manifest_row, LIVE_STATUSES
     from fetch_kalshi import (fetch_series_markets, summarize_market, count_live,
                               fetch_orderbooks, fetch_candles, summarize_candle, candle_log_row,
-                              split_market_rows, META_COLS)
+                              split_market_rows, META_COLS, markets_kind)
     from processing import (save_kalshi_rows, save_kalshi_candle_log, kalshi_candles_path)
     from resolution_anchors import slug
 
@@ -265,7 +265,11 @@ def _kalshi_one_city(city: str, series: str, now: str, manifest: list) -> None:
     # which the pre-receive hook rejected every push and the collector lost ~16 hours of
     # perishable snapshots. Nothing is dropped — see split_market_rows.
     facts, meta = split_market_rows(rows)
-    save_kalshi_rows("markets", cslug, facts, ["ticker", "fetched_at_utc"])
+    # One file per UTC DAY. Git stores a whole new blob per file version and that cost scales
+    # with the file's SIZE, so an ever-growing fact table charged 1.3-8.9 MB per city per cycle
+    # for ~98 KB of new rows — 205-354 MB/day of repo growth, 10.36 GB in the 30 days to
+    # 2026-09-03. A finished day is never rewritten again. See fetch_kalshi.markets_kind.
+    save_kalshi_rows(markets_kind(now), cslug, facts, ["ticker", "fetched_at_utc"])
     # Keyed on ticker AND content: an unchanged ticker never re-appends, but a mid-life rules
     # amendment lands as a second row rather than being silently discarded.
     save_kalshi_rows("markets_meta", cslug, meta, ["ticker"] + META_COLS)

@@ -690,8 +690,12 @@ def feed_status() -> list:
 
     add("Market snapshots", newest("data/polymarket/*_snapshots.csv", "fetched_at_utc"), 6,
         "hourly collector")
-    add("Kalshi markets", newest("data/kalshi/*_markets.csv", "fetched_at_utc"), 6,
-        "hourly collector")
+    # `*_markets_20*.csv`, not `*_markets.csv`: the fact table is written one file per UTC day
+    # (`{slug}_markets_2026-09-03.csv`) since 2026-09-03. The `20` prefix is what excludes
+    # `{slug}_markets_meta.csv`, which carries no fetched_at_utc — newest() swallows per-file
+    # errors, so a glob that matched it would fail silently rather than loudly.
+    add("Kalshi markets", newest("data/kalshi/*_markets_20*.csv", "fetched_at_utc"), 6,
+        "collector (every 3h)")
     add("Cross-venue minute", newest("data/crossvenue/*_pm_minute.csv", "fetched_at_utc"), 12,
         "lead-lag experiment (§13f)")
     # SETTLEMENTS. The gap this panel had: every feed above is refreshed by collect or by the

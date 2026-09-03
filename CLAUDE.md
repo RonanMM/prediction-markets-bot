@@ -517,7 +517,25 @@ is what trains.
 
 ### The Kalshi archive and GitHub's 100 MB per-file wall (twice now)
 
-`data/kalshi/{slug}_markets.csv` is an hourly snapshot of every ticker in a city's series, and it
+**Layout (since 2026-09-03): the fact table is ONE FILE PER UTC DAY** —
+`data/kalshi/{slug}_markets_{YYYY-MM-DD}.csv`, plus the single dimension file
+`{slug}_markets_meta.csv`. **Read it with `fetch_kalshi.load_markets()` and test for it with
+`markets_available()` — never `pd.read_csv` and never `path.exists()` on the legacy name**, which
+no longer exists. Both mistakes fail *silently*: a bare read returns a frame missing the static
+columns, and an `exists()` guard returns an empty result forever. The latter actually happened
+during this migration — both cross-venue consumers went to zero matched bins on a complete
+archive, and only an A/B against the un-partitioned data caught it.
+
+*Why daily.* Git stores a whole new blob per file VERSION and that cost scales with the file's
+SIZE, not with how little changed. Measured on the real archive: one snapshot commit cost
+**1.3–8.9 MB per city** for ~98 KB of new rows (LA packed to 1.5% of logical, SF to 10.5% on
+identical data — delta-chain luck we do not control). At 56 commits/day that was **205–354 MB/day**;
+the repo hit **12.12 GB, 10.36 GB of it in 30 days**, and on 2026-08-27 GitHub began throttling
+its scheduled dispatch. Daily partitions take the rewritten unit from ~40 MB to ~1.3 MB and a
+finished day is never rewritten again, so history stops growing with the square of the archive.
+It also retires the 100 MB per-file wall permanently — a daily partition cannot approach it.
+
+`{slug}_markets_*.csv` is an hourly snapshot of every ticker in a city's series, and it
 grows ~3 MB/day/city. GitHub rejects any file over **100 MB at the pre-receive hook**, so the
 failure arrives as an opaque "remote rejected" *after* the data is collected. Judge this by file
 size in the run log, never by the run's colour.
