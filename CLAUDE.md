@@ -490,10 +490,17 @@ is what trains.
 
 `data/kalshi/{slug}_markets.csv` is an hourly snapshot of every ticker in a city's series, and it
 grows ~3 MB/day/city. GitHub rejects any file over **100 MB at the pre-receive hook**, so the
-failure arrives as an opaque "remote rejected" *after* the data is collected — and `collect`'s
-size guard runs BEFORE its commit step, so a tripped guard **discards that cycle's perishable
-Polymarket and Kalshi snapshots**, which is the very loss the guard exists to prevent. Judge this
-by file size in the run log, never by the run's colour.
+failure arrives as an opaque "remote rejected" *after* the data is collected. Judge this by file
+size in the run log, never by the run's colour.
+
+⚠️ **`collect` commits BEFORE it runs the size guard, and the guard is `if: always()`. Do not
+reorder them.** It used to be the other way round, and on 2026-09-02 that inverted the guard's
+purpose: it exited 1 at 95 MiB, the commit step never ran, and five consecutive cycles of
+perishable snapshots were discarded — the exact loss the guard exists to prevent. The threshold
+was also the wrong thing to fail on, since GitHub rejects at 100 MB and every one of those pushes
+would have succeeded. With the data secured first, a red guard is a pure alarm that costs nothing,
+and `always()` keeps it reporting when a genuine >100 MB rejection kills the commit step. Pinned
+by `test_collect_commits_perishable_data_before_the_size_guard_can_fail_the_run`.
 
 The fix both times was **normalisation, not curation** (`migrate_kalshi_meta.py`): a column that
 is immutable for the life of a ticker is stored once in `{slug}_markets_meta.csv` instead of being

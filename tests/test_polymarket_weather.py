@@ -6582,6 +6582,44 @@ def test_collect_workflow_commits_every_data_directory_the_collector_writes():
         "persists collector output before trusting this test")
 
 
+def test_collect_commits_perishable_data_before_the_size_guard_can_fail_the_run():
+    """The size guard must never be able to destroy the data it exists to protect.
+
+    The 2026-09-02/03 outage. `collect` ran the 100 MB size guard BEFORE the commit step, so
+    when san_francisco_markets.csv crossed 95 MiB the guard exited 1 and the commit never ran —
+    five consecutive cycles of PERISHABLE Polymarket and Kalshi snapshots discarded, which is
+    precisely the loss the guard was added to prevent. Worse, the threshold was wrong to fail
+    on: GitHub rejects at 100 MB, so at 95 MiB those pushes would have succeeded. The guard
+    traded ~6 days of real headroom for immediate data loss.
+
+    The fix is ordering, not thresholds. Secure the irreplaceable data first, then let the guard
+    fail the run purely as an alarm. It must also run `if: always()`, so that when a file really
+    is over 100 MB and the push IS rejected, the guard still prints WHICH file — the opaque
+    "remote rejected" was the reason it was written in the first place.
+    """
+    import pathlib
+    import yaml
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    wf = yaml.safe_load((root / ".github" / "workflows" / "collect.yml").read_text())
+    steps = wf["jobs"]["collect"]["steps"]
+
+    def index_of(pred, what):
+        hits = [i for i, st in enumerate(steps) if pred(st)]
+        assert hits, f"collect.yml has no {what} step — re-check the workflow"
+        return hits[0]
+
+    commit = index_of(lambda st: "git commit" in (st.get("run") or ""), "commit")
+    guard = index_of(lambda st: "99614720" in (st.get("run") or ""), "size-guard")
+
+    assert commit < guard, (
+        "collect.yml runs the size guard BEFORE committing. A tripped guard then throws away "
+        "that cycle's perishable snapshots — the exact 2026-09-02 failure.")
+    assert str(steps[guard].get("if", "")).strip() == "always()", (
+        "the size guard must run even when the commit step failed, or a genuine >100 MB "
+        "pre-receive rejection reports only as an opaque 'remote rejected'")
+
+
 def test_capture_cities_can_never_block_the_dashboard_publish():
     """Capture-tier cities must stay OUT of CITY_ORDER.
 
