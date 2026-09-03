@@ -186,7 +186,30 @@ MARKET_COLS = [col for col, _, _ in _MARKET_FIELDS] + [
 # here: `_MARKET_FIELDS` above documents why every vendor field is captured (Kalshi serves market
 # objects for only ~2 months, so an uncaptured field is unrecoverable at any price). Normalising
 # preserves that guarantee; curating would break it.
-META_COLS = ["rules_primary", "rules_secondary", "early_close_condition", "price_ranges"]
+META_COLS = [
+    # ── the original four (2026-08-12 split) ──
+    "rules_primary", "rules_secondary", "early_close_condition", "price_ranges",
+    # ── the market's immutable DEFINITION (2026-09-03) ──
+    # Moving only the four text fields above bought three weeks. By 2026-09-02 all seven cities
+    # were back at 93.6-94.8 MB and `collect` failed five consecutive runs — and because the size
+    # guard runs BEFORE the commit step, each failure discarded that cycle's perishable
+    # Polymarket AND Kalshi snapshots. Measured over the then-current 1.28M-row archive, these
+    # twenty columns were 343 MB of 595 MB of field bytes (58%), repeated across ~103 snapshots
+    # per ticker.
+    #
+    # Every one is immutable BY DEFINITION — identity, strikes, schedule. That is the admission
+    # rule, and it is not "a query said it had not changed yet": six further columns looked just
+    # as static on the same scan and are deliberately excluded (see the test
+    # `test_meta_cols_excludes_fields_that_are_static_only_until_they_are_not`). The settlement
+    # lifecycle is absent-then-set, which `nunique(dropna=True)` cannot distinguish from
+    # constant, and `liquidity` is a dynamic metric that merely happens to be flat.
+    "title", "event_ticker", "series_ticker", "city",
+    "yes_sub_title", "no_sub_title",
+    "floor_strike", "cap_strike", "strike_type", "market_type",
+    "open_time", "close_time", "expiration_time",
+    "expected_expiration_time", "latest_expiration_time", "created_time",
+    "price_level_structure", "settlement_timer_seconds", "notional_value", "exchange_index",
+]
 
 
 def split_market_rows(rows: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -212,6 +235,53 @@ def split_market_rows(rows: list[dict]) -> tuple[list[dict], list[dict]]:
         if vals:
             meta.append({"ticker": r["ticker"], **vals})
     return facts, meta
+
+
+def load_markets(path, **read_csv_kwargs):
+    """Read a Kalshi markets archive back as WHOLE snapshot rows — fact table joined to its
+    dimension. Use this instead of `pd.read_csv` for `{slug}_markets.csv`.
+
+    The static per-ticker columns (META_COLS) are stored once in `{slug}_markets_meta.csv`, so a
+    bare read of the fact table yields a frame that is missing them. That failure is quiet, not
+    loud: `venue_basis.matched_bins` filters on `k.get("strike_type") == "between"`, and
+    `.get()` on an absent column returns None, so the comparison is all-False and the function
+    returns an EMPTY match set — a green run that measures nothing. Re-joining here keeps the
+    normalisation an implementation detail of the archive rather than a trap for every reader.
+
+    A ticker amended mid-life has TWO dimension rows (the dedupe is keyed on ticker AND content
+    precisely so an amendment is not discarded). Collapsing with `last()` carries the most
+    recent value onto every snapshot; the full history stays in the dimension file for anyone
+    who needs to see the change itself. The alternative — merging on ticker without collapsing —
+    would fan each snapshot of an amended market into two, silently doubling it.
+    """
+    import pandas as pd
+    from pathlib import Path
+
+    path = Path(path)
+    df = pd.read_csv(path, low_memory=False, **read_csv_kwargs)
+    meta_path = path.with_name(path.name.replace("_markets.csv", "_markets_meta.csv"))
+    if "ticker" not in df.columns or not meta_path.exists():
+        return df
+
+    # `dtype` is forwarded so both sides of the join are typed the same way; the other kwargs
+    # are not, because they describe the FACT file (a `usecols` meant for it names columns the
+    # dimension does not have). A half-typed frame is not a cosmetic problem: an audit reading
+    # the archive as strings would see '83.0' against 83.0 on 152,435 rows and drown any real
+    # difference in the noise.
+    meta = pd.read_csv(meta_path, low_memory=False,
+                       **{k: v for k, v in read_csv_kwargs.items() if k == "dtype"})
+    if meta.empty or "ticker" not in meta.columns:
+        return df
+    # Only columns the fact table does not already carry: a pre-migration archive still has them
+    # inline, and re-adding one would collide into `_x`/`_y` and break every caller by name.
+    add = [c for c in meta.columns if c != "ticker" and c not in df.columns]
+    if not add:
+        return df
+
+    dim = meta.groupby("ticker", as_index=False)[add].last()   # last() skips NaN per column
+    out = df.merge(dim, on="ticker", how="left")
+    ordered = [c for c in MARKET_COLS if c in out.columns]
+    return out[ordered + [c for c in out.columns if c not in ordered]]
 
 
 def fetch_series_markets(series_ticker: str, session=None, page_size: int = 200,

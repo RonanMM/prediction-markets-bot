@@ -36,6 +36,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from fetch_kalshi import load_markets
+
 import wu_truth
 from resolution_anchors import RESOLUTION_ANCHORS, slug as _slug
 
@@ -114,7 +116,9 @@ def matched_bins(slug: str) -> pd.DataFrame:
     kf, pf = _DATA / "kalshi" / f"{slug}_markets.csv", _DATA / "polymarket" / f"{slug}_snapshots.csv"
     if not (kf.exists() and pf.exists()):
         return pd.DataFrame()
-    k = pd.read_csv(kf)
+    # load_markets, not read_csv — `title` and `strike_type` live in the dimension table
+    # and a bare read would make both filters below match nothing, silently.
+    k = load_markets(kf)
     k = k[(k.get("strike_type") == "between") & (k.get("status") == "active")].copy()
     if k.empty:
         return pd.DataFrame()

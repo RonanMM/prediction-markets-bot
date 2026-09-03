@@ -486,6 +486,54 @@ merges against it with `how="inner"`, every newer settled market was dropped fro
 no warning. `retrain.yml` now rebuilds it in-runner; it is not committed, and the in-runner copy
 is what trains.
 
+### The Kalshi archive and GitHub's 100 MB per-file wall (twice now)
+
+`data/kalshi/{slug}_markets.csv` is an hourly snapshot of every ticker in a city's series, and it
+grows ~3 MB/day/city. GitHub rejects any file over **100 MB at the pre-receive hook**, so the
+failure arrives as an opaque "remote rejected" *after* the data is collected — and `collect`'s
+size guard runs BEFORE its commit step, so a tripped guard **discards that cycle's perishable
+Polymarket and Kalshi snapshots**, which is the very loss the guard exists to prevent. Judge this
+by file size in the run log, never by the run's colour.
+
+The fix both times was **normalisation, not curation** (`migrate_kalshi_meta.py`): a column that
+is immutable for the life of a ticker is stored once in `{slug}_markets_meta.csv` instead of being
+re-serialised on all ~103 snapshots. Nothing is ever dropped — `fetch_kalshi._MARKET_FIELDS`
+explains why capture must stay total (Kalshi serves market objects for only ~2 months, so an
+uncaptured field is unrecoverable at any price).
+
+- **2026-08-12** — moved the 4 big text fields (74% of field bytes). Bought three weeks.
+- **2026-09-02/03** — all seven cities back at 93.6–94.8 MiB; `collect` failed five consecutive
+  runs. Moved the market's **immutable definition** (title, strikes, schedule — 20 columns,
+  343 MB of 595 MB of field bytes). 99.4 MB → 42.6 MB per city.
+
+Three things to keep straight:
+
+1. **⚠️ Read the archive with `fetch_kalshi.load_markets()`, never a bare `pd.read_csv`.** The
+   static columns are not on the fact table any more. A plain read fails *quietly*, not loudly:
+   `venue_basis.matched_bins` filters on `k.get("strike_type") == "between"`, and `.get()` on an
+   absent column returns None → an all-False mask → an **empty match set on a green run**.
+   `load_markets` re-joins the dimension and collapses an amended ticker's multiple dimension
+   rows, so the join can never fan a snapshot out into two.
+2. **A column is moved because it is immutable BY DEFINITION, not because a scan says it has not
+   changed yet.** Six columns looked exactly as static on the 1.28M-row scan and are deliberately
+   excluded: the settlement lifecycle (`result`, `settlement_ts`, `settlement_value`,
+   `expiration_value*`) is absent-then-set, which `nunique(dropna=True)` cannot tell apart from
+   constant, and moving it would discard *which snapshot* first carried a settlement; `liquidity`
+   is a dynamic metric that merely happens to be flat. See
+   `test_meta_cols_excludes_fields_that_are_static_only_until_they_are_not`.
+3. **A re-run must EXTEND the dimension file, not rewrite it.** On the second pass the first
+   pass's columns are already gone from the fact table, so `present` names only the new ones and
+   writing the frame straight out would have destroyed the original text — `rules_secondary`
+   included — at a plausible file size, with the round-trip check none the wiser (it only
+   verifies the columns moved on *that* pass). `migrate()` now outer-merges onto the existing
+   file and verifies the prior contents survived.
+
+Migration is verified before anything is replaced (row count, retained columns, and every
+non-null `(ticker, value)` pair on both the new and prior dimension); a file failing any check is
+left untouched. The one accepted lossy edge is the vendor's ~0.9% per-snapshot omission of a
+static field, which is backfilled from the ticker's own value on read (measured on the real SF
+archive: 3,942 cells of 8.2M, **0 recorded values altered**).
+
 ### Working from a fresh clone
 A new machine has the committed (perishable) data but **none** of the refetchable archives, so
 `data_status.py` reports `0 gradable` and `evaluate_oos.py` refuses to run. That is expected, not

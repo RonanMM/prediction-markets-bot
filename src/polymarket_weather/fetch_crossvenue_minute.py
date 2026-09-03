@@ -38,7 +38,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from fetch_kalshi import kalshi_get
+from fetch_kalshi import kalshi_get, load_markets
 from fetch_polymarket import fetch_price_history
 from processing import _append_csv
 
@@ -93,7 +93,10 @@ def matched_bins(slug: str, today=None) -> pd.DataFrame:
         return pd.DataFrame()
     near = _near_dates(today)
 
-    k = pd.read_csv(kf, low_memory=False)
+    # load_markets, not read_csv: strike_type/close_time/open_time/series_ticker/floor_strike
+    # all live in the dimension table now, and a bare read would leave `k.get("strike_type")`
+    # returning None -> an all-False filter -> a silently EMPTY match set.
+    k = load_markets(kf)
     k = k[k.get("strike_type") == "between"].drop_duplicates("ticker")
     if k.empty:
         return pd.DataFrame()

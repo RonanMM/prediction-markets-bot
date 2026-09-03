@@ -90,13 +90,31 @@ def migrate(path: Path, apply: bool) -> dict:
 
     meta = _meta_frame(df, present)
     facts = df.drop(columns=present)
+    meta_path = path.with_name(path.name.replace("_markets.csv", "_markets_meta.csv"))
+
+    # A SECOND migration must EXTEND the dimension file, never replace it. The 2026-08-12 split
+    # already wrote one holding the four text fields; by the time the 2026-09-03 split ran, those
+    # were absent from the fact table, so `present` named only the new columns and writing
+    # `meta` straight out would have dropped the original text — including `rules_secondary`,
+    # the largest thing in the archive — with the round-trip check none the wiser, because it
+    # only ever verifies the columns being moved on THIS pass.
+    prior = None
+    if meta_path.exists():
+        prior = pd.read_csv(meta_path, dtype=str, low_memory=False)
+        if "ticker" in prior.columns:
+            # `outer`, so a ticker known only to the old file (its fact rows long since aged out
+            # of the ~2-month serving window) is carried forward rather than quietly dropped.
+            # Columns the old file already holds win; this pass only ADDS.
+            dup = [c for c in meta.columns if c != "ticker" and c in prior.columns]
+            meta = prior.merge(meta.drop(columns=dup), on="ticker", how="outer")
+        else:
+            prior = None
 
     if not apply:
         saved = sum(df[c].astype(str).str.len().sum() for c in present)
         return {"file": path.name, "rows": len(df), "meta_rows": len(meta),
                 "before_mb": before / 1e6, "est_after_mb": (before - saved) / 1e6}
 
-    meta_path = path.with_name(path.name.replace("_markets.csv", "_markets_meta.csv"))
     tmp_f, tmp_m = path.with_suffix(".csv.tmp"), meta_path.with_suffix(".csv.tmp")
     facts.to_csv(tmp_f, index=False)
     meta.to_csv(tmp_m, index=False)
@@ -120,6 +138,16 @@ def migrate(path: Path, apply: bool) -> dict:
         want = set(map(tuple, df.dropna(subset=[c])[["ticker", c]].values.tolist()))
         got = set(map(tuple, rt_m.dropna(subset=[c])[["ticker", c]].values.tolist()))
         lost += len(want - got)
+    # Everything the PREVIOUS dimension file held must survive too — the check that would have
+    # caught the overwrite described above.
+    if prior is not None:
+        for c in prior.columns:
+            if c == "ticker" or c not in rt_m.columns:
+                lost += len(prior.dropna(subset=[c])) if c != "ticker" else 0
+                continue
+            want = set(map(tuple, prior.dropna(subset=[c])[["ticker", c]].values.tolist()))
+            got = set(map(tuple, rt_m.dropna(subset=[c])[["ticker", c]].values.tolist()))
+            lost += len(want - got)
     if lost:
         tmp_f.unlink(missing_ok=True); tmp_m.unlink(missing_ok=True)
         return {"file": path.name, "FAILED": f"{lost} (ticker, text) pairs lost"}

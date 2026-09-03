@@ -4707,13 +4707,60 @@ def test_split_market_rows_keeps_static_text_out_of_the_fact_table():
             assert c not in f, f"{c} still on the fact row — this is the 100 MB blow-up"
     # the quote data, which is what varies per snapshot, must be untouched
     assert [f["yes_bid"] for f in facts] == ["0.40", "0.41"]
-    assert all("title" in f for f in facts), \
-        "title is read by venue_basis.matched_bins and must stay on the fact row"
+    assert all("title" not in f for f in facts), \
+        "title is static per ticker — it belongs in the dimension, not on all ~103 snapshots"
 
     # both snapshots carry identical static text, so the dimension dedupe (ticker + content,
     # applied by _append_csv in main.py) collapses them to one archived row
     assert len({tuple(sorted(m.items())) for m in meta}) == 1
-    assert set(meta[0]) == {"ticker", *META_COLS}
+    # the dimension row carries the ticker plus whatever static columns the snapshot supplied —
+    # never a column from outside META_COLS, and never a fact column
+    assert set(meta[0]) <= {"ticker", *META_COLS}
+    assert {"title", "rules_primary", "rules_secondary"} <= set(meta[0])
+    assert "yes_bid" not in meta[0], "quote data is per-snapshot and must not enter the dimension"
+
+
+def test_meta_cols_excludes_fields_that_are_static_only_until_they_are_not():
+    """What must NEVER move into the dimension, and why the list is not just "whatever looks
+    constant in today's archive".
+
+    Measured over the real 1.28M-row, 7-city archive on 2026-09-03, twenty-six columns showed a
+    single distinct non-null value per ticker. Six of them are static only by ACCIDENT of the
+    current window:
+
+      - the settlement lifecycle (`result`, `settlement_ts`, `settlement_value`,
+        `expiration_value`, `expiration_value_f`) is absent and then set. `nunique(dropna=True)`
+        counts that transition as one value, so the staticness check cannot see it. Moving them
+        would discard WHICH SNAPSHOT first carried a settlement — the timing this archive exists
+        to record.
+      - `liquidity` is a market metric that is simply flat right now. Freezing a dynamic field
+        into a per-ticker dimension would drop its association with `fetched_at_utc`.
+
+    A column is moved because it is immutable BY DEFINITION (the market's identity, strikes and
+    schedule), never because a query said it had not changed yet.
+    """
+    from fetch_kalshi import META_COLS
+
+    for c in ("result", "settlement_ts", "settlement_value", "expiration_value",
+              "expiration_value_f", "liquidity", "status", "updated_time", "volume",
+              "yes_bid", "yes_ask", "open_interest", "fetched_at_utc"):
+        assert c not in META_COLS, f"{c} varies over a ticker's life and must stay on the snapshot"
+
+
+def test_meta_cols_covers_the_immutable_market_definition():
+    """The 2026-09-02 repeat outage. The original split moved only the four big text fields, and
+    three weeks later all seven cities were back at 93.6-94.8 MB against GitHub's 100 MB limit —
+    `collect` failed five consecutive runs and the guard, which fires BEFORE the commit step,
+    discarded each cycle's perishable snapshots.
+
+    The remaining redundancy was the market's own definition — title, strikes, schedule — still
+    re-serialised on every one of ~103 snapshots per ticker: 343 MB of 595 MB of field bytes.
+    """
+    from fetch_kalshi import META_COLS
+
+    for c in ("title", "event_ticker", "series_ticker", "floor_strike", "cap_strike",
+              "strike_type", "open_time", "close_time", "expiration_time", "created_time"):
+        assert c in META_COLS, f"{c} is immutable per ticker and must not be stored ~103 times"
 
 
 def test_split_market_rows_skips_a_meta_row_with_no_text():
@@ -4729,6 +4776,150 @@ def test_split_market_rows_skips_a_meta_row_with_no_text():
 
     assert len(facts) == 1, "the snapshot itself is still archived"
     assert meta == [], f"an all-empty meta row must not be archived, got {meta}"
+
+
+def test_load_markets_rejoins_the_dimension_into_the_full_snapshot_schema(tmp_path):
+    """The fact table alone is NOT the archive's schema — readers need the static columns back.
+
+    `venue_basis.matched_bins` reads `title`/`strike_type`, `fetch_crossvenue_minute.matched_bins`
+    reads `close_time`/`open_time`/`series_ticker`/`floor_strike`. Once those move into the
+    dimension table, reading `{slug}_markets.csv` with a bare `pd.read_csv` silently yields a
+    frame missing them — a KeyError at best, and at worst an empty match set from
+    `k.get("strike_type") == "between"` returning all-False. This loader is the only supported
+    way to read the archive.
+    """
+    import pandas as pd
+    from fetch_kalshi import load_markets
+
+    fact = tmp_path / "sf_markets.csv"
+    pd.DataFrame([
+        {"ticker": "T-B70", "fetched_at_utc": "2026-09-01T10:00:00Z", "yes_bid": 0.40},
+        {"ticker": "T-B70", "fetched_at_utc": "2026-09-01T11:00:00Z", "yes_bid": 0.41},
+        {"ticker": "T-B72", "fetched_at_utc": "2026-09-01T10:00:00Z", "yes_bid": 0.20},
+    ]).to_csv(fact, index=False)
+    pd.DataFrame([
+        {"ticker": "T-B70", "title": "High temp in SF", "strike_type": "between",
+         "close_time": "2026-09-02T06:00:00Z", "floor_strike": 70.0},
+        {"ticker": "T-B72", "title": "High temp in SF", "strike_type": "between",
+         "close_time": "2026-09-02T06:00:00Z", "floor_strike": 72.0},
+    ]).to_csv(tmp_path / "sf_markets_meta.csv", index=False)
+
+    df = load_markets(fact)
+
+    assert len(df) == 3, "the join must not add or drop snapshots"
+    assert list(df["yes_bid"]) == [0.40, 0.41, 0.20], "fact rows must keep their order and values"
+    # every static column is back, attached to the right ticker
+    assert list(df["title"]) == ["High temp in SF"] * 3
+    assert list(df["strike_type"]) == ["between"] * 3
+    assert list(df["floor_strike"]) == [70.0, 70.0, 72.0]
+
+
+def test_load_markets_applies_dtype_to_the_dimension_columns_too(tmp_path):
+    """`dtype=str` must reach BOTH sides of the join, or the frame is half-typed.
+
+    An audit that reads the archive as strings to compare it byte-for-byte against a
+    pre-migration copy would otherwise see `floor_strike` as '83.0' on one side and 83.0 on the
+    other, and report 152,435 spurious differences — noise that buries any real one.
+    """
+    import pandas as pd
+    from fetch_kalshi import load_markets
+
+    fact = tmp_path / "sf_markets.csv"
+    pd.DataFrame([{"ticker": "T1", "yes_bid": 0.4}]).to_csv(fact, index=False)
+    pd.DataFrame([{"ticker": "T1", "floor_strike": 83.0}]).to_csv(
+        tmp_path / "sf_markets_meta.csv", index=False)
+
+    df = load_markets(fact, dtype=str)
+
+    assert df["yes_bid"].iloc[0] == "0.4"
+    assert df["floor_strike"].iloc[0] == "83.0", \
+        "dimension column ignored the caller's dtype"
+
+
+def test_load_markets_keeps_one_row_per_snapshot_when_a_ticker_was_amended(tmp_path):
+    """The dimension is keyed on ticker AND content, so an amended market has TWO meta rows.
+
+    A naive `merge(on="ticker")` would then FAN OUT every snapshot of that ticker into two —
+    silently doubling volume, inflating any count built on the archive, and doing it only for
+    amended markets, so the corruption would be invisible in aggregate.
+    """
+    import pandas as pd
+    from fetch_kalshi import load_markets
+
+    fact = tmp_path / "sf_markets.csv"
+    pd.DataFrame([
+        {"ticker": "T-B70", "fetched_at_utc": "2026-09-01T10:00:00Z", "yes_bid": 0.40},
+        {"ticker": "T-B70", "fetched_at_utc": "2026-09-01T11:00:00Z", "yes_bid": 0.41},
+    ]).to_csv(fact, index=False)
+    pd.DataFrame([
+        {"ticker": "T-B70", "title": "High temp in SF", "rules_primary": "original"},
+        {"ticker": "T-B70", "title": "High temp in SF", "rules_primary": "amended"},
+    ]).to_csv(tmp_path / "sf_markets_meta.csv", index=False)
+
+    df = load_markets(fact)
+
+    assert len(df) == 2, f"one row per snapshot, got {len(df)} — the merge fanned out"
+    assert list(df["rules_primary"]) == ["amended", "amended"], \
+        "the latest amendment is the one carried onto the snapshot"
+
+
+def test_load_markets_without_a_dimension_file_returns_the_fact_table_unchanged(tmp_path):
+    """A city collected before the split has no dimension file. That must read, not raise —
+    otherwise one missing sidecar takes out every consumer of the archive."""
+    import pandas as pd
+    from fetch_kalshi import load_markets
+
+    fact = tmp_path / "sf_markets.csv"
+    pd.DataFrame([{"ticker": "T-B70", "yes_bid": 0.40, "title": "already inline"}]).to_csv(
+        fact, index=False)
+
+    df = load_markets(fact)
+
+    assert len(df) == 1
+    assert df["title"].iloc[0] == "already inline", \
+        "a column still living on the fact row must survive untouched"
+
+
+def test_migration_does_not_destroy_an_already_existing_dimension_file(tmp_path, monkeypatch):
+    """A SECOND migration must add columns to the dimension file, never replace it.
+
+    The 2026-08-12 split already wrote `{slug}_markets_meta.csv` holding the four text fields —
+    on the real archive, 2,556 rows including `rules_secondary`, the single largest thing in the
+    dataset. When the 2026-09-03 split moved twenty more columns, those four were by then absent
+    from the FACT table, so `present` covered only the new twenty and the migration would have
+    written a dimension frame containing only those — overwriting the file and destroying the
+    original text permanently.
+
+    Nothing would have caught it: the round-trip check verifies the columns being moved THIS
+    time, and the file would look healthy at a plausible size. Kalshi serves market objects for
+    ~2 months, so for tickers older than that the loss is unrecoverable at any price.
+    """
+    import pandas as pd
+    import migrate_kalshi_meta as mig
+
+    d = tmp_path / "kalshi"
+    d.mkdir()
+    # the fact table AFTER the first split: no rules_primary, but title still inline
+    pd.DataFrame([
+        {"ticker": "T1", "fetched_at_utc": "2026-09-01T10:00:00Z", "yes_bid": "0.40",
+         "title": "High temp in SF"},
+        {"ticker": "T1", "fetched_at_utc": "2026-09-01T11:00:00Z", "yes_bid": "0.41",
+         "title": "High temp in SF"},
+    ]).to_csv(d / "sf_markets.csv", index=False)
+    # the dimension file the FIRST split left behind
+    pd.DataFrame([{"ticker": "T1", "rules_primary": "the original rules text"}]).to_csv(
+        d / "sf_markets_meta.csv", index=False)
+
+    monkeypatch.setattr(mig, "META_COLS", ["rules_primary", "title"])
+    r = mig.migrate(d / "sf_markets.csv", apply=True)
+    assert "FAILED" not in r, r
+
+    meta = pd.read_csv(d / "sf_markets_meta.csv")
+    assert "rules_primary" in meta.columns, \
+        "the first split's column was dropped — that text is unrecoverable"
+    assert meta.loc[meta.ticker == "T1", "rules_primary"].iloc[0] == "the original rules text"
+    assert meta.loc[meta.ticker == "T1", "title"].iloc[0] == "High temp in SF", \
+        "the new column must be added alongside, not instead"
 
 
 def test_migration_refuses_when_a_meta_column_is_not_actually_static():
