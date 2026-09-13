@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "trained_at": "2026-09-09T09:18:06.006951+00:00",
+  "trained_at": "2026-09-13T09:55:26.140374+00:00",
   "target": "temp_max_c",
   "input": "mm_mean",
   "input_scores": {
