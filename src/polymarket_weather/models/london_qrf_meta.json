@@ -1,1 +1,1 @@
-{"beats_ensemble": false, "holdout_crps": 0.7595052248993158, "ens_holdout_crps": 0.7132898649587391, "n": 6864, "max_lead": 4}
+{"beats_ensemble": false, "holdout_crps": 0.7462344741029759, "ens_holdout_crps": 0.7135945267829865, "n": 6876, "max_lead": 4}
