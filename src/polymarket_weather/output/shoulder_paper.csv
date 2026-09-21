@@ -2532,3 +2532,4 @@ entered_at_utc,city,condition_id,question,target_date,leg,side,entry_side_price,
 2026-09-20T16:12:38.965543+00:00,Seoul,0x7b59b7ee8d585cc3f3e56f92a629a9dfef2c2f795559cd41a642780d8f4783c8,Will the lowest temperature in Seoul (Incheon) be 18°C on September 22?,2026-09-22,shoulder,No,0.77,0.23,core,2267.31
 2026-09-20T16:12:38.965543+00:00,HongKong,0x367c6787cd80f16854432ca4788ae9ac47b34f02f8fe483c5b34659657d4e014,Will the lowest temperature in Hong Kong be 24°C on September 22?,2026-09-22,shoulder,No,0.95,0.05,outer,1022.4
 2026-09-20T20:57:55.240028+00:00,HongKong,0x578f04f3a8e93890b16b3e07686cd6b35573dc796546342e385d7bee7634bffc,Will the highest temperature in Hong Kong be 33°C on September 22?,2026-09-22,shoulder,No,0.95,0.05,outer,1561.9
+2026-09-21T05:02:11.061149+00:00,Seoul,0xf1c9fea1af343c3fc52f5c4adcd01cc7de7472160abd3bf666e6611f5c7b78a8,Will the lowest temperature in Seoul (Incheon) be 21°C on September 22?,2026-09-22,shoulder,No,0.93,0.07,outer,1047.86
