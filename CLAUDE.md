@@ -1,12 +1,25 @@
 # CLAUDE.md
 
-This file provides guidance to coding assistants (like Claude/Antigravity) working on the Raincheck weather prediction tracker repository.
+This file provides guidance to coding assistants (like Claude/Antigravity) working on the
+prediction-markets-bot repository.
 
 ## Project Overview
 
-Raincheck is a Polymarket weather prediction market tracker that compares market-implied temperatures against meteorological forecasts to identify pricing inefficiencies. 
+prediction-markets-bot is a **multi-venue prediction-market tracker**. It compares
+market-implied outcomes against independent forecasts to find pricing inefficiencies. Today it
+covers temperature markets on **Polymarket and Kalshi**; the name is deliberately venue- and
+subject-neutral so it stays accurate as coverage widens.
 
-The active project code lives in `src/polymarket_weather/`, not in `src/raincheck/` (which is a near-empty PyScaffold skeleton).
+⚠️ **Two legacy names survive in paths and identifiers, and they are LOAD-BEARING — do not
+"tidy" them into the new project name.** The rename on 2026-09-23 was deliberately confined to
+prose, because each of these is a real thing something else resolves:
+- `src/polymarket_weather/` — the actual package. All the code lives here (the venue-specific
+  name now undersells it; renaming the module is a separate, breaking change).
+- `src/raincheck/` — an empty PyScaffold skeleton, and what `docs/conf.py` still points at.
+- `scripts/raincheck_*.sh` — referenced by `truth-eval.yml` and `retrain.yml`; renaming the
+  files without the workflow refs breaks CI.
+- `raincheck-collector` — the git committer identity in all four workflows. The "a commit
+  authored by a human is a manual intervention" heuristic below keys on it.
 
 ---
 

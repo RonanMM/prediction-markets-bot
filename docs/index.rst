@@ -1,8 +1,8 @@
-=========
-raincheck
-=========
+======================
+prediction-markets-bot
+======================
 
-This is the documentation of **raincheck**.
+This is the documentation of **prediction-markets-bot**.
 
 .. note::
 
