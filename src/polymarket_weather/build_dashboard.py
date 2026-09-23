@@ -691,7 +691,11 @@ def feed_status() -> list:
                      "stale_h": stale_h, "note": note,
                      "ok": bool(age is not None and age <= stale_h)})
 
-    add("Market snapshots", newest("data/polymarket/*_snapshots.csv", "fetched_at_utc"), 6,
+    # `*_snapshots*.csv`, not `*_snapshots.csv`: snapshots are one file per UTC day since
+    # 2026-09-03. The legacy glob matched nothing, so this row published age_h=None / ok=False —
+    # a live collector reported as dead on the public page — while the Kalshi row beside it, whose
+    # glob WAS migrated, showed a 0.4h lag off the same collector cycle.
+    add("Market snapshots", newest("data/polymarket/*_snapshots*.csv", "fetched_at_utc"), 6,
         "hourly collector")
     # `*_markets_20*.csv`, not `*_markets.csv`: the fact table is written one file per UTC day
     # (`{slug}_markets_2026-09-03.csv`) since 2026-09-03. The `20` prefix is what excludes
@@ -1109,7 +1113,11 @@ def _capture_gradable(city: str, snapshots_path) -> int:
         from grading import resolves_yes
         from pmf import parse_question, parse_question_date
 
-        d = pd.read_csv(snapshots_path, low_memory=False)
+        # load_partitioned, NOT read_csv: `snapshots_path` is the LEGACY base name, which the
+        # daily-partition migration deletes. A bare read raised FileNotFoundError straight into
+        # the bare `except` below and published a confident 0 for every capture city.
+        from processing import load_partitioned
+        d = load_partitioned(snapshots_path)
         if not {"condition_id", "question", "end_date_iso"}.issubset(d.columns):
             return 0
         d = d.sort_values("fetched_at_utc").groupby("condition_id").last().reset_index()
@@ -1154,8 +1162,12 @@ def capture_coverage() -> list:
             slug = re.sub(r"[^a-z0-9]+", "_", city.lower()).strip("_")
 
             pm = PKG / "data" / "polymarket" / f"{slug}_snapshots.csv"
-            if pm.exists():
-                d = pd.read_csv(pm, low_memory=False)
+            # partitioned_available/load_partitioned, NOT pm.exists()/read_csv — see the feed
+            # glob above. This published pm_markets=pm_snaps=0 for all seven capture cities on
+            # 2026-09-23 while every one of them had current daily partitions.
+            from processing import load_partitioned, partitioned_available
+            if partitioned_available(pm):
+                d = load_partitioned(pm)
                 rec["pm_snaps"] = int(len(d))
                 if "condition_id" in d.columns:
                     rec["pm_markets"] = int(d["condition_id"].nunique())
@@ -1163,8 +1175,15 @@ def capture_coverage() -> list:
                 if dates is not None and dates.notna().any():
                     rec["first_target"] = str(dates.min().date())
 
-            for key, fname in (("kal_markets", "markets"), ("kal_books", "books"),
-                               ("kal_candles", "candles")):
+            # `markets` is the partitioned fact table (markets_available/load_markets, which also
+            # re-joins the dimension); `books` and `candles` are NOT partitioned and read plainly.
+            # Treating all three alike is what published kal_markets=0 next to kal_books=6108 —
+            # the inconsistency that made the bug visible.
+            from fetch_kalshi import load_markets, markets_available
+            km = PKG / "data" / "kalshi" / f"{slug}_markets.csv"
+            if markets_available(km):
+                rec["kal_markets"] = int(len(load_markets(km)))
+            for key, fname in (("kal_books", "books"), ("kal_candles", "candles")):
                 p = PKG / "data" / "kalshi" / f"{slug}_{fname}.csv"
                 if p.exists():
                     rec[key] = int(len(pd.read_csv(p, low_memory=False)))

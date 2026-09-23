@@ -23,6 +23,7 @@ import pandas as pd
 
 from grading import resolves_yes, fetch_actual_weather
 from pmf import parse_question, parse_question_date
+from processing import load_partitioned, partitioned_available
 
 _DATA = Path(__file__).resolve().parent / "data" / "polymarket"
 # EVERY city we grade, not just the modelled five. The capture tier was graded on the NWS CLI
@@ -62,9 +63,13 @@ def audit():
     dis = []
     for slug, city in _SLUGS.items():
         path = _DATA / f"{slug}_snapshots.csv"
-        if not path.exists():
+        # partitioned_available/load_partitioned, NOT path.exists()/read_csv — snapshots are one
+        # file per UTC day since 2026-09-03 and the legacy name is DELETED, so `path.exists()`
+        # was False for every city: this guard scored 0/0 and still printed a green tick from
+        # 2026-09-04 to 2026-09-23. A settlement audit that reads nothing cannot catch a ruler.
+        if not partitioned_available(path):
             continue
-        s = pd.read_csv(path)
+        s = load_partitioned(path)
         s["t"] = pd.to_datetime(s["fetched_at_utc"], utc=True, format="mixed")
         s["yes"] = s["outcome_probs_json"].map(_yes_prob)
         s["end"] = pd.to_datetime(s["end_date_iso"], errors="coerce", utc=True).dt.tz_localize(None)
@@ -102,7 +107,15 @@ def main():
     for city, tgt, ours, settled, actual, q in sorted(dis):
         print(f"  DISAGREE {city:<9} {tgt}  ourgrade={ours} settled={settled} "
               f"truth={'?' if actual is None else round(actual, 2)}°C | {q[:64]}")
-    if tot and rate < _AGREEMENT_FLOOR:
+    if not tot:
+        # An agreement rate over an EMPTY sample is not evidence that grading is faithful; it is
+        # evidence the audit is broken. The old `if tot and rate < floor` short-circuited here
+        # and fell through to the ✅, so the 2026-09-03 partition migration silently disarmed
+        # this guard for 20 days without turning a single run red.
+        print("  ❌ audited 0 markets — the audit found no settled snapshots to check. "
+              "This is a BROKEN GUARD, not a clean bill of health; fix before trusting eval.")
+        sys.exit(1)
+    if rate < _AGREEMENT_FLOOR:
         print("  ❌ below floor — grading truth is NOT settlement-faithful; fix before trusting eval.")
         sys.exit(1)
     print("  ✅ grading is settlement-faithful at the audited floor "

@@ -32,7 +32,11 @@ def _parse_yes(val) -> float:
 
 
 def load_snapshots(data_dir: Path, city: str) -> pd.DataFrame:
-    df = pd.read_csv(data_dir / "polymarket" / f"{city}_snapshots.csv")
+    # load_partitioned, NOT read_csv — snapshots are one file per UTC day and the legacy name no
+    # longer exists, so a bare read raises FileNotFoundError on a COMPLETE archive. `load_hourly`
+    # directly below was migrated on 2026-09-03 and this one was missed.
+    from processing import load_partitioned
+    df = load_partitioned(data_dir / "polymarket" / f"{city}_snapshots.csv")
     df["fetched_at_utc"] = pd.to_datetime(df["fetched_at_utc"], utc=True)
     df["end_date_iso"]   = pd.to_datetime(df["end_date_iso"],   utc=True, errors="coerce")
     df["yes_prob"]       = df["outcome_probs_json"].apply(_parse_yes)

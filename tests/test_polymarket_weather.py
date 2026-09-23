@@ -7073,3 +7073,173 @@ def test_open_tests_report_the_binding_constraint_not_a_percentage():
     for r in hs:
         assert r["need_n"] >= 0
         assert r["dates"] <= r["need_dates"] or r["blocker"] != "accumulating minute data"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2026-09-23: the daily-partition migration (2026-09-03) left four readers still
+# pointed at the legacy un-partitioned filename. Every one fails SILENTLY — the
+# path simply does not exist, so the reader yields nothing and the caller reports
+# a confident zero. Measured live on the public dashboard 20 days later:
+#   * audit_settlements printed "0/0 ... (0.0%)" AND a green tick, so the guard
+#     that blocks a bad grading ruler had been inert since 2026-09-04;
+#   * the "Market snapshots" heartbeat published age_h=None / ok=False while the
+#     collector was running normally (0.4h lag on the Kalshi row beside it);
+#   * the cross-venue capture panel published pm_markets/pm_snaps/kal_markets = 0
+#     for all seven cities that do in fact have partitions.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_PARTITIONED_SNAPSHOT_ROW = (
+    "condition_id,question,end_date_iso,fetched_at_utc,outcome_probs_json\n"
+    'c1,Will the highest temperature in NYC be 21°C on March 18?,'
+    '2026-03-19T00:00:00Z,2026-03-20T12:00:00Z,"{""Yes"": 0.99, ""No"": 0.01}"\n'
+)
+
+
+def test_audit_settlements_reads_snapshot_daily_partitions(tmp_path, monkeypatch):
+    """The audit must find settled markets in `{slug}_snapshots_YYYY-MM-DD.csv`.
+
+    It gated on `(_DATA / f"{slug}_snapshots.csv").exists()` — a name the 2026-09-03 migration
+    DELETES — so every city hit `continue`, the audit scored an empty sample, and CI went green
+    on a guard that was no longer reading anything.
+    """
+    import audit_settlements as A
+
+    (tmp_path / "new_york_city_snapshots_2026-03-20.csv").write_text(
+        _PARTITIONED_SNAPSHOT_ROW, encoding="utf-8")
+
+    monkeypatch.setattr(A, "_DATA", tmp_path)
+    monkeypatch.setattr(A, "_SLUGS", {"new_york_city": "NYC"})
+    monkeypatch.setattr(A, "resolves_yes", lambda *a, **k: 1)
+
+    agree, tot, _dis = A.audit()
+    assert tot == 1, (
+        "the audit read 0 markets from a populated daily partition — it is still gating on the "
+        "legacy un-partitioned filename, so it scores an empty sample and passes vacuously")
+    assert agree == 1
+
+
+def test_audit_settlements_fails_when_it_audits_an_empty_sample():
+    """0/0 must EXIT NON-ZERO, not print a green tick.
+
+    `if tot and rate < floor` short-circuits when tot == 0, so an audit that found nothing fell
+    through to the success branch. An agreement rate over an empty sample is not evidence of
+    settlement-faithful grading; it is evidence the audit is broken.
+    """
+    import audit_settlements as A
+
+    saved = A.audit
+    try:
+        A.audit = lambda: (0, 0, [])
+        with pytest.raises(SystemExit) as exc:
+            A.main()
+        assert exc.value.code == 1, "an empty settlement audit must fail CI, not pass it"
+    finally:
+        A.audit = saved
+
+
+def test_every_dashboard_snapshot_path_matches_daily_partitions():
+    """ALL snapshot readers in build_dashboard, not just the one the old test happened to match.
+
+    The previous guard regexed `"polymarket" / "<...snapshots...>"`, which matched the ALREADY
+    CORRECT glob on line ~461 and never looked at the heartbeat's
+    `newest("data/polymarket/*_snapshots.csv", ...)`. A test pinning the wrong call site reports
+    the healthy site's health as the system's — the same defect it exists to catch.
+    """
+    import fnmatch
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    src = (root / "src" / "polymarket_weather" / "build_dashboard.py").read_text()
+
+    literals = re.findall(r'"([^"\n]*_snapshots[^"\n]*\.csv)"', src)
+    assert literals, "no snapshot path literals found — re-check build_dashboard"
+
+    partition = "seoul_snapshots_2026-09-03.csv"
+    for lit in literals:
+        name = lit.rsplit("/", 1)[-1]
+        if "*" in name:
+            assert fnmatch.fnmatch(partition, name), (
+                f"glob {lit!r} misses daily partitions — this reader reports a live collector "
+                f"as silent, on the public page, with no error")
+        else:
+            # A bare `{slug}_snapshots.csv` is only legal as a BASE path handed to
+            # partitioned_available()/load_partitioned(), never to .exists()/read_csv().
+            assert "{slug}" in name or "{city}" in name, (
+                f"unexpected hardcoded snapshot filename {lit!r}")
+
+
+def test_capture_gradable_reads_snapshot_daily_partitions(tmp_path, monkeypatch):
+    """`_capture_gradable` took a legacy path straight to `pd.read_csv`, raising
+    FileNotFoundError that its own bare `except` swallowed into a published 0.
+
+    The swallow is why this shipped: the panel published a confident zero for every city rather
+    than failing. So assert the real count — `>= 0` would be satisfied by the very bug.
+    """
+    import build_dashboard as B
+    import grading
+    import processing
+
+    base = tmp_path / "new_york_city_snapshots.csv"
+    (tmp_path / "new_york_city_snapshots_2026-03-20.csv").write_text(
+        _PARTITIONED_SNAPSHOT_ROW, encoding="utf-8")
+    assert processing.partitioned_available(base), "fixture did not create a readable partition"
+
+    # Truth is not under test — that the reader reaches the rows at all is.
+    monkeypatch.setattr(grading, "resolves_yes", lambda *a, **k: 1)
+
+    assert B._capture_gradable("NYC", base) == 1, (
+        "capture counted 0 gradable markets from a populated partition — it is still reading the "
+        "deleted legacy filename and swallowing the FileNotFoundError into a published zero")
+
+
+def test_data_loader_load_snapshots_reads_daily_partitions(tmp_path):
+    """`load_snapshots` still did a bare `pd.read_csv` on the legacy name while `load_hourly`
+    directly beneath it was migrated — so the engine's snapshot path raises FileNotFoundError
+    on a complete archive."""
+    from data_loader import load_snapshots
+
+    pm = tmp_path / "polymarket"
+    pm.mkdir()
+    (pm / "new_york_city_snapshots_2026-03-20.csv").write_text(
+        _PARTITIONED_SNAPSHOT_ROW, encoding="utf-8")
+
+    df = load_snapshots(tmp_path, "new_york_city")
+    assert len(df) == 1, "load_snapshots must read daily partitions, not the deleted legacy file"
+    assert df["yes_prob"].iloc[0] == pytest.approx(0.99)
+
+
+def test_no_production_reader_gates_a_partitioned_dataset_on_exists_or_read_csv():
+    """Regression net for the whole class, not the four instances found on 2026-09-23.
+
+    A legacy `{slug}_snapshots.csv` / `{slug}_markets.csv` path is legal ONLY as a base handed to
+    partitioned_available()/load_partitioned()/markets_available()/load_markets(). The moment it
+    reaches `.exists()` or `pd.read_csv` it silently reads nothing forever.
+    """
+    import pathlib
+    import re
+
+    src_dir = (pathlib.Path(__file__).resolve().parent.parent
+               / "src" / "polymarket_weather")
+    legacy = re.compile(r'^\s*(\w+)\s*=.*_(?:snapshots|markets)\.csv"')
+    offenders = []
+    for py in sorted(src_dir.glob("*.py")):
+        if py.name.startswith("migrate_"):
+            continue                      # migrations legitimately touch the legacy file
+        raw = py.read_text().splitlines()
+        # Scan CODE, not prose: the fix for each of these sites carries a comment naming the
+        # anti-pattern ("NOT path.exists()/read_csv"), which the scan would otherwise flag as the
+        # very thing it warns against.
+        lines = [ln.split("#", 1)[0] for ln in raw]
+        for i, line in enumerate(lines):
+            m = legacy.match(line)
+            if not m:
+                continue
+            var = m.group(1)
+            window = "\n".join(lines[i:i + 6])
+            if re.search(rf'\b{var}\.exists\(\)', window) or \
+               re.search(rf'read_csv\(\s*{var}\b', window):
+                offenders.append(f"{py.name}:{i + 1}: {line.strip()}")
+    assert not offenders, (
+        "legacy partitioned path reaching .exists()/read_csv — reads empty forever, silently:\n"
+        + "\n".join(offenders))
