@@ -1,4 +1,4 @@
-# Raincheck scheduled collection (Handoff Step 1)
+# prediction-markets-bot — scheduled collection (legacy laptop setup)
 
 ## Primary collector: GitHub Actions (laptop-independent)
 

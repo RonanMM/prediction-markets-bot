@@ -87,7 +87,7 @@ source_suffix = ".rst"
 master_doc = "index"
 
 # General information about the project.
-project = "raincheck"
+project = "prediction-markets-bot"
 copyright = "2026, leochakravarty"
 
 # The version info for the project you're documenting, acts as replacement for
