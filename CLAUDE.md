@@ -613,6 +613,39 @@ partition glob itself matches the date SHAPE (`20[0-9][0-9]-[0-9][0-9]-[0-9][0-9
 `{stem}_*.csv`, so siblings like `_meta`, `_min`, `_mm` and `_cand` are excluded by construction
 rather than by a hand-maintained list.
 
+⚠️ **The migration MISSED FOUR READERS, and the worst was the settlement audit itself (found +
+fixed 2026-09-23).** The warnings above were written with the migration; they did not catch
+every call site that predated it. Four readers were left on the legacy name for **20 days**:
+
+| reader | what it published |
+|---|---|
+| `audit_settlements.py` | `0/0 ... (0.0%)` **and a green tick** — the grading guard, disarmed |
+| `build_dashboard` feed row | "Market snapshots" `age_h=None, ok=False` — a live collector shown dead |
+| `build_dashboard` capture panel | `pm_markets`/`pm_snaps`/`kal_markets`/`graded` **= 0** for all 7 cities |
+| `data_loader.load_snapshots` | `FileNotFoundError` on a complete archive (`load_hourly`, directly below it, *was* migrated) |
+
+Measured on the fix: the audit went **0/0 → 6631/6923 (95.8%)**, and capture went from zeros to
+~957 markets / ~21k snapshots / ~224k Kalshi markets / **~891 gradable** per city.
+
+Three lessons, each more general than the bug:
+
+1. **A guard that reads nothing reports the empty set as health.** `if tot and rate < floor`
+   short-circuits at `tot == 0` and falls through to the ✅. Any threshold check must fail the
+   empty sample *explicitly* — an agreement rate over zero markets is evidence the audit is
+   broken, not evidence that grading is faithful. This is the same shape as the HK
+   `0/179 YES` lesson: **an aggregate cannot detect its own absence.**
+2. **A test can pin the wrong call site and report that site's health as the system's.**
+   `test_dashboard_heartbeat_glob_matches_snapshot_partitions` regexed
+   `"polymarket" / "<…snapshots…>"` — a path-JOIN form — and so matched the already-correct glob
+   on line ~461, never the broken `newest("data/polymarket/*_snapshots.csv", …)` on line ~694.
+   It passed for 20 days over a live bug. The replacement asserts over **every** snapshot literal
+   in the file.
+3. **`audit_settlements` is the one guard nothing else guards.** `truth-eval` and `dashboard` both
+   run it, so when it silently stopped reading, both pipelines lost their ruler check at once and
+   nothing anywhere turned red. `test_no_production_reader_gates_a_partitioned_dataset_on_exists_or_read_csv`
+   is now the net for the whole class: a legacy `_snapshots.csv`/`_markets.csv` path reaching
+   `.exists()` or `read_csv` fails the suite.
+
 *Why it matters.* Git stores a whole new blob per file VERSION and the cost scales with the file's
 SIZE, not with how little changed — the same commit cost 1.5% of logical for one city and 10.5%
 for another on identical data, which is delta-chain luck we do not control. The repo hit
