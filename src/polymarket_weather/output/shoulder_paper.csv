@@ -2798,3 +2798,4 @@ entered_at_utc,city,condition_id,question,target_date,leg,side,entry_side_price,
 2026-09-25T17:20:48.779253+00:00,London,0xf209bebec7f880cf5c1c8f9f04c0b123246eba22238409a0c7ee3a249af07a60,Will the lowest temperature in London be 14°C on September 27?,2026-09-27,shoulder,No,0.905,0.095,outer,1101.92
 2026-09-25T17:20:48.779253+00:00,Seoul,0x0112f1a87a18e5b98eace548ea47818583b86302b3d084520cb717e7fe684c43,Will the highest temperature in Seoul (Incheon) be 24°C on September 27?,2026-09-27,shoulder,No,0.86,0.14,outer,2738.3
 2026-09-25T17:20:48.779253+00:00,Seoul,0xea8e010c3cfc06a91937cc91db0d7cc29a5e95d974fa4bd7ce9953c3d635b799,Will the lowest temperature in Seoul (Incheon) be 15°C on September 27?,2026-09-27,shoulder,No,0.845,0.155,outer,1034.95
+2026-09-26T05:04:45.316819+00:00,London,0x2e2aabb2f65bd4d2ca34bff87e14d834c7530e8644f59f7a02adba46d65a88b4,Will the lowest temperature in London be 17°C on September 28?,2026-09-28,shoulder,No,0.8,0.2,core,1029.36
