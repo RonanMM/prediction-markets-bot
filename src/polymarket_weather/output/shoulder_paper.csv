@@ -3222,3 +3222,4 @@ entered_at_utc,city,condition_id,question,target_date,leg,side,entry_side_price,
 2026-10-04T18:52:12.667836+00:00,HongKong,0x430fb77e14619f3fd563c6bf8b824def1329e3174bdab1907d378d098004c772,Will the lowest temperature in Hong Kong be 20°C on October 6?,2026-10-06,shoulder,No,0.92,0.08,outer,1720.94
 2026-10-04T18:52:12.667836+00:00,HongKong,0x70d4495191f66eaa2d5ea8f945ed0ea03b98185a1ca8ecc72b1fe70afe8a8044,Will the lowest temperature in Hong Kong be 19°C on October 6?,2026-10-06,shoulder,No,0.92,0.08,outer,1153.83
 2026-10-04T18:52:12.667836+00:00,HongKong,0xc5b58ec89dd1a2322fbfe71e75a5b1e08c7af7f1649fc48c7224d7f5ecc79c8b,Will the highest temperature in Hong Kong be 29°C on October 6?,2026-10-06,shoulder,No,0.675,0.325,core,4604.19
+2026-10-05T00:12:02.620946+00:00,HongKong,0x899d199597ed2f29dae74218a101604dbc2f60f225aa8380bd78fc70a7513fe3,Will the lowest temperature in Hong Kong be 24°C on October 6?,2026-10-06,shoulder,No,0.825,0.175,outer,2456.89
