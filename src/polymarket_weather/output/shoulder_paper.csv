@@ -3304,3 +3304,4 @@ entered_at_utc,city,condition_id,question,target_date,leg,side,entry_side_price,
 2026-10-06T20:28:02.939131+00:00,NYC,0xe5e87daef772e54c7c7e22130ad087c5503e2ad856de738ad3e78ed091e78c39,Will the highest temperature in New York City be between 68-69°F on October 7?,2026-10-07,shoulder,No,0.755,0.245,core,3877.93
 2026-10-06T20:28:02.939131+00:00,Seoul,0x05e4222992b6e6f9ad92f18ccfe39adb1755b6ccd480ba011a19932d8522c3d6,Will the lowest temperature in Seoul (Incheon) be 10°C on October 8?,2026-10-08,shoulder,No,0.66,0.34,core,1295.92
 2026-10-06T20:28:02.939131+00:00,Seoul,0x2c719f6ff4a6fc6982a7bdb046fd694fca9dcfc0922ef7cb8bbfc2931bf3072c,Will the lowest temperature in Seoul (Incheon) be 11°C on October 8?,2026-10-08,shoulder,No,0.66,0.34,core,1149.28
+2026-10-07T00:50:22.794748+00:00,London,0xb6534eef31657f7a227e2caab3a9ab53f431d1edcabd8c27408bef5f74d42720,Will the highest temperature in London be 16°C on October 7?,2026-10-07,favorite,Yes,0.78,0.78,fav_outer,1701.14
