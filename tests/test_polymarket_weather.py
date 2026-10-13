@@ -614,6 +614,64 @@ def test_truth_sanity_rejects_bad_min():
     assert _sanitize_truth(df, min_expected_rows=1) is None
 
 
+def _fake_resp(status, text="ok", headers=None):
+    import requests
+    r = requests.Response()
+    r.status_code = status
+    r._content = text.encode()
+    r.headers.update(headers or {})
+    r.url = "https://example.test/"
+    return r
+
+
+def test_truth_fetch_retries_a_rate_limit_instead_of_freezing_the_city(monkeypatch):
+    """IEM 429'd the RKSI daily.py request on every refresh from 2026-09-29. With no retry the
+    keep-the-old-CSV fallback froze Seoul truth at 2026-09-28 — two weeks of Seoul markets
+    ungradable while every run stayed green. A 429 must be retried, honouring Retry-After."""
+    import fetch_historical_truth as fht
+    calls, slept = [], []
+    seq = [_fake_resp(429, headers={"Retry-After": "7"}), _fake_resp(503), _fake_resp(200, "day\n")]
+    monkeypatch.setattr(fht.requests, "get", lambda *a, **k: calls.append(1) or seq.pop(0))
+    monkeypatch.setattr(fht.time, "sleep", slept.append)
+    monkeypatch.setattr(fht, "_retry_slept", 0.0)
+    assert fht._get("u", {}, 1).text == "day\n"
+    assert len(calls) == 3 and slept == [7.0, 30.0]
+
+
+def test_truth_fetch_retry_is_bounded_and_still_fails_loudly(monkeypatch):
+    """A persistent outage must still raise (so the caller keeps the existing CSV) and must not
+    sleep past the per-process budget — the dashboard job has a 30-minute ceiling. A non-
+    retryable status raises immediately without sleeping at all."""
+    import requests
+    import fetch_historical_truth as fht
+    slept = []
+    monkeypatch.setattr(fht.requests, "get", lambda *a, **k: _fake_resp(429))
+    monkeypatch.setattr(fht.time, "sleep", slept.append)
+    monkeypatch.setattr(fht, "_retry_slept", 0.0)
+    for _ in range(5):   # many stations in a row, all rate-limited
+        with pytest.raises(requests.exceptions.HTTPError):
+            fht._get("u", {}, 1)
+    assert sum(slept) <= fht.RETRY_BUDGET_S
+
+    slept.clear()
+    monkeypatch.setattr(fht, "_retry_slept", 0.0)
+    monkeypatch.setattr(fht.requests, "get", lambda *a, **k: _fake_resp(404))
+    with pytest.raises(requests.exceptions.HTTPError):
+        fht._get("u", {}, 1)
+    assert slept == []
+
+
+def test_http_util_actually_retries_a_429(monkeypatch):
+    """`if exc.response` is False for every 4xx/5xx Response (its __bool__ is .ok), so the
+    status read as "?" and the 429 branch was dead code: the first rate-limit was a hard
+    failure for every fetcher sharing this client."""
+    import http_util
+    seq = [_fake_resp(429), _fake_resp(200, '{"ok": 1}')]
+    monkeypatch.setattr(http_util.requests, "get", lambda *a, **k: seq.pop(0))
+    monkeypatch.setattr(http_util.time, "sleep", lambda s: None)
+    assert http_util.get_json("u", label="t") == {"ok": 1}
+
+
 # ── Phase 3 regression guards (calibration) ──────────────────────────────────
 
 def test_student_t_scale_is_std():
@@ -1636,7 +1694,9 @@ def test_dashboard_publishes_both_city_gates_and_reads_the_frozen_sets():
     assert b["BK_CS_A_CITIES"] == str(len(bb.CITYSEL_A)) == "31"
     assert b["BK_CS_B_CITIES"] == str(len(bb.CITYSEL_B)) == "12"
     assert b["BK_CS_DATE"] == bb.CITYSEL_PREREG_DATE
-    assert b["BK_CS_A_PASS"] == "0" and b["BK_CS_B_PASS"] == "0"
+    # A flag, not a verdict: this used to assert "0", which pinned the gate's OUTCOME at the
+    # time the test was written and went red the day 1d legitimately passed on accrued data.
+    assert b["BK_CS_A_PASS"] in ("0", "1") and b["BK_CS_B_PASS"] in ("0", "1")
 
     src = Path(bd.__file__).read_text()
     # The panel names the frozen constants; it must not rebuild a selection of its own.
