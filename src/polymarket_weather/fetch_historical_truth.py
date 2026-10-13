@@ -71,13 +71,43 @@ def _f_to_c(f):
     return (float(f) - 32.0) * 5.0 / 9.0
 
 
+# Retry policy for the truth sources. IEM began answering the single full-range RKSI
+# `daily.py` request with HTTP 429 on every refresh from 2026-09-29 (it immediately follows
+# London's identical request), and with no retry the "keep the existing CSV" fallback froze
+# Seoul truth at 2026-09-28 — every Seoul market after that went ungradable on a green run.
+# 429 and 5xx are transient by definition; back off (honouring Retry-After) and try again.
+RETRY_STATUSES = {429, 500, 502, 503, 504}
+RETRY_WAITS = (10, 30, 90)   # seconds before attempts 2, 3, 4
+# Total sleep allowed per process. A full IEM outage must still fail FAST across all eleven
+# IEM stations — the dashboard job has a 30-minute ceiling and this step is best-effort there.
+RETRY_BUDGET_S = 240.0
+_retry_slept = 0.0
+
+
+def _get(url: str, params: dict, timeout: float) -> requests.Response:
+    """GET with backoff on 429/5xx. Raises the last HTTPError once retries are exhausted,
+    so callers keep their existing keep-the-old-CSV handling."""
+    global _retry_slept
+    for wait in (*RETRY_WAITS, None):
+        resp = requests.get(url, params=params, timeout=timeout)
+        if resp.status_code not in RETRY_STATUSES or wait is None:
+            resp.raise_for_status()
+            return resp
+        retry_after = resp.headers.get("Retry-After", "")
+        delay = float(retry_after) if retry_after.isdigit() else float(wait)
+        if _retry_slept + delay > RETRY_BUDGET_S:
+            logger.warning(f"HTTP {resp.status_code} from {url} — retry budget spent, giving up")
+            resp.raise_for_status()
+        logger.warning(f"HTTP {resp.status_code} from {url} — retrying in {delay:.0f}s")
+        _retry_slept += delay
+        time.sleep(delay)
+
+
 def _fetch_cli(station: str) -> pd.DataFrame:
     """NWS CLI daily reports via IEM, one request per year. Values are whole °F."""
     rows = []
     for year in range(START_YEAR, datetime.now().year + 1):
-        resp = requests.get(IEM_CLI_URL, params={"station": station, "year": year},
-                            timeout=REQUEST_TIMEOUT)
-        resp.raise_for_status()
+        resp = _get(IEM_CLI_URL, {"station": station, "year": year}, REQUEST_TIMEOUT)
         for r in resp.json().get("results", []):
             hi, lo = r.get("high"), r.get("low")
             rows.append({
@@ -101,8 +131,7 @@ def _fetch_iem_daily(network: str, station: str) -> pd.DataFrame:
         "year1": START_YEAR, "month1": 1, "day1": 1,
         "year2": now.year, "month2": now.month, "day2": now.day,
     }
-    resp = requests.get(IEM_DAILY_URL, params=params, timeout=REQUEST_TIMEOUT * 3)
-    resp.raise_for_status()
+    resp = _get(IEM_DAILY_URL, params, REQUEST_TIMEOUT * 3)
     df = pd.read_csv(io.StringIO(resp.text), na_values=["M", "None", ""])
     df = df.rename(columns={"day": "date_local"})
     df["temp_max_c"] = df["max_temp_f"].map(lambda v: _f_to_c(v) if pd.notna(v) else None)
@@ -117,10 +146,9 @@ def _fetch_hko(station: str) -> pd.DataFrame:
     for dtype, col in (("CLMMAXT", "temp_max_c"), ("CLMMINT", "temp_min_c")):
         rows = []
         for year in range(START_YEAR, datetime.now().year + 1):
-            resp = requests.get(HKO_URL, params={
+            resp = _get(HKO_URL, {
                 "dataType": dtype, "year": year, "rformat": "json", "station": station,
-            }, timeout=REQUEST_TIMEOUT)
-            resp.raise_for_status()
+            }, REQUEST_TIMEOUT)
             for y, m, d, v, completeness in resp.json().get("data", []):
                 try:
                     val = float(v)

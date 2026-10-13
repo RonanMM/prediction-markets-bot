@@ -25,7 +25,10 @@ def get_json(url: str, params: dict | None = None, label: str = "API"):
             resp.raise_for_status()
             return resp.json()
         except requests.exceptions.HTTPError as exc:
-            status = exc.response.status_code if exc.response else "?"
+            # `is not None`, never truthiness: a Response is FALSY for any 4xx/5xx (its __bool__
+            # is `.ok`), so `if exc.response` turned every 429 into "?" and the rate-limit
+            # branch below never ran — the first 429 was treated as a hard failure.
+            status = exc.response.status_code if exc.response is not None else "?"
             if status == 429:
                 wait = RETRY_BACKOFF ** (attempt + 2)
                 logger.warning("%s rate-limit. Waiting %.1fs …", label, wait)
