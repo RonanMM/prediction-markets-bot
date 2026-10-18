@@ -3872,3 +3872,4 @@ entered_at_utc,city,condition_id,question,target_date,leg,side,entry_side_price,
 2026-10-18T16:00:02.884091+00:00,London,0xfc68d8bd71031e5cbcef65cb07a19b1b3aa7de74f6262f9e2b63a69d69e91d05,Will the highest temperature in London be 15°C on October 19?,2026-10-19,shoulder,No,0.73,0.27,core,4170.9
 2026-10-18T20:47:25.084046+00:00,Chicago,0x5b067db01c71c5d9d8c436c5707a23aca782ed0b2192b519f886c695726bb637,Will the highest temperature in Chicago be between 68-69°F on October 19?,2026-10-19,shoulder,No,0.675,0.325,core,2882.36
 2026-10-18T20:47:25.084046+00:00,HongKong,0xe4c781ebf86ddaae89b507c1fff8f5689bd03b6521707bece6d63c8482c3fbd8,Will the lowest temperature in Hong Kong be 27°C on October 20?,2026-10-20,shoulder,No,0.67,0.33,core,1095.85
+2026-10-18T23:18:37.347905+00:00,Seoul,0x5e915c25672e4d59c67a23f2c814156939f2bab47384864818c3488c47e28abc,Will the highest temperature in Seoul (Incheon) be 20°C on October 20?,2026-10-20,shoulder,No,0.655,0.345,core,2938.64
