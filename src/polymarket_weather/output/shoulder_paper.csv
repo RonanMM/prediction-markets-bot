@@ -4121,3 +4121,4 @@ entered_at_utc,city,condition_id,question,target_date,leg,side,entry_side_price,
 2026-10-25T16:18:59.821133+00:00,London,0xf11abc2e61ebea040ea9f41cbc4fdfdcb601db1d3e67a92179056da91b296cd2,Will the highest temperature in London be 16°C on October 27?,2026-10-27,shoulder,No,0.9,0.1,outer,1327.26
 2026-10-25T16:18:59.821133+00:00,HongKong,0x73105a66facffc9bd3b8785c4b30bff6c54462d5a737c32567655f8643a62f78,Will the lowest temperature in Hong Kong be 29°C on October 27?,2026-10-27,shoulder,No,0.8655,0.1345,outer,1095.75
 2026-10-25T20:57:39.647091+00:00,HongKong,0xd0f8e5a67865d29d1a83a1426ab2be0a00f0f5cc3827bf42cab45f84b06b7e25,Will the highest temperature in Hong Kong be 31°C on October 27?,2026-10-27,shoulder,No,0.935,0.065,outer,1347.47
+2026-10-25T23:24:04.996005+00:00,Seoul,0xf1069c2a4ed328702e8542f24584244ba3e7b751bac1af082caecc28255e00ae,Will the highest temperature in Seoul (Incheon) be 15°C on October 27?,2026-10-27,shoulder,No,0.945,0.055,outer,1141.71
