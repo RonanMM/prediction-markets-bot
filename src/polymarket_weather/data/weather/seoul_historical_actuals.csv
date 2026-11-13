@@ -4333,3 +4333,4 @@ date_local,temp_max_c,temp_min_c,source
 2026-11-10,12.0,2.000000000000001,iem_metar:RKSI
 2026-11-11,15.0,7.000000000000001,iem_metar:RKSI
 2026-11-12,16.0,9.000000000000002,iem_metar:RKSI
+2026-11-13,16.0,10.0,iem_metar:RKSI
