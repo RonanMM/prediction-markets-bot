@@ -4334,3 +4334,4 @@ date_local,temp_max_c,temp_min_c,source
 2026-11-11,10.0,8.0,iem_metar:EGLC
 2026-11-12,8.0,4.000000000000002,iem_metar:EGLC
 2026-11-13,8.0,2.000000000000001,iem_metar:EGLC
+2026-11-14,10.0,0.9999999999999984,iem_metar:EGLC
